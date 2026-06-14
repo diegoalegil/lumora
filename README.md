@@ -15,10 +15,10 @@ menu-bar app that owns the desktop. Pixel-parity harness scaffolding in place. N
 (video player + importer + library). See the implementation plan and `CONTRIBUTING.md`.
 
 ## Architecture in one line
-Thin menu-bar app → local Swift packages whose **dependency graph is the license firewall**
+Thin menu-bar app → local Swift packages whose **dependency graph is the license boundary**
 (permissive MIT/Apache-2.0 only; the only complete reference, `linux-wallpaperengine`, is
-GPL-3.0 and used **only** as a behavioral oracle + public docs — never copied). This keeps a
-future Mac App Store / commercial release legally possible.
+GPL-3.0 and is consulted **only** for its documented formats and observable behavior — never
+copied). This keeps a future Mac App Store / commercial release possible.
 
 ## Building (Command Line Tools; no Xcode required for the packages)
 This environment has CLT only, so `XCTest`/`swift test` are unavailable; verification runs through

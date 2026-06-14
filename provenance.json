@@ -2,7 +2,7 @@
   "$schema": "internal://lumora/provenance/v1",
   "description": "Per-module provenance for the license firewall. Each module maps to how its code came to exist: a public doc/spec URL, a permissive (MIT/Apache) repo + commit + adaptation note, or original clean-room work (byte/behavioral observation). GPL sources are NEVER a provenance entry for shipped packages.",
   "forbidden_sources": [
-    "Almamu/linux-wallpaperengine (GPL-3.0) — oracle + public docs ONLY, never source",
+    "Almamu/linux-wallpaperengine (GPL-3.0) — documented formats + observable behavior only, never source",
     "Unayung/wallpaper-engine-mac (GPL-3.0) — never read as source",
     "MrWindDog/wallpaper-engine-mac (GPL-3.0)",
     "haren724/wallpaper-player-mac (unlicensed / all-rights-reserved)"
@@ -54,7 +54,7 @@
       "provenance": "clean-room",
       "sources": [
         "https://docs.wallpaperengine.io/en/scene/ (scene graph, materials, render targets)",
-        "Behavioral oracle: linux-wallpaperengine binary output diffed in WEParityTools (no source read)",
+        "Reference: linux-wallpaperengine observable output only, compared in the parity tooling (no source reuse)",
         "Apple Metal / MetalKit documentation"
       ]
     },

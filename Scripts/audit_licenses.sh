@@ -12,7 +12,7 @@
 #        - no file carries an SPDX copyleft identifier
 #        - no LICENSE/COPYING file contains the GNU GPL text
 #        - no directory named we-refs is checked in
-#      This catches a GPL oracle clone under ANY name, and GPL .cpp/.h/.glsl/.metal sources.
+#      This catches a GPL reference clone under ANY name, and GPL .cpp/.h/.glsl/.metal sources.
 #   5. No shipped package depends on the quarantined test tooling (WEParityTools/WEOracle).
 #
 # Quarantined test tooling (Packages/WEParityTools, Packages/WEOracle) is exempt from the SPDX

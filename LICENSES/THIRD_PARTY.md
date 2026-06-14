@@ -12,7 +12,7 @@ package's license posture and any external component reused.
 | WallpaperShell | MIT | clean-room (Apple docs) |
 | WEImporter | Apache-2.0 | permissive-adapted + clean-room |
 | WEShaderKit | Apache-2.0 | clean-room front-end + permissive vendored back-end |
-| WEScene | MIT | clean-room (WE docs + behavioral oracle) |
+| WEScene | MIT | clean-room (WE docs + observed behavior) |
 | WESceneDynamics | MIT | clean-room (WE docs + Apple frameworks) |
 | WEPlayers | MIT | clean-room (Apple frameworks) |
 | Direct/FFmpegHelper | LGPL (out-of-process, **Direct build only**, never statically linked) | external |
