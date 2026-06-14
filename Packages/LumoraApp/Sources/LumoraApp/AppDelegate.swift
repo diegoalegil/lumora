@@ -1,0 +1,148 @@
+// SPDX-License-Identifier: MIT
+// Provenance: clean-room. Thin menu-bar shell wiring ScreenManager + PlaybackCoordinator +
+// SolidColorRenderer (Phase 0). No media/Metal here — that arrives with the real players.
+import AppKit
+import WECore
+import WallpaperShell
+
+@MainActor
+final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
+    private var statusItem: NSStatusItem?
+    private var pauseMenuItem: NSMenuItem?
+    private var loginMenuItem: NSMenuItem?
+
+    private let screenManager: ScreenManager
+    private var signalSource: SystemSignalSource?
+    private var coordinator: PlaybackCoordinator?
+    private var renderers: [CGDirectDisplayID: any WallpaperRenderer] = [:]
+    private let loginItem = LoginItemService()
+    private var isPaused = false
+
+    override init() {
+        // Window factory: build the desktop window + an empty host. Renderers are attached in
+        // reconcile() so their lifecycle is centralized.
+        screenManager = ScreenManager { screen in
+            let window = DesktopWindow(screen: screen, placement: .behindIcons)
+            window.contentView = RendererHostView(frame: window.frame)
+            return window
+        }
+        super.init()
+    }
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        setupStatusItem()
+
+        let source = SystemSignalSource(windowForDisplay: { [weak self] id in
+            self?.screenManager.windows[id]
+        })
+        signalSource = source
+
+        let coordinator = PlaybackCoordinator(
+            engine: PlaybackPolicyEngine(),
+            source: source,
+            displays: { [weak self] in
+                guard let self else { return [] }
+                return Array(self.screenManager.windows.keys)
+            }
+        )
+        coordinator.onDirective = { [weak self] id, directive in
+            self?.renderers[id]?.apply(directive)
+        }
+        self.coordinator = coordinator
+
+        screenManager.onChange = { [weak self] in self?.reconcile() }
+        coordinator.start()      // begin monitoring (no windows yet)
+        screenManager.start()    // build windows -> onChange -> reconcile attaches renderers
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        coordinator?.stop()
+        screenManager.stop()
+        renderers.values.forEach { $0.tearDown() }
+        renderers.removeAll()
+    }
+
+    /// Keep the renderer set in sync with the live windows, then re-evaluate playback.
+    private func reconcile() {
+        let liveIDs = Set(screenManager.windows.keys)
+
+        for (id, window) in screenManager.windows where renderers[id] == nil {
+            guard let host = window.contentView as? RendererHostView else { continue }
+            // Phase 0 proof: a recognizable deep-indigo fill so it's obvious Lumora owns the
+            // desktop. Real players (video/web/scene) replace this in later phases.
+            let renderer = SolidColorRenderer(color: NSColor(srgbRed: 0.16, green: 0.13, blue: 0.28, alpha: 1))
+            host.setContent(renderer.makeHostedView())
+            renderers[id] = renderer
+        }
+        for id in renderers.keys where !liveIDs.contains(id) {
+            renderers[id]?.tearDown()
+            renderers.removeValue(forKey: id)
+        }
+
+        coordinator?.evaluate()
+    }
+
+    // MARK: Menu bar
+
+    private func setupStatusItem() {
+        let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        if let image = NSImage(systemSymbolName: "menubar.dock.rectangle", accessibilityDescription: "Lumora") {
+            item.button?.image = image
+        } else {
+            item.button?.title = "L"
+        }
+
+        let menu = NSMenu()
+
+        let pause = NSMenuItem(title: "Pause Wallpapers", action: #selector(togglePause), keyEquivalent: "")
+        pause.target = self
+        menu.addItem(pause)
+        pauseMenuItem = pause
+
+        let login = NSMenuItem(title: "Launch at Login", action: #selector(toggleLogin), keyEquivalent: "")
+        login.target = self
+        menu.addItem(login)
+        loginMenuItem = login
+
+        menu.addItem(.separator())
+
+        let quit = NSMenuItem(title: "Quit Lumora", action: #selector(quit), keyEquivalent: "q")
+        quit.target = self
+        menu.addItem(quit)
+
+        menu.delegate = self   // refresh login-item state each time the menu opens
+        item.menu = menu
+        statusItem = item
+        updateMenuState()
+    }
+
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        // SMAppService status can change externally (System Settings > Login Items).
+        updateMenuState()
+    }
+
+    private func updateMenuState() {
+        pauseMenuItem?.title = isPaused ? "Resume Wallpapers" : "Pause Wallpapers"
+        loginMenuItem?.state = loginItem.isEnabled ? .on : .off
+    }
+
+    @objc private func togglePause() {
+        isPaused.toggle()
+        signalSource?.userPaused = isPaused
+        coordinator?.evaluate()
+        updateMenuState()
+    }
+
+    @objc private func toggleLogin() {
+        do {
+            try loginItem.setEnabled(!loginItem.isEnabled)
+        } catch {
+            NSLog("Lumora: login item toggle failed: \(error)")
+        }
+        updateMenuState()
+    }
+
+    @objc private func quit() {
+        NSApp.terminate(nil)
+    }
+}

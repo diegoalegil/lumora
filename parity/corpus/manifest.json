@@ -1,0 +1,49 @@
+{
+  "$schema": "internal://lumora/parity-corpus/v1",
+  "description": "The curated pixel-parity corpus: the user's OWN Wallpaper Engine wallpapers, tiered by capability. We version ONLY this manifest (workshop ids + capability tags + reference-frame hashes) — never the copyrighted pixels/assets (see .gitignore).",
+  "capture_resolution": [1920, 1080],
+  "fields": {
+    "id": "Steam Workshop id (folder name under content/431960/<id>)",
+    "title": "human label (no need to match WE exactly)",
+    "type": "scene | video | web",
+    "capabilities": "tags driving which gate applies: static, shaders, particles, audio, parallax, timeline",
+    "reference_frames": "list of { name, sha256 }; name matches the capture sub-case (static, t=2.0s, mouse=…, audio=tone440). sha256 filled by parity/tools/register_frames.py (Phase 3).",
+    "notes": "non-default properties or capture caveats"
+  },
+  "entries": [
+    {
+      "id": "EXAMPLE_video_0000000000",
+      "title": "(example) a video wallpaper",
+      "type": "video",
+      "capabilities": ["static"],
+      "reference_frames": [
+        { "name": "static", "sha256": null }
+      ],
+      "notes": "Replace with a real owned video wallpaper. Video tier expects SSIM >= 0.995."
+    },
+    {
+      "id": "EXAMPLE_web_0000000000",
+      "title": "(example) a web/WebGL wallpaper",
+      "type": "web",
+      "capabilities": ["static", "audio"],
+      "reference_frames": [
+        { "name": "static", "sha256": null },
+        { "name": "audio=tone440", "sha256": null }
+      ],
+      "notes": "Replace with a real owned web wallpaper."
+    },
+    {
+      "id": "EXAMPLE_scene_0000000000",
+      "title": "(example) a scene wallpaper with particles + audio + parallax",
+      "type": "scene",
+      "capabilities": ["static", "shaders", "particles", "audio", "parallax", "timeline"],
+      "reference_frames": [
+        { "name": "static", "sha256": null },
+        { "name": "t=2.0s", "sha256": null },
+        { "name": "mouse=0.25,0.5", "sha256": null },
+        { "name": "audio=tone440", "sha256": null }
+      ],
+      "notes": "Replace with a real owned scene wallpaper. Particles/audio use distribution metric (~0.88)."
+    }
+  ]
+}

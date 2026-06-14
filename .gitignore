@@ -1,0 +1,32 @@
+# Build artifacts
+.build/
+.swiftpm/
+DerivedData/
+*.xcodeproj/xcuserdata/
+*.xcworkspace/xcuserdata/
+
+# macOS
+.DS_Store
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
+
+# ──────────────────────────────────────────────────────────────────────────
+# LICENSE FIREWALL — material that must NEVER enter this repo
+# ──────────────────────────────────────────────────────────────────────────
+# GPL reference material (linux-wallpaperengine, wallpaper-engine-mac) lives
+# OUTSIDE the repo, under ~/we-refs. This entry is a belt-and-suspenders guard
+# in case anyone checks it out inside the tree.
+we-refs/
+**/we-refs/
+
+# Parity corpus: FAIL-CLOSED. Ignore EVERYTHING under the corpus (copyrighted wallpaper pixels /
+# assets / captured frames) and re-include ONLY the manifest + markdown docs. This avoids the
+# allowlist-of-extensions trap where a new capture format (.mov/.gif/.heic/.tga/…) sneaks in.
+parity/corpus/**
+!parity/corpus/manifest.json
+!parity/corpus/**/*.md
+parity/captures/
+parity/out/

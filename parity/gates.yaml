@@ -1,0 +1,62 @@
+# Pixel-parity gates — the honest, tiered "definition of done" per subsystem.
+# Bit-exact equality across D3D11/HLSL (Windows) vs Metal/MSL (macOS) is physically impossible
+# (different rasterizer, FP precision, filtering, gamma), so each tier has a MEASURED SSIM ceiling.
+# A roadmap phase ships only when its tier's gate is green on its corpus subset.
+#
+# metric notes:
+#   ssim         : primary, perceptual (tolerant of sub-pixel drift)
+#   mae_max      : per-pixel mean-absolute-error ceiling (0..1) — catches gamma/color-space bugs
+#   pct_over     : max fraction of pixels allowed past a per-pixel delta threshold
+#   distribution : for non-deterministic motion (particles/audio), compare temporal mean/variance
+#                  maps rather than single frames ("visually faithful, not bit-exact")
+
+version: 1
+
+tiers:
+  video:
+    description: Pre-rendered video — true parity expected.
+    ssim_min: 0.995
+    mae_max: 0.01
+    deterministic: true
+
+  web_static:
+    description: Web wallpaper, settled static frame.
+    ssim_min: 0.98
+    mae_max: 0.03
+    deterministic: true
+
+  scene_static:
+    description: Scene composition (layers/blend/alpha) with native DXT upload — Phase 3.
+    ssim_min: 0.97
+    mae_max: 0.03
+    deterministic: true
+
+  scene_shaders:
+    description: Shader/effect chain (bloom/blur/color) — Phase 4a.
+    ssim_min: 0.92
+    mae_max: 0.06
+    deterministic: true
+
+  parallax:
+    description: Mouse parallax — deterministic, parity-capable — Phase 4b.
+    ssim_min: 0.95
+    mae_max: 0.04
+    deterministic: true
+
+  timeline:
+    description: Timeline/keyframe animation — deterministic — Phase 4b.
+    ssim_min: 0.95
+    mae_max: 0.04
+    deterministic: true
+
+  particles:
+    description: CPU particle systems — visually faithful, NOT bit-exact (undocumented PRNG/ordering).
+    ssim_min: 0.88
+    deterministic: false
+    metric: distribution
+
+  audio:
+    description: Audio-reactive — visually faithful, NOT bit-exact (undocumented FFT banding).
+    ssim_min: 0.88
+    deterministic: false
+    metric: distribution

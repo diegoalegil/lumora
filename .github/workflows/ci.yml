@@ -1,0 +1,15 @@
+name: CI
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  firewall-and-checks:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - name: Swift version
+        run: swift --version
+      - name: License firewall + package checks
+        run: bash Scripts/check_all.sh

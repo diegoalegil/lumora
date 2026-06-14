@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: MIT
+# Pre-commit hook: block any commit that breaks the license firewall.
+# Activate once per clone with:  bash Scripts/install-hooks.sh   (sets core.hooksPath=.githooks)
+set -euo pipefail
+root="$(git rev-parse --show-toplevel)"
+exec bash "$root/Scripts/audit_licenses.sh"
