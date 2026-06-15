@@ -28,6 +28,22 @@ private struct QuadUniform {
     var uvScale: SIMD2<Float>
 }
 
+/// One particle sprite for the instanced draw: clip-space centre + half-extent, RGB tint and alpha.
+private struct ParticleInstance {
+    var center: SIMD2<Float>
+    var halfExtent: SIMD2<Float>
+    var color: SIMD4<Float>
+}
+
+/// A particle system prepared for rendering: its parsed definition, sprite texture, and the number of
+/// sprites to simulate (capped to the steady-state count rate × lifetime implies).
+private struct PreparedParticles {
+    let system: ParticleSystem
+    let texture: MTLTexture
+    let count: Int
+    let isAdditive: Bool
+}
+
 /// A layer's effect compiled once: the full-screen pass plus the data to re-pack its uniforms each
 /// frame (so a time-varying effect like pulse animates without re-transpiling the shader).
 private struct PreparedEffect {
@@ -58,19 +74,26 @@ private struct PreparedLayer {
 public final class PreparedScene {
     fileprivate let layers: [PreparedLayer]
     fileprivate let clearColor: SceneVec3
+    fileprivate let particles: [PreparedParticles]
+    fileprivate let orthoWidth: Double
+    fileprivate let orthoHeight: Double
 
-    fileprivate init(layers: [PreparedLayer], clearColor: SceneVec3) {
+    fileprivate init(layers: [PreparedLayer], clearColor: SceneVec3, particles: [PreparedParticles],
+                     orthoWidth: Double, orthoHeight: Double) {
         self.layers = layers
         self.clearColor = clearColor
+        self.particles = particles
+        self.orthoWidth = orthoWidth
+        self.orthoHeight = orthoHeight
     }
 
     /// How many layers will be drawn (0 means nothing resolved — the caller should show a fallback).
     public var layerCount: Int { layers.count }
 
-    /// True if any layer animates (parallax depth or an alpha keyframe animation), i.e. the scene moves
-    /// over time and is worth driving with a render loop (otherwise one still render suffices).
+    /// True if any layer animates (parallax, alpha/position keyframes, effects) or the scene emits
+    /// particles — i.e. it moves over time and is worth driving with a render loop.
     public var hasAnimation: Bool {
-        layers.contains {
+        !particles.isEmpty || layers.contains {
             $0.parallaxDepth != SIMD2<Float>(0, 0) || $0.alphaAnimation != nil
                 || $0.originAnimation != nil || !$0.effects.isEmpty
         }
@@ -84,10 +107,13 @@ public final class SceneRenderer {
     private let queue: MTLCommandQueue
     private let pipelineOver: MTLRenderPipelineState
     private let pipelineAdditive: MTLRenderPipelineState
+    private let particleAdditive: MTLRenderPipelineState   // instanced sprite draw, additive (glow)
+    private let particleAlpha: MTLRenderPipelineState      // instanced sprite draw, alpha (solid sprites)
     private let sampler: MTLSamplerState
     private let whiteTexture: MTLTexture
     private let blackTexture: MTLTexture           // util/black aux default
     private let noiseTexture: MTLTexture           // util/noise aux default (procedural)
+    private let haloTexture: MTLTexture            // soft radial glow for unshipped built-in sprites
     private let effectRenderer: EffectRenderer?   // compiles + runs per-layer post-process effects
     private var auxCache: [String: MTLTexture] = [:]   // resolved packaged aux textures, by name
 
@@ -112,6 +138,24 @@ public final class SceneRenderer {
         float4 c = tex.sample(samp, in.uv);
         return float4(c.rgb * tint, c.a * layerAlpha);
     }
+    struct PInst { float2 center; float2 halfExtent; float4 color; };
+    struct POut { float4 position [[position]]; float2 uv; float4 color; };
+    vertex POut lumora_particle_vertex(uint vid [[vertex_id]], uint iid [[instance_id]],
+                                       constant PInst *insts [[buffer(0)]]) {
+        float2 corner[4] = { float2(-1, -1), float2(1, -1), float2(-1, 1), float2(1, 1) };
+        float2 uvs[4]    = { float2(0, 1),  float2(1, 1),  float2(0, 0),  float2(1, 0) };
+        PInst p = insts[iid];
+        POut out;
+        out.position = float4(p.center + corner[vid] * p.halfExtent, 0, 1);
+        out.uv = uvs[vid];
+        out.color = p.color;
+        return out;
+    }
+    fragment float4 lumora_particle_fragment(POut in [[stage_in]],
+                                             texture2d<float> tex [[texture(0)]], sampler samp [[sampler(0)]]) {
+        float4 t = tex.sample(samp, in.uv);
+        return float4(t.rgb * in.color.rgb, t.a * in.color.a);
+    }
     """
 
     public init?(device: MTLDevice? = MTLCreateSystemDefaultDevice()) {
@@ -122,12 +166,20 @@ public final class SceneRenderer {
             let library = try device.makeLibrary(source: Self.shaderSource, options: nil)
             guard let vertexFunction = library.makeFunction(name: "lumora_scene_vertex"),
                   let fragmentFunction = library.makeFunction(name: "lumora_scene_fragment"),
+                  let particleVertex = library.makeFunction(name: "lumora_particle_vertex"),
+                  let particleFragment = library.makeFunction(name: "lumora_particle_fragment"),
                   let over = Self.makePipeline(device: device, vertex: vertexFunction,
                                                fragment: fragmentFunction, additive: false),
                   let additive = Self.makePipeline(device: device, vertex: vertexFunction,
-                                                   fragment: fragmentFunction, additive: true) else { return nil }
+                                                   fragment: fragmentFunction, additive: true),
+                  let particleAdd = Self.makeParticlePipeline(device: device, vertex: particleVertex,
+                                                              fragment: particleFragment, additive: true),
+                  let particleOver = Self.makeParticlePipeline(device: device, vertex: particleVertex,
+                                                               fragment: particleFragment, additive: false) else { return nil }
             self.pipelineOver = over
             self.pipelineAdditive = additive
+            self.particleAdditive = particleAdd
+            self.particleAlpha = particleOver
         } catch {
             return nil
         }
@@ -150,9 +202,11 @@ public final class SceneRenderer {
         self.whiteTexture = white
 
         guard let black = Self.makeDataTexture([0, 0, 0, 255], width: 1, height: 1, device: device),
-              let noise = Self.makeDataTexture(Self.noisePixels(side: 256), width: 256, height: 256, device: device) else { return nil }
+              let noise = Self.makeDataTexture(Self.noisePixels(side: 256), width: 256, height: 256, device: device),
+              let halo = Self.makeDataTexture(Self.haloPixels(side: 64), width: 64, height: 64, device: device) else { return nil }
         self.blackTexture = black
         self.noiseTexture = noise
+        self.haloTexture = halo
 
         self.effectRenderer = EffectRenderer(device: device)   // nil only if the device can't build it
     }
@@ -165,6 +219,23 @@ public final class SceneRenderer {
         var pixels = bytes
         texture.replace(region: MTLRegionMake2D(0, 0, width, height), mipmapLevel: 0, withBytes: &pixels, bytesPerRow: width * 4)
         return texture
+    }
+
+    /// A soft white radial glow (alpha falls off from centre) standing in for WE's unshipped built-in
+    /// particle sprites (halo, glow, drop) — additive blend turns it into a luminous orb.
+    private static func haloPixels(side: Int) -> [UInt8] {
+        var pixels = [UInt8](repeating: 0, count: side * side * 4)
+        let center = Double(side - 1) / 2
+        for y in 0 ..< side {
+            for x in 0 ..< side {
+                let dx = (Double(x) - center) / center, dy = (Double(y) - center) / center
+                let falloff = max(0, 1 - (dx * dx + dy * dy).squareRoot())
+                let i = (y * side + x) * 4
+                pixels[i] = 255; pixels[i + 1] = 255; pixels[i + 2] = 255
+                pixels[i + 3] = UInt8(max(0, min(255, falloff * falloff * 255)))
+            }
+        }
+        return pixels
     }
 
     /// A deterministic grayscale value-noise tile for WE's `util/noise` aux default (grain/shimmer).
@@ -201,6 +272,24 @@ public final class SceneRenderer {
 
     private static func makePipeline(device: MTLDevice, vertex: MTLFunction, fragment: MTLFunction,
                                      additive: Bool) -> MTLRenderPipelineState? {
+        let descriptor = MTLRenderPipelineDescriptor()
+        descriptor.vertexFunction = vertex
+        descriptor.fragmentFunction = fragment
+        let color = descriptor.colorAttachments[0]!
+        color.pixelFormat = .rgba8Unorm
+        color.isBlendingEnabled = true
+        color.rgbBlendOperation = .add
+        color.alphaBlendOperation = .add
+        color.sourceRGBBlendFactor = .sourceAlpha
+        color.sourceAlphaBlendFactor = .sourceAlpha
+        color.destinationRGBBlendFactor = additive ? .one : .oneMinusSourceAlpha
+        color.destinationAlphaBlendFactor = additive ? .one : .oneMinusSourceAlpha
+        return try? device.makeRenderPipelineState(descriptor: descriptor)
+    }
+
+    /// The instanced particle pipeline: additive (glow) or alpha-over (solid sprites) blend.
+    private static func makeParticlePipeline(device: MTLDevice, vertex: MTLFunction, fragment: MTLFunction,
+                                             additive: Bool) -> MTLRenderPipelineState? {
         let descriptor = MTLRenderPipelineDescriptor()
         descriptor.vertexFunction = vertex
         descriptor.fragmentFunction = fragment
@@ -270,7 +359,46 @@ public final class SceneRenderer {
                 effects: prepareEffects(layer.effects, package: package, base: texture,
                                         center: center, halfExtent: halfExtent, uvScale: uvScale, tint: tint)))
         }
-        return PreparedScene(layers: prepared, clearColor: document.clearColor)
+
+        var preparedParticles: [PreparedParticles] = []
+        for system in document.particleSystems {
+            guard let sprite = particleSprite(system, package: package) else { continue }
+            // Steady-state live count ≈ spawn rate × longest lifetime, capped to the system's maxcount.
+            let count = min(system.maxCount, max(1, Int((system.rate * system.lifetime.upperBound).rounded(.up))))
+            preparedParticles.append(PreparedParticles(system: system, texture: sprite.texture,
+                                                       count: count, isAdditive: sprite.isAdditive))
+        }
+        return PreparedScene(layers: prepared, clearColor: document.clearColor,
+                             particles: preparedParticles, orthoWidth: orthoW, orthoHeight: orthoH)
+    }
+
+    /// The sprite a particle system draws — its material's first bound texture and blend mode
+    /// (additive for glowy sparks/embers, alpha-over for solid sprites like petals/butterflies). Returns
+    /// nil if the sprite can't be resolved, so the system is skipped rather than drawn as white squares.
+    private func particleSprite(_ system: ParticleSystem, package: ScenePackage) -> (texture: MTLTexture, isAdditive: Bool)? {
+        guard let materialPath = system.materialPath, let entry = package.entry(named: materialPath),
+              let material = (try? JSONSerialization.jsonObject(with: entry.data)) as? [String: Any],
+              let pass = (material["passes"] as? [[String: Any]])?.first,
+              let name = (pass["textures"] as? [Any])?.compactMap({ $0 as? String }).first,
+              let texture = spriteTexture(named: name, package: package)
+        else { return nil }
+        let blending = (pass["blending"] as? String) ?? "normal"
+        return (texture, blending == "additive" || blending == "add")
+    }
+
+    /// Load a particle sprite: WE's common built-in shapes procedurally (they aren't shipped in the
+    /// package), packaged sprites from the scene, else nil so the system is skipped.
+    private func spriteTexture(named name: String, package: ScenePackage) -> MTLTexture? {
+        if name.hasPrefix("util/") { return resolveAuxTexture(name, package: package) }
+        if name.hasPrefix("particle/halo") || name.hasSuffix("glow") || name == "particle/drop" {
+            return haloTexture
+        }
+        if let entry = package.entry(named: "materials/\(name).tex"),
+           let decoded = try? SceneTexture.decodeFirstMip(entry.data),
+           let made = MetalTexture.make(decoded, device: device) {
+            return made
+        }
+        return nil
     }
 
     /// Compile a layer's effects and keep only the ones that actually contribute. Each fragment shader is
@@ -315,7 +443,7 @@ public final class SceneRenderer {
         let times: [Float] = [0, 1.3, 2.6, 4.1, 5.7]
         guard var probe = renderQuadToTexture(base, center: center, halfExtent: halfExtent, uvScale: uvScale,
                                                tint: tint, width: probeW, height: probeH) else { return compiled }
-        var probeRGBA = effectRenderer.readback(probe)
+        let probeRGBA = effectRenderer.readback(probe)
         var probeCoverage = coverage(probeRGBA)
         var probeDetail = detail(probeRGBA)
         var kept: [PreparedEffect] = []
@@ -362,6 +490,71 @@ public final class SceneRenderer {
         }
         guard n > 0 else { return 0 }
         return max(0, sumSq / n - (sum / n) * (sum / n))
+    }
+
+    // MARK: - Particles
+
+    /// Analytically place every live sprite of a particle system at `time`. Each slot recycles on its own
+    /// lifetime with a staggered phase; a per-life hash seeds its spawn point, velocity, size, colour and
+    /// alpha, and the movement operator integrates position (p = p₀ + v·t + ½g·t²). Stateless, so any
+    /// frame is reproducible without simulating the ones before it.
+    private func simulateParticles(_ prepared: PreparedParticles, time: Double,
+                                   orthoW: Double, orthoH: Double) -> [ParticleInstance] {
+        let s = prepared.system
+        var instances: [ParticleInstance] = []
+        instances.reserveCapacity(prepared.count)
+        for i in 0 ..< prepared.count {
+            let slot = UInt32(truncatingIfNeeded: i)
+            let life = lerp(s.lifetime.lowerBound, s.lifetime.upperBound, rand(slot, 101))
+            guard life > 0.001 else { continue }
+            let t = time + rand(slot, 102) * life          // staggered so they don't all spawn at once
+            let cycle = (t / life).rounded(.down)
+            let age = t - cycle * life
+            let seed = hash(slot, UInt32(truncatingIfNeeded: Int(cycle)))
+
+            let spawnX = s.origin.x + s.boxSize.x * (rand(seed, 1) * 2 - 1)
+            let spawnY = s.origin.y + s.boxSize.y * (rand(seed, 2) * 2 - 1)
+            // velocity = the velocityrandom range plus a sphere emitter's speed along a masked direction
+            var velX = lerp(s.velocity.min.x, s.velocity.max.x, rand(seed, 3))
+            var velY = lerp(s.velocity.min.y, s.velocity.max.y, rand(seed, 4))
+            if s.speed.upperBound > 0 {
+                let dx = (rand(seed, 10) * 2 - 1) * s.directions.x
+                let dy = (rand(seed, 11) * 2 - 1) * s.directions.y
+                let len = (dx * dx + dy * dy).squareRoot()
+                if len > 0.0001 {
+                    let speed = lerp(s.speed.lowerBound, s.speed.upperBound, rand(seed, 12))
+                    velX += dx / len * speed
+                    velY += dy / len * speed
+                }
+            }
+            let size = lerp(s.size.lowerBound, s.size.upperBound, rand(seed, 5))
+            let alpha0 = lerp(s.alpha.lowerBound, s.alpha.upperBound, rand(seed, 6))
+            let color = SIMD3<Float>(Float(lerp(s.color.min.x, s.color.max.x, rand(seed, 7)) / 255),
+                                     Float(lerp(s.color.min.y, s.color.max.y, rand(seed, 8)) / 255),
+                                     Float(lerp(s.color.min.z, s.color.max.z, rand(seed, 9)) / 255))
+
+            let posX = spawnX + velX * age + 0.5 * s.gravity.x * age * age
+            let posY = spawnY + velY * age + 0.5 * s.gravity.y * age * age
+            let lifeFrac = age / life
+            let fade = Float(smoothstep(0, 0.15, lifeFrac) * (1 - smoothstep(0.85, 1, lifeFrac)))
+            instances.append(ParticleInstance(
+                center: SIMD2(Float(posX / orthoW * 2 - 1), Float(posY / orthoH * 2 - 1)),
+                halfExtent: SIMD2(Float(size / orthoW), Float(size / orthoH)),
+                color: SIMD4(color, Float(alpha0) * fade)))
+        }
+        return instances
+    }
+
+    private func hash(_ a: UInt32, _ b: UInt32) -> UInt32 {
+        var h = a &* 0x9E3779B9
+        h = (h ^ b) &* 0x85EBCA6B
+        h ^= h >> 13; h = h &* 0xC2B2AE35; h ^= h >> 16
+        return h
+    }
+    private func rand(_ seed: UInt32, _ channel: UInt32) -> Double { Double(hash(seed, channel)) / Double(UInt32.max) }
+    private func lerp(_ a: Double, _ b: Double, _ t: Double) -> Double { a + (b - a) * t }
+    private func smoothstep(_ e0: Double, _ e1: Double, _ x: Double) -> Double {
+        let t = max(0, min(1, (x - e0) / (e1 - e0))); return t * t * (3 - 2 * t)
     }
 
     /// Render a prepared scene at `time` seconds, applying a gentle automatic camera parallax so layers
@@ -419,6 +612,21 @@ public final class SceneRenderer {
                 encoder.setFragmentBytes(&alpha, length: MemoryLayout<Float>.size, index: 0)
                 encoder.setFragmentBytes(&tint, length: MemoryLayout<SIMD3<Float>>.stride, index: 1)
                 encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
+            }
+
+            // Particles draw on top of the composited layers, additively, as instanced sprite quads.
+            for prepared in scene.particles {
+                let instances = simulateParticles(prepared, time: time,
+                                                  orthoW: scene.orthoWidth, orthoH: scene.orthoHeight)
+                guard !instances.isEmpty,
+                      let buffer = device.makeBuffer(bytes: instances,
+                                                     length: MemoryLayout<ParticleInstance>.stride * instances.count,
+                                                     options: .storageModeShared) else { continue }
+                encoder.setRenderPipelineState(prepared.isAdditive ? particleAdditive : particleAlpha)
+                encoder.setVertexBuffer(buffer, offset: 0, index: 0)
+                encoder.setFragmentTexture(prepared.texture, index: 0)
+                encoder.setFragmentSamplerState(sampler, index: 0)
+                encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4, instanceCount: instances.count)
             }
         }
     }
