@@ -468,6 +468,22 @@ Check.throwsError("rejects invalid scene.json",
                                        files: [("scene.json", Data("not json".utf8))]))) },
                   satisfies: { if case SceneGraphError.invalidSceneJSON = $0 { return true }; return false })
 
+Check.section("AlphaAnimation")
+let alphaAnim = AlphaAnimation(keyframes: [AlphaKeyframe(frame: 0, value: 0),
+                                           AlphaKeyframe(frame: 30, value: 1),
+                                           AlphaKeyframe(frame: 60, value: 0)], fps: 60, length: 120)
+Check.that("alpha at t=0 is the first keyframe", alphaAnim.value(at: 0) == 0)
+Check.that("alpha reaches 1 at frame 30 (0.5s)", alphaAnim.value(at: 0.5) == 1)
+Check.that("alpha interpolates between keyframes", abs(alphaAnim.value(at: 0.25) - 0.5) < 0.0001)
+Check.that("alpha loops past the length", alphaAnim.value(at: 2.0) == 0)
+let parsedAlpha = try? SceneGraph.load(from: ScenePackage.read(buildPKG(version: "PKGV0009", files: [
+    ("scene.json", Data(#"{"objects":[{"image":"models/m.json","alpha":{"value":1,"animation":{"c0":[{"frame":0,"value":0},{"frame":30,"value":1}],"options":{"fps":60,"length":60}}}}]}"#.utf8)),
+    ("models/m.json", Data(#"{"material":"materials/mat.json"}"#.utf8)),
+    ("materials/mat.json", Data(#"{"passes":[{"textures":["t"]}]}"#.utf8)),
+])))
+Check.that("an animated alpha is parsed onto the layer",
+           parsedAlpha?.layers.first?.alphaAnimation?.keyframes.count == 2)
+
 // MARK: - Done
 
 try? fm.removeItem(at: tmpRoot)

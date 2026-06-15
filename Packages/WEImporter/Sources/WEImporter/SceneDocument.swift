@@ -19,6 +19,44 @@ public struct SceneVec3: Sendable, Equatable {
     }
 }
 
+/// One keyframe of an animated property: a value at a frame number.
+public struct AlphaKeyframe: Sendable, Equatable {
+    public let frame: Double
+    public let value: Double
+    public init(frame: Double, value: Double) { self.frame = frame; self.value = value }
+}
+
+/// A looping keyframe animation for a layer's alpha — what drives the cross-fading frame-by-frame
+/// "sprite" scenes. Evaluated at a wall-clock time to the alpha for that instant.
+public struct AlphaAnimation: Sendable, Equatable {
+    public let keyframes: [AlphaKeyframe]   // sorted by frame
+    public let fps: Double
+    public let length: Double
+
+    public init(keyframes: [AlphaKeyframe], fps: Double, length: Double) {
+        self.keyframes = keyframes
+        self.fps = fps
+        self.length = length
+    }
+
+    /// The (linearly-interpolated, looping) alpha at `time` seconds.
+    public func value(at time: Double) -> Double {
+        guard let first = keyframes.first, let last = keyframes.last, fps > 0, length > 0 else { return 1 }
+        let frame = (time * fps).truncatingRemainder(dividingBy: length)
+        if frame <= first.frame { return first.value }
+        if frame >= last.frame { return last.value }
+        for index in 0 ..< (keyframes.count - 1) {
+            let a = keyframes[index], b = keyframes[index + 1]
+            if frame >= a.frame, frame <= b.frame {
+                let span = b.frame - a.frame
+                let t = span > 0 ? (frame - a.frame) / span : 0
+                return a.value + (b.value - a.value) * t
+            }
+        }
+        return last.value
+    }
+}
+
 /// One renderable image layer of a scene: the texture to draw and where/how to draw it.
 public struct SceneLayer: Sendable, Equatable {
     public let name: String
@@ -36,6 +74,8 @@ public struct SceneLayer: Sendable, Equatable {
     /// The object's colour tint, multiplied into the texture (white = no tint; also the fill colour
     /// for a solid layer).
     public let color: SceneVec3
+    /// A keyframe animation for the layer's alpha, if it has one (overrides `alpha` over time).
+    public let alphaAnimation: AlphaAnimation?
     public let parallaxDepth: SceneVec3
     public let visible: Bool
     public let blending: String?
@@ -89,6 +129,7 @@ public enum SceneGraph {
                 angles: vec(object["angles"]),
                 alpha: alphaValue(object["alpha"]),
                 color: vec(object["color"], default: SceneVec3(x: 1, y: 1, z: 1)),
+                alphaAnimation: alphaAnimation(object["alpha"]),
                 parallaxDepth: vec(object["parallaxDepth"]),
                 visible: object["visible"] as? Bool ?? true,
                 blending: material.blending,
@@ -126,6 +167,23 @@ public enum SceneGraph {
         if let number = value as? NSNumber { return number.doubleValue }
         if let object = value as? [String: Any], let base = object["value"] as? NSNumber { return base.doubleValue }
         return 1
+    }
+
+    /// The keyframe animation under an `alpha` object's `animation.c0`, if present.
+    private static func alphaAnimation(_ value: Any?) -> AlphaAnimation? {
+        guard let object = value as? [String: Any],
+              let animation = object["animation"] as? [String: Any],
+              let curve = animation["c0"] as? [[String: Any]] else { return nil }
+        let options = animation["options"] as? [String: Any] ?? [:]
+        let fps = (options["fps"] as? NSNumber)?.doubleValue ?? 30
+        let length = (options["length"] as? NSNumber)?.doubleValue ?? 0
+        let keyframes = curve.compactMap { keyframe -> AlphaKeyframe? in
+            guard let frame = (keyframe["frame"] as? NSNumber)?.doubleValue,
+                  let value = (keyframe["value"] as? NSNumber)?.doubleValue else { return nil }
+            return AlphaKeyframe(frame: frame, value: value)
+        }.sorted { $0.frame < $1.frame }
+        guard !keyframes.isEmpty, length > 0 else { return nil }
+        return AlphaAnimation(keyframes: keyframes, fps: fps, length: length)
     }
 
     // MARK: - Defensive JSON helpers
