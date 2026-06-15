@@ -24,11 +24,12 @@ public struct ShaderUniform: Sendable, Equatable {
 
 /// Pulls the `uniform g_*` declarations (and their JSON annotations) out of a WE shader.
 public enum ShaderUniforms {
-    // uniform <type> g_<name>[optional array] ; // optional {json annotation}
+    // uniform <type> <name>[optional array] ; // optional {json annotation}
+    // Names are usually g_* (engine globals) but materials also declare u_* user uniforms; capture both.
     private static let pattern = try! NSRegularExpression(
-        pattern: #"^\s*uniform\s+(\w+)\s+(g_\w+)\s*(?:\[\s*\d+\s*\])?\s*;?\s*(?://\s*(\{.*\}))?"#)
+        pattern: #"^\s*uniform\s+(\w+)\s+(\w+)\s*(?:\[\s*\d+\s*\])?\s*;?\s*(?://\s*(\{.*\}))?"#)
 
-    /// Every `uniform g_*` declaration in `source`, in declaration order.
+    /// Every `uniform` declaration in `source`, in declaration order.
     public static func parse(_ source: String) -> [ShaderUniform] {
         var uniforms: [ShaderUniform] = []
         source.enumerateLines { line, _ in

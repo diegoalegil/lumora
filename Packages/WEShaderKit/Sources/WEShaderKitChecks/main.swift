@@ -83,6 +83,11 @@ Check.that("captures a vector default", uniforms[3].defaultValue == "1 0.5 0.25"
 Check.that("includes an un-annotated built-in", uniforms[4].name == "g_ModelViewProjectionMatrix" && uniforms[4].material == nil)
 Check.that("ignores varyings and other lines", !uniforms.contains { $0.name.hasPrefix("v_") })
 Check.that("a shader with no uniforms parses to empty", ShaderUniforms.parse("void main() {}").isEmpty)
+// Materials declare u_* user uniforms alongside g_* engine globals — capture both, or the body that
+// references them fails to compile.
+let userUniforms = ShaderUniforms.parse("uniform float u_alpha;\nuniform vec3 u_tint; // {\"default\":\"1 0 0\"}")
+Check.that("captures u_* user uniforms, not only g_*",
+           userUniforms.map(\.name) == ["u_alpha", "u_tint"] && userUniforms[1].defaultValue == "1 0 0")
 
 // MARK: - WEShaderTranspiler
 
