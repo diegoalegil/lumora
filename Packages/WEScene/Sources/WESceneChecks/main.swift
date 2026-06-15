@@ -88,6 +88,7 @@ import WEScene
     let cellW = 240, cellH = 135, cols = 8
     var cells: [CGImage?] = []
     var ok = 0, blank = 0, failed = 0
+    var uniformity: [(String, Double)] = []   // (scene, stddev of luma) — low stddev ≈ flat/solid render
     for name in names {
         let pkgPath = dir + "/" + name + "/scene.pkg"
         guard fm.fileExists(atPath: pkgPath) else { continue }
@@ -98,9 +99,19 @@ import WEScene
             failed += 1; cells.append(nil); continue
         }
         var lo: UInt8 = 255, hi: UInt8 = 0
-        for i in stride(from: 0, to: frame.rgba.count, by: 257) { lo = min(lo, frame.rgba[i]); hi = max(hi, frame.rgba[i]) }
+        var sum = 0.0, sumSq = 0.0, n = 0.0
+        for i in stride(from: 0, to: frame.rgba.count, by: 257) {
+            let v = Double(frame.rgba[i]); lo = min(lo, frame.rgba[i]); hi = max(hi, frame.rgba[i])
+            sum += v; sumSq += v * v; n += 1
+        }
         if Int(hi) - Int(lo) > 8 { ok += 1 } else { blank += 1 }
+        let variance = max(0, sumSq / n - (sum / n) * (sum / n))
+        uniformity.append((name, variance.squareRoot()))
         cells.append(cgImage(frame))
+    }
+    print("flattest renders (low detail — likely solid-fill or decode issues):")
+    for (name, std) in uniformity.sorted(by: { $0.1 < $1.1 }).prefix(10) {
+        print(String(format: "  %@  std=%.1f", name, std))
     }
     let rows = max(1, (cells.count + cols - 1) / cols)
     let sheetW = cols * cellW, sheetH = rows * cellH
