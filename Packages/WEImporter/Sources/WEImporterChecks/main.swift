@@ -460,6 +460,9 @@ if let pkg = Check.noThrow("parses the scene package", { try ScenePackage.read(s
 Check.that("SceneVec3 parses a partial string", {
     let v = SceneVec3(parsing: "1.5 2"); return v.x == 1.5 && v.y == 2 && v.z == 0
 }())
+Check.that("SceneVec3 sanitizes non-finite components to 0", {
+    let v = SceneVec3(parsing: "nan inf 1e400"); return v.x == 0 && v.y == 0 && v.z == 0
+}())
 Check.throwsError("rejects an empty package (no scene.json)",
                   { try SceneGraph.load(from: ScenePackage.read(buildPKG(version: "PKGV0001", files: []))) },
                   satisfies: { if case SceneGraphError.missingSceneJSON = $0 { return true }; return false })

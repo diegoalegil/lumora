@@ -10,9 +10,13 @@ public struct SceneVec3: Sendable, Equatable {
 
     public init(x: Double, y: Double, z: Double) { self.x = x; self.y = y; self.z = z }
 
-    /// Parse `"x y z"` (missing components default to 0).
+    /// Parse `"x y z"` (missing components default to 0). Non-finite components (`nan`, `inf`, an
+    /// overflowing literal) parse to 0 — a NaN/Inf would silently make a layer's quad vanish.
     public init(parsing string: String) {
-        let parts = string.split(whereSeparator: { $0 == " " || $0 == "\t" }).map { Double($0) ?? 0 }
+        let parts = string.split(whereSeparator: { $0 == " " || $0 == "\t" }).map { part -> Double in
+            let value = Double(part) ?? 0
+            return value.isFinite ? value : 0
+        }
         x = parts.count > 0 ? parts[0] : 0
         y = parts.count > 1 ? parts[1] : 0
         z = parts.count > 2 ? parts[2] : 0
@@ -183,11 +187,15 @@ public enum SceneGraph {
         return (texture, pass["blending"] as? String, pass["shader"] as? String)
     }
 
-    /// `alpha` is either a number or an animated `{ "value": Double, … }` object — take its base value.
+    /// `alpha` is either a number or an animated `{ "value": Double, … }` object — take its base value
+    /// (non-finite → 1).
     private static func alphaValue(_ value: Any?) -> Double {
-        if let number = value as? NSNumber { return number.doubleValue }
-        if let object = value as? [String: Any], let base = object["value"] as? NSNumber { return base.doubleValue }
-        return 1
+        let raw: Double?
+        if let number = value as? NSNumber { raw = number.doubleValue }
+        else if let object = value as? [String: Any], let base = object["value"] as? NSNumber { raw = base.doubleValue }
+        else { raw = nil }
+        guard let raw, raw.isFinite else { return 1 }
+        return raw
     }
 
     /// The keyframe animation under an `alpha` object's `animation.c0`, if present.
@@ -200,10 +208,11 @@ public enum SceneGraph {
         let length = (options["length"] as? NSNumber)?.doubleValue ?? 0
         let keyframes = curve.compactMap { keyframe -> AlphaKeyframe? in
             guard let frame = (keyframe["frame"] as? NSNumber)?.doubleValue,
-                  let value = (keyframe["value"] as? NSNumber)?.doubleValue else { return nil }
+                  let value = (keyframe["value"] as? NSNumber)?.doubleValue,
+                  frame.isFinite, value.isFinite else { return nil }
             return AlphaKeyframe(frame: frame, value: value)
         }.sorted { $0.frame < $1.frame }
-        guard !keyframes.isEmpty, length > 0 else { return nil }
+        guard !keyframes.isEmpty, length > 0, length.isFinite, fps.isFinite else { return nil }
         return AlphaAnimation(keyframes: keyframes, fps: fps, length: length)
     }
 
@@ -225,13 +234,14 @@ public enum SceneGraph {
         let fps = (options["fps"] as? NSNumber)?.doubleValue ?? 30
         let length = (options["length"] as? NSNumber)?.doubleValue ?? 0
         func curve(_ key: String) -> AlphaAnimation? {
-            guard let frames = animation[key] as? [[String: Any]] else { return nil }
+            guard let frames = animation[key] as? [[String: Any]], length > 0, length.isFinite, fps.isFinite else { return nil }
             let keyframes = frames.compactMap { keyframe -> AlphaKeyframe? in
                 guard let frame = (keyframe["frame"] as? NSNumber)?.doubleValue,
-                      let value = (keyframe["value"] as? NSNumber)?.doubleValue else { return nil }
+                      let value = (keyframe["value"] as? NSNumber)?.doubleValue,
+                      frame.isFinite, value.isFinite else { return nil }
                 return AlphaKeyframe(frame: frame, value: value)
             }.sorted { $0.frame < $1.frame }
-            guard !keyframes.isEmpty, length > 0 else { return nil }
+            guard !keyframes.isEmpty else { return nil }
             return AlphaAnimation(keyframes: keyframes, fps: fps, length: length)
         }
         let x = curve("c0"), y = curve("c1"), z = curve("c2")
