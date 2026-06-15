@@ -118,7 +118,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 player = VideoFormatSupport.isNativelyPlayable(wallpaper.mainFileURL)
                     ? VideoPlayer() : VideoFallbackPlayer()
             case .web:   player = WebPlayer()
-            case .scene: player = nil   // no scene player yet
+            case .scene: player = ScenePlayer()   // WEScene Metal compositor
             }
             if let player {
                 do {

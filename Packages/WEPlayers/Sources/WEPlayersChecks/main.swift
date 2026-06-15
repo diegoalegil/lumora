@@ -35,29 +35,30 @@ Check.that("mp4 video is playable", PlayableWallpapers.isPlayable(resolved(.vide
 Check.that("webm video is playable via fallback", PlayableWallpapers.isPlayable(resolved(.video, "v", file: "a.webm")))
 Check.that("avi video is not playable", !PlayableWallpapers.isPlayable(resolved(.video, "v", file: "a.avi")))
 Check.that("web is playable", PlayableWallpapers.isPlayable(resolved(.web, "w", file: "index.html")))
-Check.that("scene is not playable (no scene player yet)", !PlayableWallpapers.isPlayable(resolved(.scene, "s", file: "scene.pkg")))
+Check.that("scene is playable via ScenePlayer", PlayableWallpapers.isPlayable(resolved(.scene, "s", file: "scene.pkg")))
 
 Check.section("PlayableWallpapers.all / active")
 let library = [
-    resolved(.scene, "s", file: "scene.pkg"),     // excluded (no scene player)
+    resolved(.video, "vavi", file: "a.avi"),      // excluded (no decoder for avi)
+    resolved(.scene, "s", file: "scene.pkg"),     // playable via ScenePlayer
     resolved(.video, "vweb", file: "a.webm"),     // playable via WebKit fallback
     resolved(.web, "web1", file: "index.html"),
     resolved(.video, "vmp4", file: "b.mp4"),
 ]
 let playable = PlayableWallpapers.all(in: library)
-Check.that("all keeps only playable, in order", playable.map(\.ref.id) == ["vweb", "web1", "vmp4"])
+Check.that("all keeps only playable, in order", playable.map(\.ref.id) == ["s", "vweb", "web1", "vmp4"])
 Check.that("active picks first playable when no selection",
-           PlayableWallpapers.active(in: library, selectedID: nil)?.ref.id == "vweb")
+           PlayableWallpapers.active(in: library, selectedID: nil)?.ref.id == "s")
 Check.that("active honours a valid selection",
            PlayableWallpapers.active(in: library, selectedID: "vmp4")?.ref.id == "vmp4")
-Check.that("active honours a webm (fallback) selection",
-           PlayableWallpapers.active(in: library, selectedID: "vweb")?.ref.id == "vweb")
-Check.that("active falls back when selection is unplayable (scene)",
-           PlayableWallpapers.active(in: library, selectedID: "s")?.ref.id == "vweb")
+Check.that("active honours a scene selection",
+           PlayableWallpapers.active(in: library, selectedID: "s")?.ref.id == "s")
+Check.that("active falls back when selection is unplayable (avi)",
+           PlayableWallpapers.active(in: library, selectedID: "vavi")?.ref.id == "s")
 Check.that("active falls back when selection is unknown",
-           PlayableWallpapers.active(in: library, selectedID: "nope")?.ref.id == "vweb")
+           PlayableWallpapers.active(in: library, selectedID: "nope")?.ref.id == "s")
 Check.that("active is nil when nothing is playable",
-           PlayableWallpapers.active(in: [resolved(.scene, "s", file: "scene.pkg")], selectedID: nil) == nil)
+           PlayableWallpapers.active(in: [resolved(.video, "x", file: "a.avi")], selectedID: nil) == nil)
 
 Check.section("VideoFallbackHTML")
 Check.that("webm mime", VideoFallbackHTML.mimeType(forExtension: "webm") == "video/webm")
