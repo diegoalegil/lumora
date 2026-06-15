@@ -115,6 +115,14 @@ if let mixed = Check.noThrow("string-encoded numeric does not abort manifest", {
 }) {
     Check.that("manifest decoded despite string min", mixed.general?.properties["s"]?.min == 0)
 }
+if let big = Check.noThrow("out-of-range string order does not crash", {
+    try decodeProperty(#"{"type":"slider","value":1,"order":"1e30"}"#)
+}) {
+    Check.that("out-of-range order dropped to nil", big.order == nil)
+}
+if let frac = Check.noThrow("fractional string order rounds", { try decodeProperty(#"{"type":"slider","value":1,"order":"2.9"}"#) }) {
+    Check.that("fractional order rounded", frac.order == 3)
+}
 
 // MARK: Animatable
 Check.section("Animatable polymorphic decoding")
@@ -159,6 +167,21 @@ let emptyFileManifest = ProjectManifest(title: "x", rawType: "scene", file: "")
 Check.throwsError("router rejects missing main file", {
     try router.resolve(ref: WallpaperRef(folderURL: folder, manifest: emptyFileManifest), manifest: emptyFileManifest)
 }, satisfies: { ($0 as? RoutingError) == .missingMainFile(type: .scene) })
+// Untrusted Workshop manifests must not reach outside their own folder (path traversal).
+let escapeManifest = ProjectManifest(title: "x", rawType: "video", file: "../../../../etc/passwd")
+Check.throwsError("router rejects path traversal", {
+    try router.resolve(ref: WallpaperRef(folderURL: folder, manifest: escapeManifest), manifest: escapeManifest)
+}, satisfies: { ($0 as? RoutingError) == .unsafeMainFile(file: "../../../../etc/passwd") })
+let siblingManifest = ProjectManifest(title: "x", rawType: "video", file: "../861750235-evil/bg.mp4")
+Check.throwsError("router rejects prefix-sibling escape", {
+    try router.resolve(ref: WallpaperRef(folderURL: folder, manifest: siblingManifest), manifest: siblingManifest)
+}, satisfies: { $0 is RoutingError })
+let nestedManifest = ProjectManifest(title: "x", rawType: "video", file: "assets/bg.mp4")
+if let nested = Check.noThrow("router allows nested in-folder asset", {
+    try router.resolve(ref: WallpaperRef(folderURL: folder, manifest: nestedManifest), manifest: nestedManifest)
+}) {
+    Check.that("nested asset resolved", nested.mainFileURL == folder.appendingPathComponent("assets/bg.mp4"))
+}
 
 // MARK: FrameUniforms
 Check.section("FrameUniforms")

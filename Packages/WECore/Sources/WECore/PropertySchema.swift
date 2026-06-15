@@ -40,7 +40,10 @@ public struct WEProperty: Sendable, Equatable, Decodable {
     private static func lenientInt(_ c: KeyedDecodingContainer<CodingKeys>, _ key: CodingKeys) -> Int? {
         if let i = try? c.decodeIfPresent(Int.self, forKey: key) { return i }
         if let s = try? c.decodeIfPresent(String.self, forKey: key) {
-            return Int(s) ?? Double(s).map { Int($0) }
+            // `Int(Double(s))` traps when the value overflows Int (e.g. "1e30"), which would abort the
+            // whole import for one stray field — the opposite of being lenient. `Int(exactly:)` returns
+            // nil instead, so an out-of-range value is simply dropped.
+            return Int(s) ?? Double(s).flatMap { Int(exactly: $0.rounded()) }
         }
         return nil
     }
