@@ -8,11 +8,6 @@ DerivedData/
 # macOS
 .DS_Store
 
-# Editor / IDE
-.vscode/
-.idea/
-*.swp
-
 # ──────────────────────────────────────────────────────────────────────────
 # LICENSE FIREWALL — material that must NEVER enter this repo
 # ──────────────────────────────────────────────────────────────────────────
