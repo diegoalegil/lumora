@@ -26,6 +26,8 @@ public struct SceneLayer: Sendable, Equatable {
     public let texturePath: String?
     public let origin: SceneVec3
     public let scale: SceneVec3
+    /// The layer's size in scene units (`"width height"`), or nil to fall back to the texture's size.
+    public let size: SceneVec3?
     public let angles: SceneVec3
     public let alpha: Double
     public let parallaxDepth: SceneVec3
@@ -70,17 +72,19 @@ public enum SceneGraph {
         var layers: [SceneLayer] = []
         for object in root["objects"] as? [[String: Any]] ?? [] {
             guard let imagePath = object["image"] as? String, !imagePath.isEmpty else { continue }
+            let material = resolveMaterial(imagePath: imagePath, in: package)
             layers.append(SceneLayer(
                 name: object["name"] as? String ?? "",
-                texturePath: resolveTexture(imagePath: imagePath, in: package),
+                texturePath: material.texture,
                 origin: vec(object["origin"]),
                 scale: vec(object["scale"], default: SceneVec3(x: 1, y: 1, z: 1)),
+                size: (object["size"] as? String).map(SceneVec3.init(parsing:)),
                 angles: vec(object["angles"]),
-                alpha: number(object["alpha"], default: 1),
+                alpha: alphaValue(object["alpha"]),
                 parallaxDepth: vec(object["parallaxDepth"]),
                 visible: object["visible"] as? Bool ?? true,
-                blending: object["blending"] as? String,
-                shader: object["shader"] as? String
+                blending: material.blending,
+                shader: material.shader
             ))
         }
         return SceneDocument(
@@ -91,20 +95,29 @@ public enum SceneGraph {
         )
     }
 
-    /// image (model json) → material json → first texture name → `materials/<name>.tex`.
-    static func resolveTexture(imagePath: String, in package: ScenePackage) -> String? {
+    /// image (model json) → material json → its first pass's texture, blending and shader. The texture
+    /// name resolves to `materials/<name>.tex`.
+    static func resolveMaterial(imagePath: String, in package: ScenePackage)
+        -> (texture: String?, blending: String?, shader: String?) {
         guard let model = json(package.entry(named: imagePath)),
               let materialPath = model["material"] as? String,
               let material = json(package.entry(named: materialPath)),
-              let passes = material["passes"] as? [[String: Any]] else { return nil }
-        for pass in passes {
-            if let textures = pass["textures"] as? [Any] {
-                for case let name as String in textures where !name.isEmpty {
-                    return "materials/\(name).tex"
-                }
+              let pass = (material["passes"] as? [[String: Any]])?.first else { return (nil, nil, nil) }
+        var texture: String?
+        if let textures = pass["textures"] as? [Any] {
+            for case let name as String in textures where !name.isEmpty {
+                texture = "materials/\(name).tex"
+                break
             }
         }
-        return nil
+        return (texture, pass["blending"] as? String, pass["shader"] as? String)
+    }
+
+    /// `alpha` is either a number or an animated `{ "value": Double, … }` object — take its base value.
+    private static func alphaValue(_ value: Any?) -> Double {
+        if let number = value as? NSNumber { return number.doubleValue }
+        if let object = value as? [String: Any], let base = object["value"] as? NSNumber { return base.doubleValue }
+        return 1
     }
 
     // MARK: - Defensive JSON helpers
@@ -115,9 +128,6 @@ public enum SceneGraph {
     }
     private static func vec(_ value: Any?, default fallback: SceneVec3 = SceneVec3(x: 0, y: 0, z: 0)) -> SceneVec3 {
         (value as? String).map(SceneVec3.init(parsing:)) ?? fallback
-    }
-    private static func number(_ value: Any?, default fallback: Double) -> Double {
-        (value as? NSNumber)?.doubleValue ?? fallback
     }
     private static func int(_ value: Any?) -> Int {
         (value as? NSNumber)?.intValue ?? 0
