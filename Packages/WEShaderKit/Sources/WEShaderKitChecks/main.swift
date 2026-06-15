@@ -14,13 +14,15 @@ if CommandLine.arguments.count > 1 {
     if isDirectory.boolValue {
         let device = MTLCreateSystemDefaultDevice()
         let files = ((try? FileManager.default.contentsOfDirectory(atPath: path)) ?? [])
-            .filter { $0.hasSuffix(".frag") }.sorted()
+            .filter { $0.hasSuffix(".frag") || $0.hasSuffix(".vert") }.sorted()
         var compiled = 0, failed = 0
         var sampleErrors: [String] = []
         for file in files {
             guard let source = try? String(contentsOfFile: path + "/" + file, encoding: .utf8),
                   let device else { continue }
-            do { _ = try device.makeLibrary(source: WEShaderTranspiler.fragmentToMSL(source), options: nil); compiled += 1 }
+            let msl = file.hasSuffix(".vert") ? WEShaderTranspiler.vertexToMSL(source)
+                                              : WEShaderTranspiler.fragmentToMSL(source)
+            do { _ = try device.makeLibrary(source: msl, options: nil); compiled += 1 }
             catch {
                 failed += 1
                 if sampleErrors.count < 5 { sampleErrors.append("\(file): \("\(error)".prefix(120))") }
@@ -98,6 +100,31 @@ if let device = MTLCreateSystemDefaultDevice() {
     }
 } else {
     print("  ⚠︎ no Metal device — skipping the MSL compile check")
+}
+
+let weVertex = """
+attribute vec3 a_Position;
+attribute vec4 a_TexCoord;
+uniform mat4 g_ModelViewProjectionMatrix;
+varying vec4 v_TexCoord;
+void main() {
+    gl_Position = g_ModelViewProjectionMatrix * vec4(a_Position, 1.0);
+    v_TexCoord = a_TexCoord;
+}
+"""
+let vertexMSL = WEShaderTranspiler.vertexToMSL(weVertex)
+Check.that("vertex: attribute becomes stage_in", vertexMSL.contains("in.a_Position"))
+Check.that("vertex: gl_Position becomes the output position", vertexMSL.contains("out.position ="))
+Check.that("vertex: varying becomes an output", vertexMSL.contains("out.v_TexCoord"))
+if let device = MTLCreateSystemDefaultDevice() {
+    do {
+        let library = try device.makeLibrary(source: vertexMSL, options: nil)
+        Check.that("transpiled vertex MSL compiles via Metal", library.makeFunction(name: "we_vertex") != nil)
+    } catch {
+        print("  ✗ transpiled vertex MSL failed to compile: \(error)")
+        print("──── MSL ────\n\(vertexMSL)\n─────────────")
+        Check.that("transpiled vertex MSL compiles via Metal", false)
+    }
 }
 
 Check.summarize()
