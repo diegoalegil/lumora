@@ -62,21 +62,38 @@ public final class ScenePlayer: WallpaperRenderer {
 
     /// Composite the scene at the view's pixel size and show it. Re-renders only when the size changes.
     private var renderedPixelSize: (Int, Int)?
+    private var loggedRenderFailure = false
     private func renderFrame(size: CGSize) {
-        guard let renderer, let document, let package, let hostView, size.width > 1, size.height > 1 else { return }
+        guard let hostView, size.width > 1, size.height > 1 else { return }
         let scale = hostView.window?.backingScaleFactor ?? 2
         let width = max(1, Int(size.width * scale)), height = max(1, Int(size.height * scale))
         if renderedPixelSize.map({ $0 == (width, height) }) == true { return }
-        guard let frame = renderer.render(document, package: package, width: width, height: height),
-              let image = frame.makeCGImage() else { return }
-        hostView.layer?.contents = image
-        renderedPixelSize = (width, height)
+
+        if let renderer, let document, let package,
+           let frame = renderer.render(document, package: package, width: width, height: height),
+           let image = frame.makeCGImage() {
+            hostView.layer?.backgroundColor = nil
+            hostView.layer?.contents = image
+            renderedPixelSize = (width, height)
+        } else {
+            // No Metal device, decode failure, or nothing visible — show the proof-of-ownership fill
+            // instead of a transparent (invisible) layer.
+            hostView.layer?.contents = nil
+            hostView.layer?.backgroundColor = SceneHostView.fallbackColor
+            if !loggedRenderFailure {
+                NSLog("Lumora: scene render failed; showing the fallback fill")
+                loggedRenderFailure = true
+            }
+        }
     }
 }
 
 /// A layer-backed view that re-renders the scene whenever it is resized to fill the desktop.
 @MainActor
 private final class SceneHostView: NSView {
+    /// The deep-indigo proof-of-ownership fill shown when a scene can't be rendered.
+    static let fallbackColor = NSColor(srgbRed: 0.16, green: 0.13, blue: 0.28, alpha: 1).cgColor
+
     private let onResize: (CGSize) -> Void
 
     init(onResize: @escaping (CGSize) -> Void) {
@@ -92,5 +109,12 @@ private final class SceneHostView: NSView {
     override func setFrameSize(_ newSize: NSSize) {
         super.setFrameSize(newSize)
         onResize(newSize)
+    }
+
+    // Re-render at the new pixel resolution when the display's backing scale changes (Retina ↔ not)
+    // even if the point size doesn't — otherwise the composite is left at a stale resolution.
+    override func viewDidChangeBackingProperties() {
+        super.viewDidChangeBackingProperties()
+        onResize(bounds.size)
     }
 }
