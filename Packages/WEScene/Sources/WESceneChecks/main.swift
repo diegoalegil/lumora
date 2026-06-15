@@ -187,6 +187,12 @@ if let package = try? ScenePackage.read(pkgData),
    let frame = renderer.render(document, package: package, width: 8, height: 8) {
     let (r, g, b) = centerRGB(frame)
     Check.that("end-to-end scene renders its texture (blue)", near(r, 0) && near(g, 0) && near(b, 255))
+    let prepared = renderer.prepare(document, package: package)
+    Check.that("prepare yields one layer", prepared.layerCount == 1)
+    if let still = renderer.render(prepared, width: 8, height: 8, time: 0) {
+        let (pr, pg, pb) = centerRGB(still)
+        Check.that("prepared still render (t=0) matches the composite (blue)", near(pr, 0) && near(pg, 0) && near(pb, 255))
+    }
 } else {
     Check.that("end-to-end scene produced a frame", false)
 }

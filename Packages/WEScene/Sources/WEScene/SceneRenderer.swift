@@ -21,6 +21,33 @@ private struct QuadUniform {
     var uvScale: SIMD2<Float>
 }
 
+/// One layer of a `PreparedScene`: an uploaded texture plus its resolution-independent placement.
+private struct PreparedLayer {
+    let texture: MTLTexture
+    let center: SIMD2<Float>
+    let halfExtent: SIMD2<Float>
+    let uvScale: SIMD2<Float>
+    let alpha: Float
+    let tint: SIMD3<Float>
+    let isAdditive: Bool
+    let parallaxDepth: SIMD2<Float>
+}
+
+/// A scene whose layer textures are decoded and uploaded once, ready to re-render every frame (so an
+/// animation loop never touches the disk again).
+public final class PreparedScene {
+    fileprivate let layers: [PreparedLayer]
+    fileprivate let clearColor: SceneVec3
+
+    fileprivate init(layers: [PreparedLayer], clearColor: SceneVec3) {
+        self.layers = layers
+        self.clearColor = clearColor
+    }
+
+    /// How many layers will be drawn (0 means nothing resolved — the caller should show a fallback).
+    public var layerCount: Int { layers.count }
+}
+
 /// Renders a `RenderableScene` to an offscreen frame: clear colour plus every visible image layer
 /// composited in order. Parallax, rotation and effects build on top of this.
 public final class SceneRenderer {
@@ -107,62 +134,84 @@ public final class SceneRenderer {
         return try? device.makeRenderPipelineState(descriptor: descriptor)
     }
 
-    /// Render every visible image layer of `document` in order, positioned in its orthographic space.
-    public func render(_ document: RenderableScene, package: ScenePackage, width: Int, height: Int) -> RenderedFrame? {
-        let orthoW = Double(document.orthoWidth > 0 ? document.orthoWidth : width)
-        let orthoH = Double(document.orthoHeight > 0 ? document.orthoHeight : height)
-
-        return withRenderPass(clearColor: document.clearColor, width: width, height: height) { encoder in
-            // Solid fills are drawn only while still behind every textured layer (a background) — a
-            // solid layer above the artwork is usually an animated flash, which a static frame would
-            // wrongly show fully opaque.
-            var drewTexturedLayer = false
-            for layer in document.layers where layer.visible {
-                var texture: MTLTexture?
-                var textureW = 0.0, textureH = 0.0
-                var uvScale = SIMD2<Float>(1, 1)
-                var isSolidFill = false
-                if let path = layer.texturePath,
-                   let entry = package.entry(named: path),
-                   let decoded = try? SceneTexture.decodeFirstMip(entry.data),
-                   let made = MetalTexture.make(decoded, device: device) {
-                    texture = made
-                    textureW = Double(decoded.imageWidth)
-                    textureH = Double(decoded.imageHeight)
-                    if decoded.width > 0, decoded.height > 0 {
-                        uvScale = SIMD2(Float(min(1.0, Double(decoded.imageWidth) / Double(decoded.width))),
-                                        Float(min(1.0, Double(decoded.imageHeight) / Double(decoded.height))))
-                    }
-                } else if layer.isSolidLayer, !drewTexturedLayer {
-                    texture = whiteTexture            // a background solid fill: white texel, tinted
-                    textureW = orthoW
-                    textureH = orthoH
-                    isSolidFill = true
+    /// Decode and upload every visible layer's texture once into a `PreparedScene`, so the render loop
+    /// can redraw every frame without touching the disk. Placement is resolution-independent (NDC).
+    public func prepare(_ document: RenderableScene, package: ScenePackage) -> PreparedScene {
+        let orthoW = Double(document.orthoWidth > 0 ? document.orthoWidth : 1920)
+        let orthoH = Double(document.orthoHeight > 0 ? document.orthoHeight : 1080)
+        var prepared: [PreparedLayer] = []
+        // Solid fills are kept only while still behind every textured layer (a background) — a solid
+        // layer above the artwork is usually an animated flash that a still frame would over-paint.
+        var drewTexturedLayer = false
+        for layer in document.layers where layer.visible {
+            var texture: MTLTexture?
+            var textureW = 0.0, textureH = 0.0
+            var uvScale = SIMD2<Float>(1, 1)
+            var isSolidFill = false
+            if let path = layer.texturePath,
+               let entry = package.entry(named: path),
+               let decoded = try? SceneTexture.decodeFirstMip(entry.data),
+               let made = MetalTexture.make(decoded, device: device) {
+                texture = made
+                textureW = Double(decoded.imageWidth)
+                textureH = Double(decoded.imageHeight)
+                if decoded.width > 0, decoded.height > 0 {
+                    uvScale = SIMD2(Float(min(1.0, Double(decoded.imageWidth) / Double(decoded.width))),
+                                    Float(min(1.0, Double(decoded.imageHeight) / Double(decoded.height))))
                 }
-                guard let texture else { continue }   // unresolved non-solid, or a foreground fill: skip
-                if !isSolidFill { drewTexturedLayer = true }
+            } else if layer.isSolidLayer, !drewTexturedLayer {
+                texture = whiteTexture            // a background solid fill: white texel, tinted
+                textureW = orthoW
+                textureH = orthoH
+                isSolidFill = true
+            }
+            guard let texture else { continue }   // unresolved non-solid, or a foreground fill: skip
+            if !isSolidFill { drewTexturedLayer = true }
 
-                let sizeW = (layer.size?.x ?? 0) > 0 ? layer.size!.x : (textureW > 0 ? textureW : orthoW)
-                let sizeH = (layer.size?.y ?? 0) > 0 ? layer.size!.y : (textureH > 0 ? textureH : orthoH)
-                let halfW = sizeW * layer.scale.x / 2
-                let halfH = sizeH * layer.scale.y / 2
+            let sizeW = (layer.size?.x ?? 0) > 0 ? layer.size!.x : (textureW > 0 ? textureW : orthoW)
+            let sizeH = (layer.size?.y ?? 0) > 0 ? layer.size!.y : (textureH > 0 ? textureH : orthoH)
+            prepared.append(PreparedLayer(
+                texture: texture,
+                center: SIMD2(Float(layer.origin.x / orthoW * 2 - 1), Float(layer.origin.y / orthoH * 2 - 1)),
+                halfExtent: SIMD2(Float(sizeW * layer.scale.x / orthoW), Float(sizeH * layer.scale.y / orthoH)),
+                uvScale: uvScale,
+                alpha: Float(layer.alpha),
+                tint: SIMD3(Float(layer.color.x), Float(layer.color.y), Float(layer.color.z)),
+                isAdditive: layer.blending == "additive" || layer.blending == "add",
+                parallaxDepth: SIMD2(Float(layer.parallaxDepth.x), Float(layer.parallaxDepth.y))))
+        }
+        return PreparedScene(layers: prepared, clearColor: document.clearColor)
+    }
+
+    /// Render a prepared scene at `time` seconds, applying a gentle automatic camera parallax so layers
+    /// configured with depth drift slightly — the wallpaper breathes instead of sitting perfectly still.
+    /// `time = 0` is the still composite (no sway).
+    public func render(_ scene: PreparedScene, width: Int, height: Int, time: Double = 0) -> RenderedFrame? {
+        let swayX = Float(0.012 * sin(time * 0.6))
+        let swayY = Float(0.009 * sin(time * 0.45))
+        return withRenderPass(clearColor: scene.clearColor, width: width, height: height) { encoder in
+            for layer in scene.layers {
                 var quad = QuadUniform(
-                    center: SIMD2(Float(layer.origin.x / orthoW * 2 - 1), Float(layer.origin.y / orthoH * 2 - 1)),
-                    halfExtent: SIMD2(Float(halfW / orthoW * 2), Float(halfH / orthoH * 2)),
-                    uvScale: uvScale)
-                var alpha = Float(layer.alpha)
-                var tint = SIMD3<Float>(Float(layer.color.x), Float(layer.color.y), Float(layer.color.z))
-                let isAdditive = layer.blending == "additive" || layer.blending == "add"
-
-                encoder.setRenderPipelineState(isAdditive ? pipelineAdditive : pipelineOver)
+                    center: SIMD2(layer.center.x + swayX * layer.parallaxDepth.x,
+                                  layer.center.y + swayY * layer.parallaxDepth.y),
+                    halfExtent: layer.halfExtent,
+                    uvScale: layer.uvScale)
+                var alpha = layer.alpha
+                var tint = layer.tint
+                encoder.setRenderPipelineState(layer.isAdditive ? pipelineAdditive : pipelineOver)
                 encoder.setVertexBytes(&quad, length: MemoryLayout<QuadUniform>.stride, index: 0)
-                encoder.setFragmentTexture(texture, index: 0)
+                encoder.setFragmentTexture(layer.texture, index: 0)
                 encoder.setFragmentSamplerState(sampler, index: 0)
                 encoder.setFragmentBytes(&alpha, length: MemoryLayout<Float>.size, index: 0)
                 encoder.setFragmentBytes(&tint, length: MemoryLayout<SIMD3<Float>>.stride, index: 1)
                 encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
             }
         }
+    }
+
+    /// Convenience: prepare and render a scene as a single still frame.
+    public func render(_ document: RenderableScene, package: ScenePackage, width: Int, height: Int) -> RenderedFrame? {
+        render(prepare(document, package: package), width: width, height: height)
     }
 
     /// Render a single decoded texture full-screen over `clearColor` (used for previews and tests).
