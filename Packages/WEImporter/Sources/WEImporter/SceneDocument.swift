@@ -37,7 +37,7 @@ public struct SceneLayer: Sendable, Equatable {
 }
 
 /// A parsed scene: its orthographic size, clear colour and ordered image layers (painter's order).
-public struct SceneDocument: Sendable, Equatable {
+public struct RenderableScene: Sendable, Equatable {
     public let orthoWidth: Int
     public let orthoHeight: Int
     public let clearColor: SceneVec3
@@ -57,10 +57,10 @@ public enum SceneGraphError: Error, Equatable, Sendable, CustomStringConvertible
     }
 }
 
-/// Builds a `SceneDocument` from a `ScenePackage` by reading scene.json and following each image
+/// Builds a `RenderableScene` from a `ScenePackage` by reading scene.json and following each image
 /// object through its model and material to the texture it draws.
 public enum SceneGraph {
-    public static func load(from package: ScenePackage) throws -> SceneDocument {
+    public static func load(from package: ScenePackage) throws -> RenderableScene {
         guard let sceneEntry = package.sceneJSON else { throw SceneGraphError.missingSceneJSON }
         guard let root = (try? JSONSerialization.jsonObject(with: sceneEntry.data)) as? [String: Any]
         else { throw SceneGraphError.invalidSceneJSON }
@@ -87,7 +87,7 @@ public enum SceneGraph {
                 shader: material.shader
             ))
         }
-        return SceneDocument(
+        return RenderableScene(
             orthoWidth: int(ortho["width"]),
             orthoHeight: int(ortho["height"]),
             clearColor: clearColor,

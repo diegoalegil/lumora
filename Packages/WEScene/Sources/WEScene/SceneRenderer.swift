@@ -20,7 +20,7 @@ private struct QuadUniform {
     var halfExtent: SIMD2<Float>
 }
 
-/// Renders a `SceneDocument` to an offscreen frame: clear colour plus every visible image layer
+/// Renders a `RenderableScene` to an offscreen frame: clear colour plus every visible image layer
 /// composited in order. Parallax, rotation and effects build on top of this.
 public final class SceneRenderer {
     public let device: MTLDevice
@@ -95,7 +95,7 @@ public final class SceneRenderer {
     }
 
     /// Render every visible image layer of `document` in order, positioned in its orthographic space.
-    public func render(_ document: SceneDocument, package: ScenePackage, width: Int, height: Int) -> RenderedFrame? {
+    public func render(_ document: RenderableScene, package: ScenePackage, width: Int, height: Int) -> RenderedFrame? {
         let orthoW = Double(document.orthoWidth > 0 ? document.orthoWidth : width)
         let orthoH = Double(document.orthoHeight > 0 ? document.orthoHeight : height)
 
