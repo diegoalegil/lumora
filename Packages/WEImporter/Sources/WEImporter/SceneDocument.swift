@@ -87,14 +87,16 @@ public struct LayerEffect: Sendable, Equatable {
     public let vertexShaderPath: String     // e.g. "shaders/effects/pulse.vert"
     public let constants: [String: String]  // property key → value (number or space-separated vector)
     public let combos: [String: Int]        // combo selections (e.g. BLENDMODE) — override shader defaults
+    public let textures: [String?]          // material's sampler bindings by index (g_Texture0 = nil/framebuffer)
 
     public init(name: String, fragmentShaderPath: String, vertexShaderPath: String,
-                constants: [String: String], combos: [String: Int] = [:]) {
+                constants: [String: String], combos: [String: Int] = [:], textures: [String?] = []) {
         self.name = name
         self.fragmentShaderPath = fragmentShaderPath
         self.vertexShaderPath = vertexShaderPath
         self.constants = constants
         self.combos = combos
+        self.textures = textures
     }
 }
 
@@ -236,12 +238,17 @@ public enum SceneGraph {
                     if let intValue = (value as? NSNumber)?.intValue { combos[key] = intValue }
                 }
             }
+            // The material binds each sampler (g_Texture0…) to a texture name; g_Texture0 is the layer
+            // framebuffer (usually null). Capture them so the renderer can supply the real noise/normal/
+            // mask textures instead of a placeholder.
+            let materialPass = (material["passes"] as? [[String: Any]])?.first
+            let textures = (materialPass?["textures"] as? [Any])?.map { $0 as? String }
             let name = URL(fileURLWithPath: file).deletingLastPathComponent().lastPathComponent
             result.append(LayerEffect(
                 name: name.isEmpty ? file : name,
                 fragmentShaderPath: "shaders/\(shader).frag",
                 vertexShaderPath: "shaders/\(shader).vert",
-                constants: constants, combos: combos))
+                constants: constants, combos: combos, textures: textures ?? []))
         }
         return result
     }

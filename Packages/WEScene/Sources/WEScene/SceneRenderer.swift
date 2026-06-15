@@ -34,7 +34,7 @@ private struct PreparedEffect {
     let pipeline: MTLRenderPipelineState
     let scalars: [ShaderUniform]      // non-sampler uniforms, in declaration order, for packing
     let constants: [String: String]   // the effect's constant values, keyed by material annotation
-    let auxCount: Int                 // extra samplers after g_Texture0 (noise/mask), bound to white for now
+    let auxTextures: [MTLTexture]      // samplers after g_Texture0 (noise/normal/mask), in binding order
 }
 
 /// One layer of a `PreparedScene`: an uploaded texture plus its resolution-independent placement.
@@ -86,7 +86,10 @@ public final class SceneRenderer {
     private let pipelineAdditive: MTLRenderPipelineState
     private let sampler: MTLSamplerState
     private let whiteTexture: MTLTexture
+    private let blackTexture: MTLTexture           // util/black aux default
+    private let noiseTexture: MTLTexture           // util/noise aux default (procedural)
     private let effectRenderer: EffectRenderer?   // compiles + runs per-layer post-process effects
+    private var auxCache: [String: MTLTexture] = [:]   // resolved packaged aux textures, by name
 
     private static let shaderSource = """
     #include <metal_stdlib>
@@ -146,7 +149,54 @@ public final class SceneRenderer {
         white.replace(region: MTLRegionMake2D(0, 0, 1, 1), mipmapLevel: 0, withBytes: &whitePixel, bytesPerRow: 4)
         self.whiteTexture = white
 
+        guard let black = Self.makeDataTexture([0, 0, 0, 255], width: 1, height: 1, device: device),
+              let noise = Self.makeDataTexture(Self.noisePixels(side: 256), width: 256, height: 256, device: device) else { return nil }
+        self.blackTexture = black
+        self.noiseTexture = noise
+
         self.effectRenderer = EffectRenderer(device: device)   // nil only if the device can't build it
+    }
+
+    /// Build a shader-readable RGBA8 texture from tightly-packed bytes.
+    private static func makeDataTexture(_ bytes: [UInt8], width: Int, height: Int, device: MTLDevice) -> MTLTexture? {
+        let descriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .rgba8Unorm, width: width, height: height, mipmapped: false)
+        descriptor.usage = .shaderRead
+        guard let texture = device.makeTexture(descriptor: descriptor) else { return nil }
+        var pixels = bytes
+        texture.replace(region: MTLRegionMake2D(0, 0, width, height), mipmapLevel: 0, withBytes: &pixels, bytesPerRow: width * 4)
+        return texture
+    }
+
+    /// A deterministic grayscale value-noise tile for WE's `util/noise` aux default (grain/shimmer).
+    private static func noisePixels(side: Int) -> [UInt8] {
+        var pixels = [UInt8](repeating: 255, count: side * side * 4)
+        var state: UInt32 = 0x9E3779B9
+        for i in 0 ..< side * side {
+            state ^= state << 13; state ^= state >> 17; state ^= state << 5   // xorshift32
+            let v = UInt8(state & 0xFF)
+            pixels[i * 4] = v; pixels[i * 4 + 1] = v; pixels[i * 4 + 2] = v
+        }
+        return pixels
+    }
+
+    /// Resolve a sampler's texture name to a texture: WE built-ins procedurally, packaged textures from
+    /// the scene, anything unknown to white (so a missing aux never blanks the pass).
+    private func resolveAuxTexture(_ name: String?, package: ScenePackage) -> MTLTexture {
+        guard let name, !name.isEmpty else { return whiteTexture }
+        switch name {
+        case "util/white": return whiteTexture
+        case "util/black": return blackTexture
+        case let n where n.hasPrefix("util/noise") || n.hasSuffix("noise"): return noiseTexture
+        default:
+            if let cached = auxCache[name] { return cached }
+            if let entry = package.entry(named: "materials/\(name).tex"),
+               let decoded = try? SceneTexture.decodeFirstMip(entry.data),
+               let texture = MetalTexture.make(decoded, device: device) {
+                auxCache[name] = texture
+                return texture
+            }
+            return whiteTexture
+        }
     }
 
     private static func makePipeline(device: MTLDevice, vertex: MTLFunction, fragment: MTLFunction,
@@ -240,11 +290,20 @@ public final class SceneRenderer {
             let resolved = ShaderPreprocessor.resolve(source,
                 combos: ShaderPreprocessor.comboDefaults(source).merging(effect.combos) { _, b in b })
             let uniforms = ShaderUniforms.parse(resolved)
+            // Resolve each aux sampler (everything after g_Texture0) to a real texture. The source index
+            // comes from the name (g_TextureN) so combo-excluded samplers don't shift the binding; the
+            // name is taken from the material's binding, else the sampler's annotated default.
+            let samplers = uniforms.filter { $0.type.hasPrefix("sampler") }
+            let auxTextures: [MTLTexture] = samplers.dropFirst().map { sampler in
+                let index = Int(sampler.name.dropFirst("g_Texture".count)) ?? -1
+                let bound = (index >= 0 && index < effect.textures.count) ? effect.textures[index] : nil
+                return resolveAuxTexture(bound ?? sampler.defaultValue, package: package)
+            }
             compiled.append(PreparedEffect(
                 pipeline: pipeline,
                 scalars: uniforms.filter { !$0.type.hasPrefix("sampler") },
                 constants: effect.constants,
-                auxCount: max(0, uniforms.filter { $0.type.hasPrefix("sampler") }.count - 1)))
+                auxTextures: auxTextures))
         }
         guard !compiled.isEmpty else { return [] }
 
@@ -261,7 +320,7 @@ public final class SceneRenderer {
         var probeDetail = detail(probeRGBA)
         var kept: [PreparedEffect] = []
         for effect in compiled {
-            let aux = Array(repeating: whiteTexture, count: effect.auxCount)
+            let aux = effect.auxTextures
             var stableOutput: MTLTexture?
             var stableRGBA: Data?
             var stable = true
@@ -325,7 +384,7 @@ public final class SceneRenderer {
                 for effect in layer.effects {
                     let uniforms = UniformPacker.pack(effect.scalars, values: effect.constants,
                                                       overrides: ["g_Time": [Float(time)]])
-                    let aux = Array(repeating: whiteTexture, count: effect.auxCount)
+                    let aux = effect.auxTextures
                     guard let output = effectRenderer.apply(pipeline: effect.pipeline, to: texture, auxTextures: aux,
                                                             fragmentUniforms: uniforms.isEmpty ? nil : uniforms,
                                                             width: width, height: height) else { break }
