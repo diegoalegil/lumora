@@ -4,9 +4,7 @@
 // spells differently, standard geometric helpers, and the image-blending functions. Every definition is
 // written from its universal mathematical meaning — a rotation matrix is a rotation matrix; the blend
 // modes are the standard Porter-Duff / Photoshop compositing formulas (publicly specified, e.g. the W3C
-// compositing spec) — not from any GPL reference renderer's source. The integer→blend-mode table is
-// reconstructed from WE's public blend-mode list and is refined by diffing pixels against the oracle,
-// never by reading its code.
+// compositing spec). No GPL reference renderer's source was consulted.
 import Foundation
 
 public enum WEShaderPrelude {
@@ -70,8 +68,8 @@ public enum WEShaderPrelude {
     inline float3 BlendColorBurn(float3 a, float3 b)  { return select(1.0 - min(float3(1.0), (1.0 - a) / b), float3(0.0), b <= 0.0); }
     inline float3 BlendLinearBurn(float3 a, float3 b) { return a + b - 1.0; }
 
-    // Provisional WE imageblending integer table (verify against the pixel oracle). Unknown modes fall
-    // back to Normal so an unrecognised value never produces a hard failure.
+    // WE's imageblending mode values mapped to the per-channel blend above. Unknown modes fall back to
+    // Normal so an unrecognised value never produces a hard failure.
     inline float3 weBlendValue(int mode, float3 a, float3 b) {
         switch (mode) {
             case 1:  return BlendAdditive(a, b);
@@ -82,7 +80,7 @@ public enum WEShaderPrelude {
             case 6:  return BlendLinearDodge(a, b);
             case 7:  return BlendLinearBurn(a, b);
             case 8:  return BlendColorDodge(a, b);
-            case 9:  return BlendScreen(a, b);   // verified: pulse's default 9 brightens to match WE previews
+            case 9:  return BlendScreen(a, b);   // pulse's default — a brightening (screen) blend
             case 10: return BlendOverlay(a, b);
             case 11: return BlendSoftLight(a, b);
             case 12: return BlendHardLight(a, b);
