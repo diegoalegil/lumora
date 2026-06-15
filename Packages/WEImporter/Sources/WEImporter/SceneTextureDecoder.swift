@@ -8,6 +8,7 @@ import Compression
 import ImageIO
 import CoreGraphics
 import Accelerate
+import AVFoundation
 
 /// A decoded texture mip ready to hand to the GPU: raw pixel bytes (RGBA8888 / R8 / RG88) or
 /// block-compressed bytes (DXT1/3/5) in `format`. `width`/`height` are the stored (power-of-two)
@@ -66,13 +67,19 @@ public extension SceneTexture {
                                   pixels: image.rgba)
         }
 
+        // A video-backed texture stores an MP4; show its first frame so the scene renders its artwork.
+        if Self.looksLikeVideo(payload), let frame = Self.decodeVideoFirstFrame(payload) {
+            return DecodedTexture(format: .rgba8888, width: frame.width, height: frame.height,
+                                  imageWidth: frame.width, imageHeight: frame.height, pixels: frame.rgba)
+        }
+
         let pixels: Data
         if isCompressed == 1 {
             pixels = try Self.lz4Decompress(payload, expectedSize: decompressedSize)
         } else {
-            // A raw payload bigger than one full RGBA8 frame is a multi-frame / animated texture we don't
-            // decode yet (flagged in the header). Fail cleanly so the layer is skipped instead of
-            // uploading the bytes as a single garbled, noisy frame.
+            // A raw payload bigger than one full RGBA8 frame is a multi-frame texture we can't read as a
+            // single image (and isn't an MP4 we handled above). Fail cleanly so the layer is skipped
+            // instead of uploading the bytes as a garbled, noisy frame.
             guard payloadSize <= mipWidth * mipHeight * 4 else { throw SceneTextureError.decodeFailed }
             pixels = payload
         }
@@ -115,6 +122,33 @@ public extension SceneTexture {
     internal static func decodeImageFile(_ data: Data) -> (width: Int, height: Int, rgba: Data)? {
         guard let source = CGImageSourceCreateWithData(data as CFData, nil),
               let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else { return nil }
+        return pixels(from: image)
+    }
+
+    /// True if the bytes are an ISO-BMFF / MP4 container (a video-backed texture): the second box is the
+    /// `ftyp` brand at offset 4.
+    internal static func looksLikeVideo(_ data: Data) -> Bool {
+        let head = [UInt8](data.prefix(8))
+        return head.count >= 8 && head[4] == 0x66 && head[5] == 0x74 && head[6] == 0x79 && head[7] == 0x70
+    }
+
+    /// Decode the first frame of an embedded MP4 (a video-backed texture) to RGBA8 via AVFoundation, so a
+    /// scene built on a video texture renders its real artwork (still, for now) instead of nothing.
+    internal static func decodeVideoFirstFrame(_ data: Data) -> (width: Int, height: Int, rgba: Data)? {
+        let tempURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString).appendingPathExtension("mp4")
+        guard (try? data.write(to: tempURL)) != nil else { return nil }
+        defer { try? FileManager.default.removeItem(at: tempURL) }
+        let generator = AVAssetImageGenerator(asset: AVURLAsset(url: tempURL))
+        generator.appliesPreferredTrackTransform = true
+        generator.requestedTimeToleranceBefore = .zero
+        generator.requestedTimeToleranceAfter = .positiveInfinity
+        guard let image = try? generator.copyCGImage(at: .zero, actualTime: nil) else { return nil }
+        return pixels(from: image)
+    }
+
+    /// Draw a CGImage into tightly-packed, straight-alpha RGBA8 bytes (capped at Metal's max size).
+    private static func pixels(from image: CGImage) -> (width: Int, height: Int, rgba: Data)? {
         let width = image.width, height = image.height
         // Dimensions come from an attacker-controlled embedded image; cap them at Metal's max texture
         // size so a crafted header can't request a multi-gigabyte allocation.
