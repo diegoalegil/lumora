@@ -65,7 +65,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // can pick a renderer. Disk-only; nothing is downloaded.
         let library = Self.scanLibrary()
         NSLog("Lumora: \(LibrarySummary.line(for: library))")
-        playableWallpapers = PlayableWallpapers.all(in: library.wallpapers)
+        playableWallpapers = WallpaperLibrary.presentable(PlayableWallpapers.all(in: library.wallpapers))
         selectedWallpaperID = UserDefaults.standard.string(forKey: Self.selectedWallpaperKey)
         activeWallpaper = PlayableWallpapers.active(in: playableWallpapers, selectedID: selectedWallpaperID)
         rebuildWallpaperMenu()
@@ -198,8 +198,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
 
         for wallpaper in playableWallpapers {
-            let name = wallpaper.manifest.title ?? ""
-            let item = NSMenuItem(title: name.isEmpty ? wallpaper.ref.id : name,
+            let item = NSMenuItem(title: WallpaperLibrary.displayTitle(wallpaper),
                                   action: #selector(selectWallpaper(_:)), keyEquivalent: "")
             item.target = self
             item.representedObject = wallpaper.ref.id

@@ -196,6 +196,32 @@ let oneVideo = result.wallpapers.filter { $0.type == .video }.prefix(1)
 Check.that("single wallpaper is singular",
            LibrarySummary.line(for: LibraryScanResult(wallpapers: Array(oneVideo), rejected: [])) == "1 wallpaper (1 video)")
 
+// MARK: - WallpaperLibrary (presentation)
+
+func mk(id: String, title: String?) -> ResolvedWallpaper {
+    let folder = URL(fileURLWithPath: "/tmp/\(id)", isDirectory: true)
+    let manifest = ProjectManifest(title: title, rawType: "video", file: "a.mp4")
+    return ResolvedWallpaper(
+        ref: WallpaperRef(id: id, folderURL: folder),
+        type: .video,
+        manifest: manifest,
+        mainFileURL: folder.appendingPathComponent("a.mp4")
+    )
+}
+
+Check.section("WallpaperLibrary")
+Check.that("displayTitle uses the manifest title", WallpaperLibrary.displayTitle(mk(id: "i", title: "Hello")) == "Hello")
+Check.that("displayTitle falls back to id when nil", WallpaperLibrary.displayTitle(mk(id: "i2", title: nil)) == "i2")
+Check.that("displayTitle falls back to id when empty", WallpaperLibrary.displayTitle(mk(id: "i3", title: "")) == "i3")
+Check.that("presentable sorts by title, case-insensitive",
+           WallpaperLibrary.presentable([mk(id: "1", title: "Banana"), mk(id: "2", title: "apple")]).map(\.ref.id) == ["2", "1"])
+Check.that("presentable de-duplicates by id",
+           WallpaperLibrary.presentable([mk(id: "x", title: "A"), mk(id: "x", title: "A")]).count == 1)
+Check.that("presentable breaks title ties by id",
+           WallpaperLibrary.presentable([mk(id: "b", title: "Same"), mk(id: "a", title: "Same")]).map(\.ref.id) == ["a", "b"])
+Check.that("presentable sorts a missing title by its id fallback",
+           WallpaperLibrary.presentable([mk(id: "zzz", title: nil), mk(id: "aaa", title: "Mango")]).map(\.ref.id) == ["aaa", "zzz"])
+
 // MARK: - Done
 
 try? fm.removeItem(at: tmpRoot)
