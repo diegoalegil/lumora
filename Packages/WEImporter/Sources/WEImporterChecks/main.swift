@@ -427,6 +427,43 @@ Check.throwsError("rejects an LZ4 mip with a corrupt payload", {
                                                     isCompressed: 1, decompressedSize: 4096, payload: Data(repeating: 0, count: 8)))
 })
 
+// MARK: - SceneGraph (scene.json -> renderable layers)
+
+Check.section("SceneGraph")
+let sceneJSON = Data(#"{"general":{"orthogonalprojection":{"width":1920,"height":1080},"clearcolor":"0.7 0.7 0.7"},"objects":[{"name":"base","image":"models/m.json","origin":"960.0 540.0 0.0","scale":"1 1 1","alpha":1,"visible":true,"parallaxDepth":"0.4 0.5 0"},{"name":"sound","sound":["s.mp3"]}]}"#.utf8)
+let modelJSON = Data(#"{"material":"materials/mat.json"}"#.utf8)
+let materialJSON = Data(#"{"passes":[{"shader":"genericimage2","textures":["mytex"]}]}"#.utf8)
+let scenePkgData = buildPKG(version: "PKGV0009", files: [
+    ("scene.json", sceneJSON),
+    ("models/m.json", modelJSON),
+    ("materials/mat.json", materialJSON),
+    ("materials/mytex.tex", Data("x".utf8)),
+])
+if let pkg = Check.noThrow("parses the scene package", { try ScenePackage.read(scenePkgData) }),
+   let doc = Check.noThrow("loads the scene graph", { try SceneGraph.load(from: pkg) }) {
+    Check.that("orthographic size", doc.orthoWidth == 1920 && doc.orthoHeight == 1080)
+    Check.that("clear colour parsed", doc.clearColor.x == 0.7 && doc.clearColor.y == 0.7)
+    Check.that("only image objects become layers", doc.layers.count == 1)
+    if let layer = doc.layers.first {
+        Check.that("layer name", layer.name == "base")
+        Check.that("resolves image->model->material->texture", layer.texturePath == "materials/mytex.tex")
+        Check.that("origin parsed", layer.origin.x == 960 && layer.origin.y == 540)
+        Check.that("alpha parsed", layer.alpha == 1)
+        Check.that("visible parsed", layer.visible == true)
+        Check.that("parallax depth parsed", layer.parallaxDepth.x == 0.4 && layer.parallaxDepth.y == 0.5)
+    }
+}
+Check.that("SceneVec3 parses a partial string", {
+    let v = SceneVec3(parsing: "1.5 2"); return v.x == 1.5 && v.y == 2 && v.z == 0
+}())
+Check.throwsError("rejects an empty package (no scene.json)",
+                  { try SceneGraph.load(from: ScenePackage.read(buildPKG(version: "PKGV0001", files: []))) },
+                  satisfies: { if case SceneGraphError.missingSceneJSON = $0 { return true }; return false })
+Check.throwsError("rejects invalid scene.json",
+                  { try SceneGraph.load(from: ScenePackage.read(buildPKG(version: "PKGV0009",
+                                       files: [("scene.json", Data("not json".utf8))]))) },
+                  satisfies: { if case SceneGraphError.invalidSceneJSON = $0 { return true }; return false })
+
 // MARK: - Done
 
 try? fm.removeItem(at: tmpRoot)
