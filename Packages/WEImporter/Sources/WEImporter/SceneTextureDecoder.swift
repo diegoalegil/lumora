@@ -55,6 +55,11 @@ public extension SceneTexture {
 
         let mipWidth = try u32()
         let mipHeight = try u32()
+        // Bound the mip dimensions (Metal's max) before any `width*height*4` arithmetic, so a crafted
+        // header can't overflow Int and trap.
+        guard mipWidth > 0, mipHeight > 0, mipWidth <= 16384, mipHeight <= 16384 else {
+            throw SceneTextureError.decodeFailed
+        }
         let isCompressed = try u32()
         let decompressedSize = try u32()
         let payloadSize = try u32()

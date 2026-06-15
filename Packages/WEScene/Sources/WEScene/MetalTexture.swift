@@ -42,7 +42,9 @@ enum MetalTexture {
     /// represent it (e.g. BC formats on an unsupported GPU) or allocation fails.
     static func make(_ decoded: DecodedTexture, device: MTLDevice) -> MTLTexture? {
         if decoded.format.isBlockCompressed, !device.supportsBCTextureCompression { return nil }
-        guard decoded.width > 0, decoded.height > 0 else { return nil }
+        // Bound the dimensions (Metal's max) before the bytes-per-row × rows arithmetic, so a crafted
+        // texture can't overflow Int and trap.
+        guard decoded.width > 0, decoded.height > 0, decoded.width <= 16384, decoded.height <= 16384 else { return nil }
 
         let bytesPerRow = decoded.format.bytesPerRow(width: decoded.width)
         // Rows of pixels, or rows of 4×4 blocks for the BCn formats.
