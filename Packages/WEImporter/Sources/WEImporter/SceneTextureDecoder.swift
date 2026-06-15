@@ -70,6 +70,10 @@ public extension SceneTexture {
         if isCompressed == 1 {
             pixels = try Self.lz4Decompress(payload, expectedSize: decompressedSize)
         } else {
+            // A raw payload bigger than one full RGBA8 frame is a multi-frame / animated texture we don't
+            // decode yet (flagged in the header). Fail cleanly so the layer is skipped instead of
+            // uploading the bytes as a single garbled, noisy frame.
+            guard payloadSize <= mipWidth * mipHeight * 4 else { throw SceneTextureError.decodeFailed }
             pixels = payload
         }
         return DecodedTexture(format: header.format ?? .rgba8888, width: mipWidth, height: mipHeight,
