@@ -147,6 +147,15 @@ if let device = MTLCreateSystemDefaultDevice() {
     Check.that("seeds combo defaults and injects BLENDMODE as a #define", blendMSL.contains("#define BLENDMODE 2"))
     Check.that("blending prelude compiles an ApplyBlending shader",
                (try? device.makeLibrary(source: blendMSL, options: nil)) != nil)
+
+    // GLSL mod (floor-based) and two-argument atan (atan2) must compile via the prelude, not Metal's
+    // fmod/one-arg atan.
+    let mathShader = """
+    varying vec4 v_TexCoord;
+    void main() { gl_FragColor = vec4(mod(v_TexCoord.x, 2.0), atan(v_TexCoord.y, v_TexCoord.x), 0.0, 1.0); }
+    """
+    Check.that("prelude compiles GLSL mod and two-arg atan",
+               (try? device.makeLibrary(source: WEShaderTranspiler.fragmentToMSL(mathShader), options: nil)) != nil)
 }
 Check.that("comboDefaults reads the // [COMBO] default",
            ShaderPreprocessor.comboDefaults("// [COMBO] {\"combo\":\"BLENDMODE\",\"default\":9}\nvoid main(){}")["BLENDMODE"] == 9)

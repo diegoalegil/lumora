@@ -36,6 +36,20 @@ public enum WEShaderPrelude {
         return inside.x * inside.y;
     }
 
+    // GLSL mod is floor-based (its result takes the sign of y); Metal's fmod isn't, so define it.
+    inline float  mod(float x, float y)   { return x - y * floor(x / y); }
+    inline float2 mod(float2 x, float2 y) { return x - y * floor(x / y); }
+    inline float3 mod(float3 x, float3 y) { return x - y * floor(x / y); }
+    inline float4 mod(float4 x, float4 y) { return x - y * floor(x / y); }
+    inline float2 mod(float2 x, float y)  { return x - y * floor(x / y); }
+    inline float3 mod(float3 x, float y)  { return x - y * floor(x / y); }
+    inline float4 mod(float4 x, float y)  { return x - y * floor(x / y); }
+
+    // GLSL's two-argument atan(y, x) is atan2.
+    inline float  atan(float y, float x)   { return atan2(y, x); }
+    inline float2 atan(float2 y, float2 x) { return atan2(y, x); }
+    inline float3 atan(float3 y, float3 x) { return atan2(y, x); }
+
     // --- Image blending -----------------------------------------------------------------------------
     // Functions that take a blend mode implicitly use the BLENDMODE combo; guarantee it is defined.
     #ifndef BLENDMODE

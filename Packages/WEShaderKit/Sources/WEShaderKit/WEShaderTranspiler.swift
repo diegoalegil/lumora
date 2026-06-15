@@ -156,7 +156,8 @@ public enum WEShaderTranspiler {
         out = texCall.stringByReplacingMatches(in: out, range: NSRange(out.startIndex..., in: out),
                                                withTemplate: "$1.sample($1_smp,")
         out = rewriteMul(out)   // HLSL-style mul(a, b) → (a * b)
-        for (glsl, msl) in [("frac", "fract"), ("mod", "fmod"), ("inversesqrt", "rsqrt"), ("lerp", "mix")] {
+        // (mod and two-arg atan are defined in the prelude — GLSL semantics differ from Metal's.)
+        for (glsl, msl) in [("frac", "fract"), ("inversesqrt", "rsqrt"), ("lerp", "mix")] {
             out = replaceWord(out, glsl, msl)
         }
         return out
