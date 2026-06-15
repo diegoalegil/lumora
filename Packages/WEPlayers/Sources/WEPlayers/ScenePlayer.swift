@@ -130,7 +130,7 @@ public final class ScenePlayer: WallpaperRenderer {
         let width = max(1, Int(hostView.bounds.width * scale))
         let height = max(1, Int(hostView.bounds.height * scale))
 
-        if let renderer, let prepared, prepared.layerCount > 0,
+        if let renderer, let prepared, prepared.isRenderable,
            let frame = renderer.render(prepared, width: width, height: height, time: elapsed),
            let image = frame.makeCGImage() {
             hostView.layer?.backgroundColor = nil

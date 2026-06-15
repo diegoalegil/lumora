@@ -92,6 +92,10 @@ public final class PreparedScene {
     /// How many layers will be drawn (0 means nothing resolved — the caller should show a fallback).
     public var layerCount: Int { layers.count }
 
+    /// True if the scene has anything to draw — image layers or particles. A particle-only scene has no
+    /// layers but still renders its sprites over the clear colour.
+    public var isRenderable: Bool { !layers.isEmpty || !particles.isEmpty }
+
     /// True if any layer animates (parallax, alpha/position keyframes, effects) or the scene emits
     /// particles — i.e. it moves over time and is worth driving with a render loop.
     public var hasAnimation: Bool {
@@ -284,7 +288,7 @@ public final class SceneRenderer {
         color.rgbBlendOperation = .add
         color.alphaBlendOperation = .add
         color.sourceRGBBlendFactor = .sourceAlpha
-        color.sourceAlphaBlendFactor = .sourceAlpha
+        color.sourceAlphaBlendFactor = .one   // straight-alpha: don't square the source alpha
         color.destinationRGBBlendFactor = additive ? .one : .oneMinusSourceAlpha
         color.destinationAlphaBlendFactor = additive ? .one : .oneMinusSourceAlpha
         return try? device.makeRenderPipelineState(descriptor: descriptor)
@@ -302,7 +306,7 @@ public final class SceneRenderer {
         color.rgbBlendOperation = .add
         color.alphaBlendOperation = .add
         color.sourceRGBBlendFactor = .sourceAlpha
-        color.sourceAlphaBlendFactor = .sourceAlpha
+        color.sourceAlphaBlendFactor = .one   // straight-alpha: don't square the source alpha
         color.destinationRGBBlendFactor = additive ? .one : .oneMinusSourceAlpha
         color.destinationAlphaBlendFactor = additive ? .one : .oneMinusSourceAlpha
         return try? device.makeRenderPipelineState(descriptor: descriptor)
