@@ -54,6 +54,7 @@
       "provenance": "clean-room",
       "sources": [
         "https://docs.wallpaperengine.io/en/scene/ (scene graph, materials, render targets)",
+        "Byte-level container/texture/scene structure reverse-confirmed from the user's OWN scene.pkg/.tex/scene.json files (clean-room observation; LZ4 via Apple Compression confirmed the layout)",
         "Reference: linux-wallpaperengine observable output only, compared in the parity tooling (no source reuse)",
         "Apple Metal / MetalKit documentation"
       ]
