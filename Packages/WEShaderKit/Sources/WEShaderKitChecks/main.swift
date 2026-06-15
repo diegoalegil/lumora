@@ -2,6 +2,7 @@
 // Provenance: clean-room verification of the WE shader uniform/annotation extractor against a shader
 // in the real WE dialect (CLT-only equivalent of unit tests).
 import Foundation
+import Metal
 import WEShaderKit
 
 // Dev mode: parse a real shader file and list its uniforms.
@@ -44,5 +45,35 @@ Check.that("captures a vector default", uniforms[3].defaultValue == "1 0.5 0.25"
 Check.that("includes an un-annotated built-in", uniforms[4].name == "g_ModelViewProjectionMatrix" && uniforms[4].material == nil)
 Check.that("ignores varyings and other lines", !uniforms.contains { $0.name.hasPrefix("v_") })
 Check.that("a shader with no uniforms parses to empty", ShaderUniforms.parse("void main() {}").isEmpty)
+
+// MARK: - WEShaderTranspiler
+
+Check.section("WEShaderTranspiler")
+let weShader = """
+varying vec4 v_TexCoord;
+uniform sampler2D g_Texture0; // {"material":"ui_editor_properties_framebuffer"}
+uniform float g_Brightness; // {"material":"ui_editor_properties_brightness","default":1.0,"range":[0, 2]}
+void main() {
+    vec4 color = texSample2D(g_Texture0, v_TexCoord.xy);
+    gl_FragColor = color * g_Brightness;
+}
+"""
+let msl = WEShaderTranspiler.fragmentToMSL(weShader)
+Check.that("rewrites texSample2D to a Metal sample call", msl.contains("g_Texture0.sample(g_Texture0_smp,"))
+Check.that("qualifies a scalar uniform with the uniform buffer", msl.contains("u.g_Brightness"))
+Check.that("qualifies a varying with stage_in", msl.contains("in.v_TexCoord"))
+Check.that("maps vec4 to float4", msl.contains("float4 color"))
+if let device = MTLCreateSystemDefaultDevice() {
+    do {
+        let library = try device.makeLibrary(source: msl, options: nil)
+        Check.that("transpiled MSL compiles via Metal", library.makeFunction(name: "we_fragment") != nil)
+    } catch {
+        print("  ✗ transpiled MSL failed to compile: \(error)")
+        print("──── MSL ────\n\(msl)\n─────────────")
+        Check.that("transpiled MSL compiles via Metal", false)
+    }
+} else {
+    print("  ⚠︎ no Metal device — skipping the MSL compile check")
+}
 
 Check.summarize()
