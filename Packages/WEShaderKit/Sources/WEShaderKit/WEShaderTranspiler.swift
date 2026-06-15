@@ -27,7 +27,7 @@ public enum WEShaderTranspiler {
         // gl_FragColor → a local we collect and return.
         body = qualify(body, name: "gl_FragColor", with: "_fragColor")
 
-        var msl = "#include <metal_stdlib>\nusing namespace metal;\n\n"
+        var msl = "#include <metal_stdlib>\nusing namespace metal;\n\n" + WEShaderPrelude.msl
 
         msl += "struct VaryingIn {\n"
         for (index, varying) in varyings.enumerated() {
@@ -74,7 +74,7 @@ public enum WEShaderTranspiler {
         for uniform in scalars { body = qualify(body, name: uniform.name, with: "u.\(uniform.name)") }
         body = qualify(body, name: "gl_Position", with: "out.position")
 
-        var msl = "#include <metal_stdlib>\nusing namespace metal;\n\n"
+        var msl = "#include <metal_stdlib>\nusing namespace metal;\n\n" + WEShaderPrelude.msl
         msl += "struct VertexIn {\n"
         for (index, attribute) in attributes.enumerated() {
             msl += "    \(mslType(attribute.type)) \(attribute.name) [[attribute(\(index))]];\n"

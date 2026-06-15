@@ -119,6 +119,19 @@ if let device = MTLCreateSystemDefaultDevice() {
     print("  ⚠︎ no Metal device — skipping the MSL compile check")
 }
 
+// WE shaders assume math.h constants and helpers from their unshipped common headers; the prelude
+// supplies them. A shader using M_PI_2 and rotateVec2 must transpile to MSL that Metal accepts.
+let preludeShader = """
+varying vec4 v_TexCoord;
+uniform sampler2D g_Texture0;
+void main() { gl_FragColor = texSample2D(g_Texture0, rotateVec2(v_TexCoord.xy, M_PI_2)); }
+"""
+if let device = MTLCreateSystemDefaultDevice() {
+    let preludeMSL = WEShaderTranspiler.fragmentToMSL(preludeShader)
+    Check.that("prelude compiles a shader using M_PI_2 and rotateVec2",
+               (try? device.makeLibrary(source: preludeMSL, options: nil)) != nil)
+}
+
 let weVertex = """
 attribute vec3 a_Position;
 attribute vec4 a_TexCoord;
