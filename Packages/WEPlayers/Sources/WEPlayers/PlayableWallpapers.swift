@@ -7,7 +7,7 @@ public enum PlayableWallpapers {
     /// Whether the app currently has a working player for this wallpaper.
     public static func isPlayable(_ wallpaper: ResolvedWallpaper) -> Bool {
         switch wallpaper.type {
-        case .video: return VideoFormatSupport.isNativelyPlayable(wallpaper.mainFileURL)
+        case .video: return VideoFormatSupport.isPlayable(wallpaper.mainFileURL)
         case .web:   return true
         case .scene: return false   // no scene player yet
         }
