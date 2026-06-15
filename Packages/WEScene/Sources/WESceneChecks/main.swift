@@ -133,10 +133,13 @@ if CommandLine.arguments.count > 1 {
     guard let data = try? Data(contentsOf: URL(fileURLWithPath: arg)),
           let package = try? ScenePackage.read(data),
           let document = try? SceneGraph.load(from: package) else { print("failed to load \(arg)"); exit(1) }
+    let time = CommandLine.arguments.count > 2 ? (Double(CommandLine.arguments[2]) ?? 0) : 0
     let w = min(document.orthoWidth > 0 ? document.orthoWidth : 1920, 3840)
     let h = min(document.orthoHeight > 0 ? document.orthoHeight : 1080, 2160)
-    guard let frame = renderer.render(document, package: package, width: w, height: h) else { print("render failed"); exit(1) }
-    print("rendered \(document.layers.count) layer(s) @ \(w)x\(h); png=\(writePNG(frame, to: "/tmp/lumora_render.png"))")
+    let prepared = renderer.prepare(document, package: package)
+    guard let frame = renderer.render(prepared, width: w, height: h, time: time) else { print("render failed"); exit(1) }
+    let out = "/tmp/lumora_render\(time > 0 ? "_t\(Int(time))" : "").png"
+    print("rendered \(prepared.layerCount) layer(s) @ \(w)x\(h) t=\(time) parallax=\(prepared.hasParallax); png=\(writePNG(frame, to: out)) -> \(out)")
     exit(0)
 }
 
