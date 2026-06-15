@@ -15,21 +15,33 @@ if CommandLine.arguments.count > 1 {
         let device = MTLCreateSystemDefaultDevice()
         let files = ((try? FileManager.default.contentsOfDirectory(atPath: path)) ?? [])
             .filter { $0.hasSuffix(".frag") || $0.hasSuffix(".vert") }.sorted()
-        var compiled = 0, failed = 0
+        var compiled = 0, failed = 0, empty = 0
         var sampleErrors: [String] = []
+        var emptyBodies: [String] = []
         for file in files {
             guard let source = try? String(contentsOfFile: path + "/" + file, encoding: .utf8),
                   let device else { continue }
-            let msl = file.hasSuffix(".vert") ? WEShaderTranspiler.vertexToMSL(source)
-                                              : WEShaderTranspiler.fragmentToMSL(source)
+            let isVertex = file.hasSuffix(".vert")
+            let msl = isVertex ? WEShaderTranspiler.vertexToMSL(source)
+                               : WEShaderTranspiler.fragmentToMSL(source)
+            // A transpiled shader whose main body was lost compiles fine but does nothing — detect it by
+            // checking the region between the output-local init and its return is whitespace-only.
+            let (open, close) = isVertex ? ("VertexOut out;", "return out;") : ("float4 _fragColor = float4(0.0);", "return _fragColor;")
+            if let o = msl.range(of: open), let c = msl.range(of: close, range: o.upperBound ..< msl.endIndex),
+               msl[o.upperBound ..< c.lowerBound].trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                empty += 1
+                if emptyBodies.count < 8 { emptyBodies.append(file) }
+            }
             do { _ = try device.makeLibrary(source: msl, options: nil); compiled += 1 }
             catch {
                 failed += 1
-                if sampleErrors.count < 5 { sampleErrors.append("\(file): \("\(error)".prefix(120))") }
+                let first = "\(error)".components(separatedBy: "program_source:").last ?? "\(error)"
+                if sampleErrors.count < 8 { sampleErrors.append("\(file): \(first.prefix(80).replacingOccurrences(of: "\n", with: " "))") }
             }
         }
-        print("transpiler coverage: \(compiled)/\(compiled + failed) .frag compile to MSL")
-        for e in sampleErrors { print("  e.g. \(e)") }
+        print("transpiler coverage: \(compiled)/\(compiled + failed) compile to MSL; \(empty) have an EMPTY body (lost)")
+        for e in sampleErrors { print("  compile error: \(e)") }
+        for e in emptyBodies { print("  empty body: \(e)") }
         exit(0)
     }
     if let real = try? String(contentsOfFile: path, encoding: .utf8) {
@@ -133,6 +145,13 @@ Check.that("keeps the active #if branch", ShaderPreprocessor.resolve(conditional
 Check.that("keeps the #else when the #if is inactive", ShaderPreprocessor.resolve(conditional, combos: ["MASK": 0]) == "a\nc\nd")
 Check.that("a missing combo reads as 0", ShaderPreprocessor.resolve(conditional, combos: [:]) == "a\nc\nd")
 Check.that("#ifdef follows definedness, not value", ShaderPreprocessor.resolve("#ifdef X\ny\n#endif", combos: ["X": 0]) == "y")
+// Regression: WE ships CRLF. Swift treats "\r\n" as one grapheme, so a naive split(separator:"\n")
+// never matches it and the whole shader collapses to one line — emptying every transpiled body.
+Check.that("normalises CRLF before resolving conditionals",
+           ShaderPreprocessor.resolve("a\r\n#if MASK == 1\r\nb\r\n#endif\r\nc", combos: ["MASK": 0]) == "a\nc")
+let crlfShader = "varying vec4 v_TexCoord;\r\nuniform sampler2D g_Texture0;\r\nvoid main() {\r\n    gl_FragColor = texSample2D(g_Texture0, v_TexCoord.xy);\r\n}\r\n"
+Check.that("a CRLF shader transpiles to a non-empty body",
+           WEShaderTranspiler.fragmentToMSL(crlfShader).contains("g_Texture0.sample("))
 
 Check.section("UniformPacker")
 let packed = UniformPacker.pack([

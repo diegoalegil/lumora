@@ -7,6 +7,10 @@ import Foundation
 public enum ShaderPreprocessor {
     /// Keep only the lines in branches that are active for `combos` (a missing combo reads as 0).
     public static func resolve(_ source: String, combos: [String: Int]) -> String {
+        // WE shaders ship with Windows CRLF endings. Swift treats "\r\n" as a single grapheme, so
+        // split(separator: "\n") would never match it and the whole file would collapse into one
+        // "line" — normalise to LF up front so every line-based step downstream works.
+        let source = source.replacingOccurrences(of: "\r\n", with: "\n").replacingOccurrences(of: "\r", with: "\n")
         struct Frame { let parentEmitting: Bool; var taken: Bool; var active: Bool }
         var stack: [Frame] = []
         func emitting() -> Bool { stack.last.map { $0.parentEmitting && $0.active } ?? true }
