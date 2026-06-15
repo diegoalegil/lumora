@@ -200,4 +200,40 @@ if let package = try? ScenePackage.read(pkgData),
     Check.that("end-to-end scene produced a frame", false)
 }
 
+// Effect pass machinery: a tint effect (transpiled WE shaders) halves the input texture.
+if let effectRenderer = EffectRenderer(device: renderer.device) {
+    Check.section("EffectRenderer")
+    let effectVertex = """
+    attribute vec3 a_Position;
+    attribute vec4 a_TexCoord;
+    varying vec4 v_TexCoord;
+    void main() { gl_Position = vec4(a_Position, 1.0); v_TexCoord = a_TexCoord; }
+    """
+    let effectFragment = """
+    varying vec4 v_TexCoord;
+    uniform sampler2D g_Texture0;
+    uniform float g_Tint;
+    void main() { gl_FragColor = texSample2D(g_Texture0, v_TexCoord.xy) * g_Tint; }
+    """
+    if let pipeline = effectRenderer.makePipeline(vertexShader: effectVertex, fragmentShader: effectFragment) {
+        Check.that("builds an effect pipeline from transpiled WE shaders", true)
+        let inputDescriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .rgba8Unorm, width: 4, height: 4, mipmapped: false)
+        inputDescriptor.usage = [.shaderRead]
+        let input = renderer.device.makeTexture(descriptor: inputDescriptor)!
+        var pixels = [UInt8](repeating: 200, count: 4 * 4 * 4)
+        for i in stride(from: 3, to: pixels.count, by: 4) { pixels[i] = 255 }
+        input.replace(region: MTLRegionMake2D(0, 0, 4, 4), mipmapLevel: 0, withBytes: &pixels, bytesPerRow: 16)
+        var tint: Float = 0.5
+        let uniforms = Data(bytes: &tint, count: MemoryLayout<Float>.size)
+        if let output = effectRenderer.apply(pipeline: pipeline, to: input, fragmentUniforms: uniforms, width: 4, height: 4) {
+            let centerR = Int(effectRenderer.readback(output)[(2 * 4 + 2) * 4])
+            Check.that("the tint effect halves the input (200 → ~100)", abs(centerR - 100) <= 6)
+        } else {
+            Check.that("the effect pass produced output", false)
+        }
+    } else {
+        Check.that("builds an effect pipeline from transpiled WE shaders", false)
+    }
+}
+
 Check.summarize()
