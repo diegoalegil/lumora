@@ -512,6 +512,40 @@ Check.that("position offset is zero at t=0 (motion is relative)",
            posAnim.offset(at: 0).x == 0 && posAnim.offset(at: 0).y == 0)
 Check.that("position offset advances over time", abs(posAnim.offset(at: 0.5).x - 30) < 0.0001)
 
+Check.section("ParticleSystem")
+let boxParticle: [String: Any] = [
+    "maxcount": 200, "material": "materials/p.json",
+    "emitter": [["name": "boxrandom", "origin": "0 1024 0", "distancemax": "512 0 0", "rate": 100]],
+    "initializer": [
+        ["name": "lifetimerandom", "min": 1.0, "max": 2.0],
+        ["name": "sizerandom", "min": 10, "max": 20],
+        ["name": "velocityrandom", "min": "0 -100 0", "max": "0 -200 0"],
+        ["name": "alpharandom", "min": 0.4, "max": 0.6],
+    ],
+    "operator": [["name": "movement", "gravity": "0 -50 0"]],
+]
+if let system = ParticleSystem.parse(boxParticle) {
+    Check.that("parses the emitter rate and origin", system.rate == 100 && system.origin.y == 1024)
+    Check.that("parses the lifetime range", system.lifetime == 1.0 ... 2.0)
+    Check.that("parses the velocity range", system.velocity.min.y == -100 && system.velocity.max.y == -200)
+    Check.that("parses the movement gravity", system.gravity.y == -50)
+    Check.that("parses maxcount and material", system.maxCount == 200 && system.materialPath == "materials/p.json")
+} else {
+    Check.that("a box particle system parses", false)
+}
+let sphereParticle: [String: Any] = [
+    "emitter": [["name": "sphererandom", "distancemax": "2000", "rate": 50, "speedmin": 0, "speedmax": 20, "directions": "1 1 0"]]
+]
+if let sphere = ParticleSystem.parse(sphereParticle) {
+    Check.that("a sphere's scalar radius spreads across x and y", sphere.boxSize.x == 2000 && sphere.boxSize.y == 2000)
+    Check.that("parses the sphere speed range", sphere.speed == 0 ... 20 && sphere.directions.x == 1)
+} else {
+    Check.that("a sphere particle system parses", false)
+}
+Check.that("rejects a system with no emitter", ParticleSystem.parse(["maxcount": 10]) == nil)
+Check.that("rejects a system with a zero spawn rate",
+           ParticleSystem.parse(["emitter": [["name": "boxrandom", "rate": 0]]]) == nil)
+
 // MARK: - Done
 
 try? fm.removeItem(at: tmpRoot)

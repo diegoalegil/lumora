@@ -204,6 +204,7 @@ Check.that("evaluates && (one false drops the branch)", ShaderPreprocessor.resol
 Check.that("evaluates ||", ShaderPreprocessor.resolve("#if A || B\nx\n#endif", combos: ["A": 0, "B": 1]) == "x")
 Check.that("evaluates a > comparison", ShaderPreprocessor.resolve("#if QUALITY > 2\nx\n#endif", combos: ["QUALITY": 3]) == "x")
 Check.that("evaluates unary ! and parentheses", ShaderPreprocessor.resolve("#if !(MASK)\nx\n#endif", combos: ["MASK": 0]) == "x")
+Check.that("evaluates C-style defined(NAME)", ShaderPreprocessor.resolve("#if defined(X)\ny\n#endif", combos: ["X": 0]) == "y")
 let crlfShader = "varying vec4 v_TexCoord;\r\nuniform sampler2D g_Texture0;\r\nvoid main() {\r\n    gl_FragColor = texSample2D(g_Texture0, v_TexCoord.xy);\r\n}\r\n"
 Check.that("a CRLF shader transpiles to a non-empty body",
            WEShaderTranspiler.fragmentToMSL(crlfShader).contains("g_Texture0.sample("))
@@ -227,5 +228,10 @@ let mat3 = UniformPacker.pack([ShaderUniform(type: "mat3", name: "g_M", material
 let mat3Floats = mat3.withUnsafeBytes { Array($0.bindMemory(to: Float.self)) }
 Check.that("mat3 packs to 48 bytes with per-column padding",
            mat3.count == 48 && mat3Floats[3] == 0 && mat3Floats[4] == 4 && mat3Floats[8] == 7)
+// The override path (how the renderer injects an animated g_Time) takes precedence over values/default.
+let overridden = UniformPacker.pack([ShaderUniform(type: "float", name: "g_Time", material: "t", defaultValue: "0")],
+                                    values: ["t": "1"], overrides: ["g_Time": [5]])
+Check.that("an override replaces the value by uniform name",
+           overridden.withUnsafeBytes { $0.bindMemory(to: Float.self)[0] } == 5)
 
 Check.summarize()
