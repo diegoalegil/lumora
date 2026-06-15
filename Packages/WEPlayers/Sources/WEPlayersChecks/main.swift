@@ -69,6 +69,13 @@ Check.that("page references the src", fallbackPage.contains("lumora-asset://asse
 Check.that("page sets the type", fallbackPage.contains("video/webm"))
 Check.that("page loops and is muted", fallbackPage.contains("loop") && fallbackPage.contains("muted"))
 
+Check.section("WEWebBridge")
+Check.that("defines the audio listener hook", WEWebBridge.bootstrapScript.contains("wallpaperRegisterAudioListener"))
+Check.that("defines a media listener hook", WEWebBridge.bootstrapScript.contains("wallpaperRegisterMediaStatusListener"))
+Check.that("defines the random-file hook", WEWebBridge.bootstrapScript.contains("wallpaperRequestRandomFileForProperty"))
+Check.that("does not define wallpaperPropertyListener (the wallpaper owns it)",
+           !WEWebBridge.bootstrapScript.contains("window.wallpaperPropertyListener ="))
+
 Check.section("Players")
 Check.that("VideoPlayer handles the video type", VideoPlayer.supportedType == .video)
 Check.that("VideoFallbackPlayer handles the video type", VideoFallbackPlayer.supportedType == .video)

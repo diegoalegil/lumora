@@ -28,6 +28,10 @@ public final class WebPlayer: WallpaperRenderer {
         let configuration = WKWebViewConfiguration()
         // A wallpaper should animate on its own — don't gate background video/audio on a click.
         configuration.mediaTypesRequiringUserActionForPlayback = []
+        // Define WE's web API before the wallpaper runs so it doesn't ReferenceError on the hooks.
+        configuration.userContentController.addUserScript(
+            WKUserScript(source: WEWebBridge.bootstrapScript, injectionTime: .atDocumentStart, forMainFrameOnly: true)
+        )
         webView = WKWebView(frame: .zero, configuration: configuration)
         // Let the desktop show through any transparent regions instead of an opaque white page.
         webView.underPageBackgroundColor = .clear
