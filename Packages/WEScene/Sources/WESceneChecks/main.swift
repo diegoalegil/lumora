@@ -139,7 +139,7 @@ if CommandLine.arguments.count > 1 {
     let prepared = renderer.prepare(document, package: package)
     guard let frame = renderer.render(prepared, width: w, height: h, time: time) else { print("render failed"); exit(1) }
     let out = "/tmp/lumora_render\(time > 0 ? "_t\(Int(time))" : "").png"
-    print("rendered \(prepared.layerCount) layer(s) @ \(w)x\(h) t=\(time) parallax=\(prepared.hasParallax); png=\(writePNG(frame, to: out)) -> \(out)")
+    print("rendered \(prepared.layerCount) layer(s) @ \(w)x\(h) t=\(time) animated=\(prepared.hasAnimation); png=\(writePNG(frame, to: out)) -> \(out)")
     exit(0)
 }
 

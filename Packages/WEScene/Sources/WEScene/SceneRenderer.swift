@@ -28,6 +28,7 @@ private struct PreparedLayer {
     let halfExtent: SIMD2<Float>
     let uvScale: SIMD2<Float>
     let alpha: Float
+    let alphaAnimation: AlphaAnimation?
     let tint: SIMD3<Float>
     let isAdditive: Bool
     let parallaxDepth: SIMD2<Float>
@@ -46,6 +47,12 @@ public final class PreparedScene {
 
     /// How many layers will be drawn (0 means nothing resolved — the caller should show a fallback).
     public var layerCount: Int { layers.count }
+
+    /// True if any layer animates (parallax depth or an alpha keyframe animation), i.e. the scene moves
+    /// over time and is worth driving with a render loop (otherwise one still render suffices).
+    public var hasAnimation: Bool {
+        layers.contains { $0.parallaxDepth != SIMD2<Float>(0, 0) || $0.alphaAnimation != nil }
+    }
 }
 
 /// Renders a `RenderableScene` to an offscreen frame: clear colour plus every visible image layer
@@ -176,6 +183,7 @@ public final class SceneRenderer {
                 halfExtent: SIMD2(Float(sizeW * layer.scale.x / orthoW), Float(sizeH * layer.scale.y / orthoH)),
                 uvScale: uvScale,
                 alpha: Float(layer.alpha),
+                alphaAnimation: layer.alphaAnimation,
                 tint: SIMD3(Float(layer.color.x), Float(layer.color.y), Float(layer.color.z)),
                 isAdditive: layer.blending == "additive" || layer.blending == "add",
                 parallaxDepth: SIMD2(Float(layer.parallaxDepth.x), Float(layer.parallaxDepth.y))))
@@ -196,7 +204,7 @@ public final class SceneRenderer {
                                   layer.center.y + swayY * layer.parallaxDepth.y),
                     halfExtent: layer.halfExtent,
                     uvScale: layer.uvScale)
-                var alpha = layer.alpha
+                var alpha = layer.alphaAnimation.map { Float($0.value(at: time)) } ?? layer.alpha
                 var tint = layer.tint
                 encoder.setRenderPipelineState(layer.isAdditive ? pipelineAdditive : pipelineOver)
                 encoder.setVertexBytes(&quad, length: MemoryLayout<QuadUniform>.stride, index: 0)

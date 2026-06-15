@@ -85,7 +85,7 @@ public final class ScenePlayer: WallpaperRenderer {
     }
 
     private func startLoopIfAnimated() {
-        guard !isPaused, timer == nil, let prepared, prepared.hasParallax else { return }
+        guard !isPaused, timer == nil, let prepared, prepared.hasAnimation else { return }
         let timer = Timer(timeInterval: Self.frameInterval, target: self,
                           selector: #selector(tick), userInfo: nil, repeats: true)
         RunLoop.main.add(timer, forMode: .common)
