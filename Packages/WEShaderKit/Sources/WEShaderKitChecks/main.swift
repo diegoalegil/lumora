@@ -127,4 +127,18 @@ if let device = MTLCreateSystemDefaultDevice() {
     }
 }
 
+Check.section("UniformPacker")
+let packed = UniformPacker.pack([
+    ShaderUniform(type: "float", name: "g_A", material: "a"),
+    ShaderUniform(type: "vec3", name: "g_B", material: "b"),
+], values: ["a": "0.5", "b": "1 2 3"])
+Check.that("packs to the MSL-aligned struct size (4 + pad-to-16 + 16 = 32)", packed.count == 32)
+let packedFloats = packed.withUnsafeBytes { Array($0.bindMemory(to: Float.self)) }
+Check.that("scalar lands at offset 0", packedFloats[0] == 0.5)
+Check.that("vec3 is aligned to offset 16 (float index 4)",
+           packedFloats[4] == 1 && packedFloats[5] == 2 && packedFloats[6] == 3)
+let defaulted = UniformPacker.pack([ShaderUniform(type: "float", name: "g_X", material: "x", defaultValue: "0.25")], values: [:])
+Check.that("falls back to the default when no value is given",
+           defaulted.withUnsafeBytes { $0.bindMemory(to: Float.self)[0] } == 0.25)
+
 Check.summarize()
