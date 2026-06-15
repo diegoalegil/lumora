@@ -61,12 +61,15 @@ public enum SceneTextureError: Error, Equatable, Sendable, CustomStringConvertib
     case badContainer(String)
     /// The mip label isn't a `TEXB…` signature where one was expected.
     case badMipContainer(String)
+    /// A mip's payload could not be decompressed or decoded.
+    case decodeFailed
 
     public var description: String {
         switch self {
         case .truncated:               return ".tex header is truncated"
         case .badContainer(let s):     return "not a TEX container (label '\(s)')"
         case .badMipContainer(let s):  return "expected a TEXB mip container (found '\(s)')"
+        case .decodeFailed:            return ".tex mip payload could not be decoded"
         }
     }
 }
@@ -80,6 +83,11 @@ public enum SceneTexture {
 
     /// Parse a `.tex` header from its raw bytes.
     public static func readHeader(_ data: Data) throws -> SceneTextureHeader {
+        try parse(data).header
+    }
+
+    /// Parse the header and also return the byte offset at which the first mip's fields begin.
+    static func parse(_ data: Data) throws -> (header: SceneTextureHeader, mipDataOffset: Int) {
         let base = data.startIndex
         var cursor = 0
 
@@ -119,7 +127,7 @@ public enum SceneTexture {
         guard mipContainer.hasPrefix("TEXB") else { throw SceneTextureError.badMipContainer(mipContainer) }
         let mipCount = try u32()
 
-        return SceneTextureHeader(
+        let header = SceneTextureHeader(
             containerVersion: container,
             formatCode: formatCode,
             format: TextureFormat(rawValue: formatCode),
@@ -130,5 +138,6 @@ public enum SceneTexture {
             mipContainerVersion: mipContainer,
             mipCount: mipCount
         )
+        return (header, cursor)
     }
 }

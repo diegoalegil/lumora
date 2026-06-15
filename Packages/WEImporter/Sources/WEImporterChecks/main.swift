@@ -2,6 +2,9 @@
 // Provenance: clean-room verification of WEImporter discovery + scanning against a synthetic Steam
 // tree built in a temp directory (CLT-only equivalent of unit tests).
 import Foundation
+import Compression
+import CoreGraphics
+import ImageIO
 import WECore
 import WEImporter
 
@@ -339,6 +342,90 @@ Check.throwsError("rejects a bad mip container",
                   { try SceneTexture.readHeader(buildTexHeader(format: 0, texW: 8, texH: 8, imgW: 8, imgH: 8,
                                                                mipContainer: "JUNK0001", mipCount: 1)) },
                   satisfies: { if case SceneTextureError.badMipContainer = $0 { return true }; return false })
+
+// MARK: - SceneTexture decode (mip payload: raw / LZ4 / embedded image)
+
+/// Append a single mip to a header so `decodeFirstMip` has something to read.
+@MainActor func buildTexWithMip(version: String, format: Int, mipW: Int, mipH: Int,
+                                isCompressed: Int, decompressedSize: Int, payload: Data) -> Data {
+    var d = buildTexHeader(format: format, texW: mipW, texH: mipH, imgW: mipW, imgH: mipH,
+                           mipContainer: version, mipCount: 1)
+    let v = Int(version.dropFirst(4)) ?? 1
+    for _ in 0 ..< max(0, v - 1) { d.append(le32(0)) }        // leading sentinel/metadata u32s
+    d.append(le32(mipW)); d.append(le32(mipH))
+    d.append(le32(isCompressed)); d.append(le32(decompressedSize)); d.append(le32(payload.count))
+    d.append(payload)
+    return d
+}
+
+@MainActor func lz4Compress(_ src: Data) -> Data {
+    let cap = src.count + 4096
+    var dst = Data(count: cap)
+    let n = dst.withUnsafeMutableBytes { (d: UnsafeMutableRawBufferPointer) -> Int in
+        src.withUnsafeBytes { (s: UnsafeRawBufferPointer) -> Int in
+            compression_encode_buffer(d.bindMemory(to: UInt8.self).baseAddress!, cap,
+                                      s.bindMemory(to: UInt8.self).baseAddress!, src.count, nil,
+                                      COMPRESSION_LZ4_RAW)
+        }
+    }
+    return dst.prefix(n)
+}
+
+@MainActor func makePNG(_ w: Int, _ h: Int) -> Data {
+    let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w * 4,
+                        space: CGColorSpaceCreateDeviceRGB(),
+                        bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+    ctx.setFillColor(CGColor(red: 1, green: 0, blue: 0, alpha: 1))
+    ctx.fill(CGRect(x: 0, y: 0, width: w, height: h))
+    let image = ctx.makeImage()!
+    let out = NSMutableData()
+    let dest = CGImageDestinationCreateWithData(out, "public.png" as CFString, 1, nil)!
+    CGImageDestinationAddImage(dest, image, nil)
+    CGImageDestinationFinalize(dest)
+    return out as Data
+}
+
+Check.section("SceneTexture decode")
+let rawPixels = Data((0 ..< 64).map { UInt8($0) })
+if let dec = Check.noThrow("decodes a raw uncompressed mip", {
+    try SceneTexture.decodeFirstMip(buildTexWithMip(version: "TEXB0002", format: 0, mipW: 4, mipH: 4,
+                                                    isCompressed: 0, decompressedSize: 64, payload: rawPixels))
+}) {
+    Check.that("raw format is RGBA8888", dec.format == .rgba8888)
+    Check.that("raw mip dims", dec.width == 4 && dec.height == 4)
+    Check.that("raw pixels pass through", dec.pixels == rawPixels)
+}
+let original = Data(repeating: 7, count: 4096)
+let compressed = lz4Compress(original)
+Check.that("lz4 fixture compresses", compressed.count > 0 && compressed.count < original.count)
+if let dec = Check.noThrow("decodes an LZ4-compressed mip", {
+    try SceneTexture.decodeFirstMip(buildTexWithMip(version: "TEXB0003", format: 0, mipW: 32, mipH: 32,
+                                                    isCompressed: 1, decompressedSize: 4096, payload: compressed))
+}) {
+    Check.that("lz4 round-trips to the original bytes", dec.pixels == original)
+}
+let dxtBlock = Data(repeating: 0xAB, count: 16)
+if let dec = Check.noThrow("decodes a DXT5 block mip", {
+    try SceneTexture.decodeFirstMip(buildTexWithMip(version: "TEXB0004", format: 4, mipW: 4, mipH: 4,
+                                                    isCompressed: 0, decompressedSize: 16, payload: dxtBlock))
+}) {
+    Check.that("DXT5 format preserved (not expanded)", dec.format == .dxt5)
+    Check.that("DXT5 block bytes preserved", dec.pixels == dxtBlock)
+}
+let png = makePNG(8, 6)
+Check.that("png fixture has the PNG signature", [UInt8](png.prefix(4)) == [0x89, 0x50, 0x4e, 0x47])
+if let dec = Check.noThrow("decodes an embedded PNG mip", {
+    try SceneTexture.decodeFirstMip(buildTexWithMip(version: "TEXB0003", format: 0, mipW: 8, mipH: 6,
+                                                    isCompressed: 0, decompressedSize: 0, payload: png))
+}) {
+    Check.that("PNG decodes to RGBA8888", dec.format == .rgba8888)
+    Check.that("PNG decoded dims", dec.width == 8 && dec.height == 6)
+    Check.that("PNG decoded to w*h*4 bytes", dec.pixels.count == 8 * 6 * 4)
+}
+Check.throwsError("rejects an LZ4 mip with a corrupt payload", {
+    try SceneTexture.decodeFirstMip(buildTexWithMip(version: "TEXB0003", format: 0, mipW: 32, mipH: 32,
+                                                    isCompressed: 1, decompressedSize: 4096, payload: Data(repeating: 0, count: 8)))
+})
 
 // MARK: - Done
 
