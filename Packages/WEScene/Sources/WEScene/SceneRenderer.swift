@@ -32,6 +32,8 @@ private struct PreparedLayer {
     let tint: SIMD3<Float>
     let isAdditive: Bool
     let parallaxDepth: SIMD2<Float>
+    let originAnimation: Vec3Animation?
+    let originScale: SIMD2<Float>   // scene units → NDC, for the position animation offset
 }
 
 /// A scene whose layer textures are decoded and uploaded once, ready to re-render every frame (so an
@@ -51,7 +53,9 @@ public final class PreparedScene {
     /// True if any layer animates (parallax depth or an alpha keyframe animation), i.e. the scene moves
     /// over time and is worth driving with a render loop (otherwise one still render suffices).
     public var hasAnimation: Bool {
-        layers.contains { $0.parallaxDepth != SIMD2<Float>(0, 0) || $0.alphaAnimation != nil }
+        layers.contains {
+            $0.parallaxDepth != SIMD2<Float>(0, 0) || $0.alphaAnimation != nil || $0.originAnimation != nil
+        }
     }
 }
 
@@ -186,7 +190,9 @@ public final class SceneRenderer {
                 alphaAnimation: layer.alphaAnimation,
                 tint: SIMD3(Float(layer.color.x), Float(layer.color.y), Float(layer.color.z)),
                 isAdditive: layer.blending == "additive" || layer.blending == "add",
-                parallaxDepth: SIMD2(Float(layer.parallaxDepth.x), Float(layer.parallaxDepth.y))))
+                parallaxDepth: SIMD2(Float(layer.parallaxDepth.x), Float(layer.parallaxDepth.y)),
+                originAnimation: layer.originAnimation,
+                originScale: SIMD2(Float(2 / orthoW), Float(2 / orthoH))))
         }
         return PreparedScene(layers: prepared, clearColor: document.clearColor)
     }
@@ -199,11 +205,14 @@ public final class SceneRenderer {
         let swayY = Float(0.009 * sin(time * 0.45))
         return withRenderPass(clearColor: scene.clearColor, width: width, height: height) { encoder in
             for layer in scene.layers {
-                var quad = QuadUniform(
-                    center: SIMD2(layer.center.x + swayX * layer.parallaxDepth.x,
-                                  layer.center.y + swayY * layer.parallaxDepth.y),
-                    halfExtent: layer.halfExtent,
-                    uvScale: layer.uvScale)
+                var center = SIMD2(layer.center.x + swayX * layer.parallaxDepth.x,
+                                   layer.center.y + swayY * layer.parallaxDepth.y)
+                if let animation = layer.originAnimation {
+                    let offset = animation.offset(at: time)
+                    center.x += Float(offset.x) * layer.originScale.x
+                    center.y += Float(offset.y) * layer.originScale.y
+                }
+                var quad = QuadUniform(center: center, halfExtent: layer.halfExtent, uvScale: layer.uvScale)
                 var alpha = layer.alphaAnimation.map { Float($0.value(at: time)) } ?? layer.alpha
                 var tint = layer.tint
                 encoder.setRenderPipelineState(layer.isAdditive ? pipelineAdditive : pipelineOver)
