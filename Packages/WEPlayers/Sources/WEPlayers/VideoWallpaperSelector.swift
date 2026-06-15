@@ -4,8 +4,10 @@
 import WECore
 
 public enum VideoWallpaperSelector {
-    /// The first video wallpaper in a resolved list, or `nil` if none are videos.
+    /// The first video wallpaper the video player can actually play (a `.video` whose file is in a
+    /// format AVFoundation decodes natively), or `nil` if there is none. Videos in formats we can't
+    /// decode yet (e.g. `.webm`) are skipped rather than producing a black screen.
     public static func firstPlayable(in wallpapers: [ResolvedWallpaper]) -> ResolvedWallpaper? {
-        wallpapers.first { $0.type == .video }
+        wallpapers.first { $0.type == .video && VideoFormatSupport.isNativelyPlayable($0.mainFileURL) }
     }
 }
