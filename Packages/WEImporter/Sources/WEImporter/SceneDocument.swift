@@ -24,12 +24,18 @@ public struct SceneLayer: Sendable, Equatable {
     public let name: String
     /// In-package path of the layer's base texture (e.g. `"materials/foo.tex"`), or nil if unresolved.
     public let texturePath: String?
+    /// True for a built-in solid-colour fill (a `solidlayer` util model with no packed texture); the
+    /// layer is drawn from `color` alone.
+    public let isSolidLayer: Bool
     public let origin: SceneVec3
     public let scale: SceneVec3
     /// The layer's size in scene units (`"width height"`), or nil to fall back to the texture's size.
     public let size: SceneVec3?
     public let angles: SceneVec3
     public let alpha: Double
+    /// The object's colour tint, multiplied into the texture (white = no tint; also the fill colour
+    /// for a solid layer).
+    public let color: SceneVec3
     public let parallaxDepth: SceneVec3
     public let visible: Bool
     public let blending: String?
@@ -76,11 +82,13 @@ public enum SceneGraph {
             layers.append(SceneLayer(
                 name: object["name"] as? String ?? "",
                 texturePath: material.texture,
+                isSolidLayer: imagePath.contains("solidlayer"),
                 origin: vec(object["origin"]),
                 scale: vec(object["scale"], default: SceneVec3(x: 1, y: 1, z: 1)),
                 size: (object["size"] as? String).map(SceneVec3.init(parsing:)),
                 angles: vec(object["angles"]),
                 alpha: alphaValue(object["alpha"]),
+                color: vec(object["color"], default: SceneVec3(x: 1, y: 1, z: 1)),
                 parallaxDepth: vec(object["parallaxDepth"]),
                 visible: object["visible"] as? Bool ?? true,
                 blending: material.blending,
