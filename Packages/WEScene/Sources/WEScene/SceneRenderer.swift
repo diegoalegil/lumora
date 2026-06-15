@@ -6,6 +6,7 @@
 import Foundation
 import Metal
 import WEImporter
+import WEShaderKit
 
 /// The pixels produced by an offscreen render: tightly-packed RGBA8, row-major, top-left origin.
 public struct RenderedFrame: Sendable {
@@ -27,6 +28,15 @@ private struct QuadUniform {
     var uvScale: SIMD2<Float>
 }
 
+/// A layer's effect compiled once: the full-screen pass plus the data to re-pack its uniforms each
+/// frame (so a time-varying effect like pulse animates without re-transpiling the shader).
+private struct PreparedEffect {
+    let pipeline: MTLRenderPipelineState
+    let scalars: [ShaderUniform]      // non-sampler uniforms, in declaration order, for packing
+    let constants: [String: String]   // the effect's constant values, keyed by material annotation
+    let auxCount: Int                 // extra samplers after g_Texture0 (noise/mask), bound to white for now
+}
+
 /// One layer of a `PreparedScene`: an uploaded texture plus its resolution-independent placement.
 private struct PreparedLayer {
     let texture: MTLTexture
@@ -40,6 +50,7 @@ private struct PreparedLayer {
     let parallaxDepth: SIMD2<Float>
     let originAnimation: Vec3Animation?
     let originScale: SIMD2<Float>   // scene units → NDC, for the position animation offset
+    let effects: [PreparedEffect]   // post-process passes applied to this layer before compositing
 }
 
 /// A scene whose layer textures are decoded and uploaded once, ready to re-render every frame (so an
@@ -60,7 +71,8 @@ public final class PreparedScene {
     /// over time and is worth driving with a render loop (otherwise one still render suffices).
     public var hasAnimation: Bool {
         layers.contains {
-            $0.parallaxDepth != SIMD2<Float>(0, 0) || $0.alphaAnimation != nil || $0.originAnimation != nil
+            $0.parallaxDepth != SIMD2<Float>(0, 0) || $0.alphaAnimation != nil
+                || $0.originAnimation != nil || !$0.effects.isEmpty
         }
     }
 }
@@ -74,6 +86,7 @@ public final class SceneRenderer {
     private let pipelineAdditive: MTLRenderPipelineState
     private let sampler: MTLSamplerState
     private let whiteTexture: MTLTexture
+    private let effectRenderer: EffectRenderer?   // compiles + runs per-layer post-process effects
 
     private static let shaderSource = """
     #include <metal_stdlib>
@@ -132,6 +145,8 @@ public final class SceneRenderer {
         var whitePixel: [UInt8] = [255, 255, 255, 255]
         white.replace(region: MTLRegionMake2D(0, 0, 1, 1), mipmapLevel: 0, withBytes: &whitePixel, bytesPerRow: 4)
         self.whiteTexture = white
+
+        self.effectRenderer = EffectRenderer(device: device)   // nil only if the device can't build it
     }
 
     private static func makePipeline(device: MTLDevice, vertex: MTLFunction, fragment: MTLFunction,
@@ -187,20 +202,87 @@ public final class SceneRenderer {
 
             let sizeW = (layer.size?.x ?? 0) > 0 ? layer.size!.x : (textureW > 0 ? textureW : orthoW)
             let sizeH = (layer.size?.y ?? 0) > 0 ? layer.size!.y : (textureH > 0 ? textureH : orthoH)
+            let center = SIMD2(Float(layer.origin.x / orthoW * 2 - 1), Float(layer.origin.y / orthoH * 2 - 1))
+            let halfExtent = SIMD2(Float(sizeW * layer.scale.x / orthoW), Float(sizeH * layer.scale.y / orthoH))
+            let tint = SIMD3(Float(layer.color.x), Float(layer.color.y), Float(layer.color.z))
             prepared.append(PreparedLayer(
                 texture: texture,
-                center: SIMD2(Float(layer.origin.x / orthoW * 2 - 1), Float(layer.origin.y / orthoH * 2 - 1)),
-                halfExtent: SIMD2(Float(sizeW * layer.scale.x / orthoW), Float(sizeH * layer.scale.y / orthoH)),
+                center: center,
+                halfExtent: halfExtent,
                 uvScale: uvScale,
                 alpha: Float(layer.alpha),
                 alphaAnimation: layer.alphaAnimation,
-                tint: SIMD3(Float(layer.color.x), Float(layer.color.y), Float(layer.color.z)),
+                tint: tint,
                 isAdditive: layer.blending == "additive" || layer.blending == "add",
                 parallaxDepth: SIMD2(Float(layer.parallaxDepth.x), Float(layer.parallaxDepth.y)),
                 originAnimation: layer.originAnimation,
-                originScale: SIMD2(Float(2 / orthoW), Float(2 / orthoH))))
+                originScale: SIMD2(Float(2 / orthoW), Float(2 / orthoH)),
+                effects: prepareEffects(layer.effects, package: package, base: texture,
+                                        center: center, halfExtent: halfExtent, uvScale: uvScale, tint: tint)))
         }
         return PreparedScene(layers: prepared, clearColor: document.clearColor)
+    }
+
+    /// Compile a layer's effects and keep only the ones that actually contribute. Each fragment shader is
+    /// transpiled into a pipeline; effects that fail to build are dropped. Then the chain is dry-run at
+    /// low resolution and any pass that blanks the layer (a not-yet-supported effect — vertex
+    /// displacement, multi-pass blur, …) is skipped, so an unsupported effect degrades gracefully
+    /// instead of turning the whole layer transparent.
+    private func prepareEffects(_ effects: [LayerEffect], package: ScenePackage, base: MTLTexture,
+                                center: SIMD2<Float>, halfExtent: SIMD2<Float>, uvScale: SIMD2<Float>,
+                                tint: SIMD3<Float>) -> [PreparedEffect] {
+        guard let effectRenderer, !effects.isEmpty else { return [] }
+        var compiled: [PreparedEffect] = []
+        for effect in effects {
+            guard let entry = package.entry(named: effect.fragmentShaderPath) else { continue }
+            let source = String(decoding: entry.data, as: UTF8.self)
+            guard let pipeline = effectRenderer.makePipeline(fragmentShader: source) else { continue }
+            let resolved = ShaderPreprocessor.resolve(source, combos: ShaderPreprocessor.comboDefaults(source))
+            let uniforms = ShaderUniforms.parse(resolved)
+            compiled.append(PreparedEffect(
+                pipeline: pipeline,
+                scalars: uniforms.filter { !$0.type.hasPrefix("sampler") },
+                constants: effect.constants,
+                auxCount: max(0, uniforms.filter { $0.type.hasPrefix("sampler") }.count - 1)))
+        }
+        guard !compiled.isEmpty else { return [] }
+
+        // Dry-run the chain on a small copy of the layer and keep only passes that preserve the layer's
+        // coverage at every sampled time. An effect this renderer can't yet do (vertex displacement,
+        // multi-pass blur) punches the layer out to the clear colour — sometimes only at certain phases
+        // of its animation — so a pass is dropped unless it stays stable across the whole sample set.
+        let probeW = 320, probeH = 180
+        let times: [Float] = [0, 1.3, 2.6, 4.1, 5.7]
+        guard var probe = renderQuadToTexture(base, center: center, halfExtent: halfExtent, uvScale: uvScale,
+                                               tint: tint, width: probeW, height: probeH) else { return compiled }
+        var probeCoverage = coverage(effectRenderer.readback(probe))
+        var kept: [PreparedEffect] = []
+        for effect in compiled {
+            let aux = Array(repeating: whiteTexture, count: effect.auxCount)
+            var stableOutput: MTLTexture?
+            var stable = true
+            for time in times {
+                let uniforms = UniformPacker.pack(effect.scalars, values: effect.constants, overrides: ["g_Time": [time]])
+                guard let output = effectRenderer.apply(pipeline: effect.pipeline, to: probe, auxTextures: aux,
+                                                        fragmentUniforms: uniforms.isEmpty ? nil : uniforms,
+                                                        width: probeW, height: probeH),
+                      coverage(effectRenderer.readback(output)) >= probeCoverage / 2 else { stable = false; break }
+                if time == 0 { stableOutput = output }
+            }
+            guard stable, let stableOutput else { continue }   // unstable or layer-erasing — skip this pass
+            kept.append(effect)
+            probe = stableOutput
+            probeCoverage = coverage(effectRenderer.readback(stableOutput))
+        }
+        return kept
+    }
+
+    /// How many pixels are meaningfully opaque (alpha > 100) in an RGBA readback — a proxy for how much
+    /// of the layer is still visible after an effect.
+    private func coverage(_ rgba: Data) -> Int {
+        var count = 0
+        for i in stride(from: 3, to: rgba.count, by: 4) where rgba[i] > 100 { count += 1 }
+        return count
     }
 
     /// Render a prepared scene at `time` seconds, applying a gentle automatic camera parallax so layers
@@ -209,27 +291,104 @@ public final class SceneRenderer {
     public func render(_ scene: PreparedScene, width: Int, height: Int, time: Double = 0) -> RenderedFrame? {
         let swayX = Float(0.012 * sin(time * 0.6))
         let swayY = Float(0.009 * sin(time * 0.45))
-        return withRenderPass(clearColor: scene.clearColor, width: width, height: height) { encoder in
-            for layer in scene.layers {
-                var center = SIMD2(layer.center.x + swayX * layer.parallaxDepth.x,
-                                   layer.center.y + swayY * layer.parallaxDepth.y)
-                if let animation = layer.originAnimation {
-                    let offset = animation.offset(at: time)
-                    center.x += Float(offset.x) * layer.originScale.x
-                    center.y += Float(offset.y) * layer.originScale.y
+
+        // Pass 1: a layer with effects is rendered to its own texture and run through its effect chain.
+        // The result is keyed by layer index; layers without effects are drawn directly in the main pass.
+        // Setting LUMORA_NO_EFFECTS skips this and composites every layer flat (a safety/debug switch).
+        var effectResult: [Int: MTLTexture] = [:]
+        if let effectRenderer, ProcessInfo.processInfo.environment["LUMORA_NO_EFFECTS"] == nil {
+            for (index, layer) in scene.layers.enumerated() where !layer.effects.isEmpty {
+                let center = animatedCenter(layer, time: time, swayX: swayX, swayY: swayY)
+                guard var texture = renderQuadToTexture(layer.texture, center: center, halfExtent: layer.halfExtent,
+                                                        uvScale: layer.uvScale, tint: layer.tint,
+                                                        width: width, height: height) else { continue }
+                for effect in layer.effects {
+                    let uniforms = UniformPacker.pack(effect.scalars, values: effect.constants,
+                                                      overrides: ["g_Time": [Float(time)]])
+                    let aux = Array(repeating: whiteTexture, count: effect.auxCount)
+                    guard let output = effectRenderer.apply(pipeline: effect.pipeline, to: texture, auxTextures: aux,
+                                                            fragmentUniforms: uniforms.isEmpty ? nil : uniforms,
+                                                            width: width, height: height) else { break }
+                    texture = output
                 }
-                var quad = QuadUniform(center: center, halfExtent: layer.halfExtent, uvScale: layer.uvScale)
+                effectResult[index] = texture
+            }
+        }
+
+        // Pass 2: composite layers in painter's order — the effect result full-screen for effect layers,
+        // the layer quad directly otherwise.
+        return withRenderPass(clearColor: scene.clearColor, width: width, height: height) { encoder in
+            for (index, layer) in scene.layers.enumerated() {
                 var alpha = layer.alphaAnimation.map { Float($0.value(at: time)) } ?? layer.alpha
-                var tint = layer.tint
                 encoder.setRenderPipelineState(layer.isAdditive ? pipelineAdditive : pipelineOver)
+                var quad: QuadUniform
+                var tint: SIMD3<Float>
+                let texture: MTLTexture
+                if let effected = effectResult[index] {   // effect output already sits at the layer's placement
+                    quad = QuadUniform(center: SIMD2(0, 0), halfExtent: SIMD2(1, 1), uvScale: SIMD2(1, 1))
+                    tint = SIMD3(1, 1, 1)
+                    texture = effected
+                } else {
+                    quad = QuadUniform(center: animatedCenter(layer, time: time, swayX: swayX, swayY: swayY),
+                                       halfExtent: layer.halfExtent, uvScale: layer.uvScale)
+                    tint = layer.tint
+                    texture = layer.texture
+                }
                 encoder.setVertexBytes(&quad, length: MemoryLayout<QuadUniform>.stride, index: 0)
-                encoder.setFragmentTexture(layer.texture, index: 0)
+                encoder.setFragmentTexture(texture, index: 0)
                 encoder.setFragmentSamplerState(sampler, index: 0)
                 encoder.setFragmentBytes(&alpha, length: MemoryLayout<Float>.size, index: 0)
                 encoder.setFragmentBytes(&tint, length: MemoryLayout<SIMD3<Float>>.stride, index: 1)
                 encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
             }
         }
+    }
+
+    /// The layer's clip-space centre at `time`: its placement nudged by the automatic parallax sway and
+    /// any keyframed position animation.
+    private func animatedCenter(_ layer: PreparedLayer, time: Double, swayX: Float, swayY: Float) -> SIMD2<Float> {
+        var center = SIMD2(layer.center.x + swayX * layer.parallaxDepth.x,
+                           layer.center.y + swayY * layer.parallaxDepth.y)
+        if let animation = layer.originAnimation {
+            let offset = animation.offset(at: time)
+            center.x += Float(offset.x) * layer.originScale.x
+            center.y += Float(offset.y) * layer.originScale.y
+        }
+        return center
+    }
+
+    /// Render one quad (a layer's texture at its placement, tint baked in, full opacity) onto a
+    /// transparent target, to feed an effect chain. Returns nil if the target can't be made.
+    private func renderQuadToTexture(_ source: MTLTexture, center: SIMD2<Float>, halfExtent: SIMD2<Float>,
+                                     uvScale: SIMD2<Float>, tint: SIMD3<Float>, width: Int, height: Int) -> MTLTexture? {
+        let descriptor = MTLTextureDescriptor.texture2DDescriptor(
+            pixelFormat: .rgba8Unorm, width: width, height: height, mipmapped: false)
+        descriptor.usage = [.renderTarget, .shaderRead]
+        descriptor.storageMode = .shared
+        guard let texture = device.makeTexture(descriptor: descriptor),
+              let commandBuffer = queue.makeCommandBuffer() else { return nil }
+
+        let pass = MTLRenderPassDescriptor()
+        pass.colorAttachments[0].texture = texture
+        pass.colorAttachments[0].loadAction = .clear
+        pass.colorAttachments[0].storeAction = .store
+        pass.colorAttachments[0].clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 0)
+        guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: pass) else { return nil }
+
+        var quad = QuadUniform(center: center, halfExtent: halfExtent, uvScale: uvScale)
+        var alpha: Float = 1
+        var tintCopy = tint
+        encoder.setRenderPipelineState(pipelineOver)
+        encoder.setVertexBytes(&quad, length: MemoryLayout<QuadUniform>.stride, index: 0)
+        encoder.setFragmentTexture(source, index: 0)
+        encoder.setFragmentSamplerState(sampler, index: 0)
+        encoder.setFragmentBytes(&alpha, length: MemoryLayout<Float>.size, index: 0)
+        encoder.setFragmentBytes(&tintCopy, length: MemoryLayout<SIMD3<Float>>.stride, index: 1)
+        encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
+        encoder.endEncoding()
+        commandBuffer.commit()
+        commandBuffer.waitUntilCompleted()
+        return texture
     }
 
     /// Convenience: prepare and render a scene as a single still frame.
