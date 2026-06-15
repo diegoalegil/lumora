@@ -256,24 +256,32 @@ public final class SceneRenderer {
         let times: [Float] = [0, 1.3, 2.6, 4.1, 5.7]
         guard var probe = renderQuadToTexture(base, center: center, halfExtent: halfExtent, uvScale: uvScale,
                                                tint: tint, width: probeW, height: probeH) else { return compiled }
-        var probeCoverage = coverage(effectRenderer.readback(probe))
+        var probeRGBA = effectRenderer.readback(probe)
+        var probeCoverage = coverage(probeRGBA)
+        var probeDetail = detail(probeRGBA)
         var kept: [PreparedEffect] = []
         for effect in compiled {
             let aux = Array(repeating: whiteTexture, count: effect.auxCount)
             var stableOutput: MTLTexture?
+            var stableRGBA: Data?
             var stable = true
             for time in times {
                 let uniforms = UniformPacker.pack(effect.scalars, values: effect.constants, overrides: ["g_Time": [time]])
                 guard let output = effectRenderer.apply(pipeline: effect.pipeline, to: probe, auxTextures: aux,
                                                         fragmentUniforms: uniforms.isEmpty ? nil : uniforms,
-                                                        width: probeW, height: probeH),
-                      coverage(effectRenderer.readback(output)) >= probeCoverage / 2 else { stable = false; break }
-                if time == 0 { stableOutput = output }
+                                                        width: probeW, height: probeH) else { stable = false; break }
+                let rgba = effectRenderer.readback(output)
+                // Drop a pass that erases the layer's coverage OR flattens it to near-uniform colour — the
+                // latter catches effects that blend against the placeholder aux texture and blow out (e.g.
+                // a screen blend against white), which a coverage-only check misses.
+                guard coverage(rgba) >= probeCoverage / 2, detail(rgba) >= probeDetail / 5 else { stable = false; break }
+                if time == 0 { stableOutput = output; stableRGBA = rgba }
             }
-            guard stable, let stableOutput else { continue }   // unstable or layer-erasing — skip this pass
+            guard stable, let stableOutput, let stableRGBA else { continue }   // unstable / erasing / flattening
             kept.append(effect)
             probe = stableOutput
-            probeCoverage = coverage(effectRenderer.readback(stableOutput))
+            probeCoverage = coverage(stableRGBA)
+            probeDetail = detail(stableRGBA)
         }
         return kept
     }
@@ -284,6 +292,17 @@ public final class SceneRenderer {
         var count = 0
         for i in stride(from: 3, to: rgba.count, by: 4) where rgba[i] > 100 { count += 1 }
         return count
+    }
+
+    /// Variance of the green channel — a proxy for how much image detail survives. Collapses toward 0
+    /// when an effect flattens the layer to a single colour.
+    private func detail(_ rgba: Data) -> Double {
+        var sum = 0.0, sumSq = 0.0, n = 0.0
+        for i in stride(from: 1, to: rgba.count, by: 4) {
+            let v = Double(rgba[i]); sum += v; sumSq += v * v; n += 1
+        }
+        guard n > 0 else { return 0 }
+        return max(0, sumSq / n - (sum / n) * (sum / n))
     }
 
     /// Render a prepared scene at `time` seconds, applying a gentle automatic camera parallax so layers
