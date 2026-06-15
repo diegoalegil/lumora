@@ -18,6 +18,7 @@ public struct RenderedFrame: Sendable {
 private struct QuadUniform {
     var center: SIMD2<Float>
     var halfExtent: SIMD2<Float>
+    var uvScale: SIMD2<Float>
 }
 
 /// Renders a `RenderableScene` to an offscreen frame: clear colour plus every visible image layer
@@ -33,14 +34,14 @@ public final class SceneRenderer {
     private static let shaderSource = """
     #include <metal_stdlib>
     using namespace metal;
-    struct Quad { float2 center; float2 halfExtent; };
+    struct Quad { float2 center; float2 halfExtent; float2 uvScale; };
     struct VOut { float4 position [[position]]; float2 uv; };
     vertex VOut lumora_scene_vertex(uint vid [[vertex_id]], constant Quad &quad [[buffer(0)]]) {
         float2 corner[4] = { float2(-1, -1), float2(1, -1), float2(-1, 1), float2(1, 1) };
         float2 uvs[4]    = { float2(0, 1),  float2(1, 1),  float2(0, 0),  float2(1, 0) };
         VOut out;
         out.position = float4(quad.center + corner[vid] * quad.halfExtent, 0, 1);
-        out.uv = uvs[vid];
+        out.uv = uvs[vid] * quad.uvScale;   // sample only the content region of a padded texture
         return out;
     }
     fragment float4 lumora_scene_fragment(VOut in [[stage_in]],
@@ -119,6 +120,7 @@ public final class SceneRenderer {
             for layer in document.layers where layer.visible {
                 var texture: MTLTexture?
                 var textureW = 0.0, textureH = 0.0
+                var uvScale = SIMD2<Float>(1, 1)
                 var isSolidFill = false
                 if let path = layer.texturePath,
                    let entry = package.entry(named: path),
@@ -127,6 +129,10 @@ public final class SceneRenderer {
                     texture = made
                     textureW = Double(decoded.imageWidth)
                     textureH = Double(decoded.imageHeight)
+                    if decoded.width > 0, decoded.height > 0 {
+                        uvScale = SIMD2(Float(min(1.0, Double(decoded.imageWidth) / Double(decoded.width))),
+                                        Float(min(1.0, Double(decoded.imageHeight) / Double(decoded.height))))
+                    }
                 } else if layer.isSolidLayer, !drewTexturedLayer {
                     texture = whiteTexture            // a background solid fill: white texel, tinted
                     textureW = orthoW
@@ -142,7 +148,8 @@ public final class SceneRenderer {
                 let halfH = sizeH * layer.scale.y / 2
                 var quad = QuadUniform(
                     center: SIMD2(Float(layer.origin.x / orthoW * 2 - 1), Float(layer.origin.y / orthoH * 2 - 1)),
-                    halfExtent: SIMD2(Float(halfW / orthoW * 2), Float(halfH / orthoH * 2)))
+                    halfExtent: SIMD2(Float(halfW / orthoW * 2), Float(halfH / orthoH * 2)),
+                    uvScale: uvScale)
                 var alpha = Float(layer.alpha)
                 var tint = SIMD3<Float>(Float(layer.color.x), Float(layer.color.y), Float(layer.color.z))
                 let isAdditive = layer.blending == "additive" || layer.blending == "add"
@@ -168,7 +175,7 @@ public final class SceneRenderer {
     public func render(texture: MTLTexture?, alpha: Float, clearColor: SceneVec3, width: Int, height: Int) -> RenderedFrame? {
         withRenderPass(clearColor: clearColor, width: width, height: height) { encoder in
             guard let texture else { return }
-            var quad = QuadUniform(center: SIMD2(0, 0), halfExtent: SIMD2(1, 1))
+            var quad = QuadUniform(center: SIMD2(0, 0), halfExtent: SIMD2(1, 1), uvScale: SIMD2(1, 1))
             var layerAlpha = alpha
             var tint = SIMD3<Float>(1, 1, 1)
             encoder.setRenderPipelineState(pipelineOver)
