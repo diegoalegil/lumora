@@ -202,7 +202,7 @@ public enum SceneGraph {
                 alphaAnimation: alphaAnimation(object["alpha"]),
                 originAnimation: vec3Animation(object["origin"]),
                 parallaxDepth: vec(object["parallaxDepth"]),
-                visible: object["visible"] as? Bool ?? true,
+                visible: isVisible(object["visible"]),
                 blending: material.blending,
                 shader: material.shader,
                 effects: effects(of: object, in: package)

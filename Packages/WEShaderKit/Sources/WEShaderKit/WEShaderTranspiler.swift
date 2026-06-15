@@ -130,14 +130,16 @@ public enum WEShaderTranspiler {
 
     /// The contents of `void main() { … }` with comments and preprocessor lines stripped.
     private static func mainBody(of source: String) -> String {
-        var cleaned = stripLineComments(source)
+        var cleaned = stripLineComments(stripBlockComments(source))
         cleaned = cleaned.split(separator: "\n", omittingEmptySubsequences: false)
             .filter { !$0.trimmingCharacters(in: .whitespaces).hasPrefix("#") }
             .joined(separator: "\n")
         guard let openRange = cleaned.range(of: "void main"),
               let braceIndex = cleaned[openRange.upperBound...].firstIndex(of: "{") else { return "" }
         let afterBrace = cleaned.index(after: braceIndex)
-        guard let closing = cleaned.lastIndex(of: "}") else { return String(cleaned[afterBrace...]) }
+        // The closing brace must come after the opening one; if comment stripping left an earlier `}` as
+        // the last, take the rest of the source rather than form an invalid range.
+        guard let closing = cleaned.lastIndex(of: "}"), closing >= afterBrace else { return String(cleaned[afterBrace...]) }
         return String(cleaned[afterBrace..<closing])
     }
 
@@ -148,11 +150,31 @@ public enum WEShaderTranspiler {
         }.joined(separator: "\n")
     }
 
+    /// Remove `//` line comments and `/* … */` block comments. `//` is matched first so a `//*` line
+    /// comment isn't mistaken for a block opener (GLSL block comments don't nest); an unterminated block
+    /// drops the rest, matching a compiler.
+    private static func stripBlockComments(_ source: String) -> String {
+        var result = ""
+        var index = source.startIndex
+        while index < source.endIndex {
+            if source[index...].hasPrefix("//") {
+                while index < source.endIndex, source[index] != "\n" { index = source.index(after: index) }
+            } else if source[index...].hasPrefix("/*") {
+                guard let end = source.range(of: "*/", range: index ..< source.endIndex) else { break }
+                index = end.upperBound
+            } else {
+                result.append(source[index])
+                index = source.index(after: index)
+            }
+        }
+        return result
+    }
+
     private static func rewriteIntrinsics(_ body: String) -> String {
         var out = body
         out = rewriteTexLod(out)   // texSample2DLod(g_Tex, uv, lod) → g_Tex.sample(g_Tex_smp, uv, level(lod))
-        // texSample2D(g_Tex, uv) → g_Tex.sample(g_Tex_smp, uv)
-        let texCall = try! NSRegularExpression(pattern: #"texSample2D\(\s*(g_\w+)\s*,"#)
+        // texSample2D(g_Tex, uv) → g_Tex.sample(g_Tex_smp, uv) — any sampler name (g_*, u_*).
+        let texCall = try! NSRegularExpression(pattern: #"texSample2D\(\s*(\w+)\s*,"#)
         out = texCall.stringByReplacingMatches(in: out, range: NSRange(out.startIndex..., in: out),
                                                withTemplate: "$1.sample($1_smp,")
         out = rewriteMul(out)   // HLSL-style mul(a, b) → (a * b)
@@ -192,7 +214,13 @@ public enum WEShaderTranspiler {
     /// nested calls and comma-bearing arguments survive.
     private static func rewriteMul(_ source: String) -> String {
         var s = source
-        while let call = s.range(of: "mul(") {
+        var searchFrom = s.startIndex
+        while let call = s.range(of: "mul(", range: searchFrom ..< s.endIndex) {
+            // Skip a "mul(" that's the tail of a longer identifier (premul(, accumul(, …).
+            if call.lowerBound > s.startIndex {
+                let before = s[s.index(before: call.lowerBound)]
+                if before.isLetter || before.isNumber || before == "_" { searchFrom = call.upperBound; continue }
+            }
             var depth = 1
             var comma: String.Index?
             var close: String.Index?
@@ -211,6 +239,7 @@ public enum WEShaderTranspiler {
             let a = s[call.upperBound..<commaIndex].trimmingCharacters(in: .whitespacesAndNewlines)
             let b = s[s.index(after: commaIndex)..<closeIndex].trimmingCharacters(in: .whitespacesAndNewlines)
             s.replaceSubrange(call.lowerBound...closeIndex, with: "((\(a)) * (\(b)))")
+            searchFrom = s.startIndex   // the string shifted; rescan (skipping any leading premul again)
         }
         return s
     }
