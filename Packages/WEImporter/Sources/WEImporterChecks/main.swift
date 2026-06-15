@@ -471,6 +471,24 @@ Check.throwsError("rejects invalid scene.json",
                                        files: [("scene.json", Data("not json".utf8))]))) },
                   satisfies: { if case SceneGraphError.invalidSceneJSON = $0 { return true }; return false })
 
+let effectPkg = buildPKG(version: "PKGV0009", files: [
+    ("scene.json", Data(#"{"objects":[{"image":"models/m.json","effects":[{"file":"effects/pulse/effect.json","passes":[{"constantshadervalues":{"ui_editor_properties_pulse_speed":2.9,"ui_editor_properties_tint_high":"0.9 0.8 0.7"}}]}]}]}"#.utf8)),
+    ("models/m.json", Data(#"{"material":"materials/mat.json"}"#.utf8)),
+    ("materials/mat.json", Data(#"{"passes":[{"textures":["t"]}]}"#.utf8)),
+    ("materials/t.tex", Data("x".utf8)),
+    ("effects/pulse/effect.json", Data(#"{"passes":[{"material":"materials/effects/pulse.json"}]}"#.utf8)),
+    ("materials/effects/pulse.json", Data(#"{"passes":[{"shader":"effects/pulse"}]}"#.utf8)),
+])
+if let pkg = try? ScenePackage.read(effectPkg), let doc = try? SceneGraph.load(from: pkg),
+   let layer = doc.layers.first {
+    Check.section("LayerEffect")
+    Check.that("layer resolves one effect", layer.effects.count == 1)
+    Check.that("effect resolves its fragment shader path", layer.effects.first?.fragmentShaderPath == "shaders/effects/pulse.frag")
+    Check.that("effect is named for its folder", layer.effects.first?.name == "pulse")
+    Check.that("effect captures a numeric constant", layer.effects.first?.constants["ui_editor_properties_pulse_speed"] == "2.9")
+    Check.that("effect captures a vector constant", layer.effects.first?.constants["ui_editor_properties_tint_high"] == "0.9 0.8 0.7")
+}
+
 Check.section("AlphaAnimation")
 let alphaAnim = AlphaAnimation(keyframes: [AlphaKeyframe(frame: 0, value: 0),
                                            AlphaKeyframe(frame: 30, value: 1),

@@ -79,6 +79,22 @@ public struct Vec3Animation: Sendable, Equatable {
     }
 }
 
+/// A post-process effect applied to a layer (pulse, blur, tint, water…): the shader to run and the
+/// constant uniform values to feed it, keyed by the shader's `ui_editor_properties_*` annotation.
+public struct LayerEffect: Sendable, Equatable {
+    public let name: String
+    public let fragmentShaderPath: String   // e.g. "shaders/effects/pulse.frag"
+    public let vertexShaderPath: String     // e.g. "shaders/effects/pulse.vert"
+    public let constants: [String: String]  // property key → value (number or space-separated vector)
+
+    public init(name: String, fragmentShaderPath: String, vertexShaderPath: String, constants: [String: String]) {
+        self.name = name
+        self.fragmentShaderPath = fragmentShaderPath
+        self.vertexShaderPath = vertexShaderPath
+        self.constants = constants
+    }
+}
+
 /// One renderable image layer of a scene: the texture to draw and where/how to draw it.
 public struct SceneLayer: Sendable, Equatable {
     public let name: String
@@ -104,6 +120,8 @@ public struct SceneLayer: Sendable, Equatable {
     public let visible: Bool
     public let blending: String?
     public let shader: String?
+    /// Post-process effects applied to the layer, in order.
+    public let effects: [LayerEffect]
 }
 
 /// A parsed scene: its orthographic size, clear colour and ordered image layers (painter's order).
@@ -158,7 +176,8 @@ public enum SceneGraph {
                 parallaxDepth: vec(object["parallaxDepth"]),
                 visible: object["visible"] as? Bool ?? true,
                 blending: material.blending,
-                shader: material.shader
+                shader: material.shader,
+                effects: effects(of: object, in: package)
             ))
         }
         return RenderableScene(
@@ -185,6 +204,42 @@ public enum SceneGraph {
             }
         }
         return (texture, pass["blending"] as? String, pass["shader"] as? String)
+    }
+
+    /// Resolve a layer's post-process effects: each `object.effects[i].file` → effect.json → material →
+    /// shader path, with the constant uniform values from the effect's `constantshadervalues`.
+    static func effects(of object: [String: Any], in package: ScenePackage) -> [LayerEffect] {
+        guard let entries = object["effects"] as? [[String: Any]] else { return [] }
+        var result: [LayerEffect] = []
+        for entry in entries {
+            guard let file = entry["file"] as? String,
+                  let effect = json(package.entry(named: file)),
+                  let materialPath = (effect["passes"] as? [[String: Any]])?.first?["material"] as? String,
+                  let material = json(package.entry(named: materialPath)),
+                  let shader = (material["passes"] as? [[String: Any]])?.first?["shader"] as? String else { continue }
+            var constants: [String: String] = [:]
+            if let pass = (entry["passes"] as? [[String: Any]])?.first,
+               let values = pass["constantshadervalues"] as? [String: Any] {
+                for (key, value) in values where constantString(value) != nil {
+                    constants[key] = constantString(value)
+                }
+            }
+            let name = URL(fileURLWithPath: file).deletingLastPathComponent().lastPathComponent
+            result.append(LayerEffect(
+                name: name.isEmpty ? file : name,
+                fragmentShaderPath: "shaders/\(shader).frag",
+                vertexShaderPath: "shaders/\(shader).vert",
+                constants: constants))
+        }
+        return result
+    }
+
+    private static func constantString(_ value: Any?) -> String? {
+        switch value {
+        case let string as String: return string
+        case let number as NSNumber: return number.stringValue
+        default: return nil
+        }
     }
 
     /// `alpha` is either a number or an animated `{ "value": Double, … }` object — take its base value
