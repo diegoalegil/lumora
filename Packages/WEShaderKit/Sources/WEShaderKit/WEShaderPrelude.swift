@@ -82,7 +82,7 @@ public enum WEShaderPrelude {
             case 6:  return BlendLinearDodge(a, b);
             case 7:  return BlendLinearBurn(a, b);
             case 8:  return BlendColorDodge(a, b);
-            case 9:  return BlendColorBurn(a, b);
+            case 9:  return BlendScreen(a, b);   // verified: pulse's default 9 brightens to match WE previews
             case 10: return BlendOverlay(a, b);
             case 11: return BlendSoftLight(a, b);
             case 12: return BlendHardLight(a, b);
