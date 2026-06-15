@@ -23,6 +23,7 @@ public final class WebPlayer: WallpaperRenderer {
     public static let supportedType: WallpaperType = .web
 
     private let webView: WKWebView
+    private var navigationGuard: NavigationGuard?
 
     public init() {
         let configuration = WKWebViewConfiguration()
@@ -43,6 +44,11 @@ public final class WebPlayer: WallpaperRenderer {
         guard wallpaper.type == Self.supportedType else {
             throw WebPlayerError.unsupportedType(wallpaper.type)
         }
+        // The page is untrusted: confine its navigations to its own folder before loading it, so a
+        // redirect or remote frame to the network is cancelled.
+        let navigationGuard = NavigationGuard(policy: WallpaperNavigationPolicy(confinedTo: wallpaper.ref.folderURL))
+        webView.navigationDelegate = navigationGuard
+        self.navigationGuard = navigationGuard
         // Grant read access to the wallpaper folder so the page can reach its css/js/image assets.
         webView.loadFileURL(wallpaper.mainFileURL, allowingReadAccessTo: wallpaper.ref.folderURL)
     }

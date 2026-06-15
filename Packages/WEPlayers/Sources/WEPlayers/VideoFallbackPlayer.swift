@@ -14,6 +14,9 @@ public final class VideoFallbackPlayer: WallpaperRenderer {
 
     private let webView: WKWebView
     private let handler = AssetSchemeHandler()
+    // The page only ever loads over the private asset scheme; block any navigation the wallpaper's
+    // markup attempts to the network. Retained because `navigationDelegate` is weak.
+    private let navigationGuard = NavigationGuard(policy: WallpaperNavigationPolicy())
 
     public init() {
         let configuration = WKWebViewConfiguration()
@@ -21,6 +24,7 @@ public final class VideoFallbackPlayer: WallpaperRenderer {
         configuration.setURLSchemeHandler(handler, forURLScheme: AssetSchemeHandler.scheme)
         webView = WKWebView(frame: .zero, configuration: configuration)
         webView.underPageBackgroundColor = .black
+        webView.navigationDelegate = navigationGuard
     }
 
     public func makeHostedView() -> NSView { webView }
