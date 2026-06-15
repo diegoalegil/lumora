@@ -104,8 +104,9 @@ public final class ScenePlayer: WallpaperRenderer {
 
     private func startLoopIfAnimated() {
         guard !isPaused, timer == nil, let prepared, prepared.hasAnimation else { return }
-        let timer = Timer(timeInterval: Self.frameInterval, target: self,
-                          selector: #selector(tick), userInfo: nil, repeats: true)
+        // A block timer with a weak self avoids the retain cycle a `target: self` timer creates (the run
+        // loop keeps the timer alive, so a strong target would outlive a torn-down player).
+        let timer = Timer(timeInterval: Self.frameInterval, repeats: true) { [weak self] _ in self?.tick() }
         RunLoop.main.add(timer, forMode: .common)
         self.timer = timer
     }
@@ -115,7 +116,7 @@ public final class ScenePlayer: WallpaperRenderer {
         timer = nil
     }
 
-    @objc private func tick() {
+    private func tick() {
         elapsed += Self.frameInterval
         present()
     }
