@@ -23,8 +23,16 @@ public enum UniformPacker {
                 let source = uniform.material.flatMap { values[$0] } ?? uniform.defaultValue ?? "0"
                 components = floats(source, count: info.components)
             }
-            for component in components { buffer.appendFloat(component) }
-            buffer.pad(to: buffer.count + (info.stride - info.components * 4))
+            if uniform.type == "mat3" {
+                // float3x3 in MSL is three columns of float3, each padded to 16 bytes (48 total).
+                for column in 0 ..< 3 {
+                    for row in 0 ..< 3 { buffer.appendFloat(components[column * 3 + row]) }
+                    buffer.appendFloat(0)
+                }
+            } else {
+                for component in components { buffer.appendFloat(component) }
+                buffer.pad(to: buffer.count + (info.stride - info.components * 4))
+            }
         }
         buffer.pad(to: align(buffer.count, to: maxAlignment))
         return buffer
@@ -37,6 +45,8 @@ public enum UniformPacker {
         case "vec2":  return (8, 8, 2)
         case "vec3":  return (16, 16, 3)   // a float3 occupies 16 bytes in a struct
         case "vec4":  return (16, 16, 4)
+        case "mat2":  return (8, 16, 4)    // two float2 columns, contiguous
+        case "mat3":  return (16, 48, 9)   // three float3 columns, each padded to 16 (handled in pack)
         case "mat4":  return (16, 64, 16)
         default:      return (4, 4, 1)
         }

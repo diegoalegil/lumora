@@ -205,5 +205,11 @@ Check.that("vec3 is aligned to offset 16 (float index 4)",
 let defaulted = UniformPacker.pack([ShaderUniform(type: "float", name: "g_X", material: "x", defaultValue: "0.25")], values: [:])
 Check.that("falls back to the default when no value is given",
            defaulted.withUnsafeBytes { $0.bindMemory(to: Float.self)[0] } == 0.25)
+// A mat3 uniform is three float3 columns each padded to 16 bytes (48 total) — packing it as 9 contiguous
+// floats would desync every uniform after it.
+let mat3 = UniformPacker.pack([ShaderUniform(type: "mat3", name: "g_M", material: "m")], values: ["m": "1 2 3 4 5 6 7 8 9"])
+let mat3Floats = mat3.withUnsafeBytes { Array($0.bindMemory(to: Float.self)) }
+Check.that("mat3 packs to 48 bytes with per-column padding",
+           mat3.count == 48 && mat3Floats[3] == 0 && mat3Floats[4] == 4 && mat3Floats[8] == 7)
 
 Check.summarize()
