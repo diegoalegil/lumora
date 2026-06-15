@@ -23,6 +23,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     /// The wallpaper to play, chosen at launch from the installed library (nil → solid fallback).
     private var activeWallpaper: ResolvedWallpaper?
+    /// The playable wallpapers offered in the picker, and the user's saved choice.
+    private var playableWallpapers: [ResolvedWallpaper] = []
+    private var selectedWallpaperID: String?
+    private var wallpaperSubmenu: NSMenu?
+    private static let selectedWallpaperKey = "LumoraSelectedWallpaperID"
 
     override init() {
         // Window factory: build the desktop window + an empty host. Renderers are attached in
@@ -60,7 +65,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // can pick a renderer. Disk-only; nothing is downloaded.
         let library = Self.scanLibrary()
         NSLog("Lumora: \(LibrarySummary.line(for: library))")
-        activeWallpaper = PlayableWallpapers.active(in: library.wallpapers, selectedID: nil)
+        playableWallpapers = PlayableWallpapers.all(in: library.wallpapers)
+        selectedWallpaperID = UserDefaults.standard.string(forKey: Self.selectedWallpaperKey)
+        activeWallpaper = PlayableWallpapers.active(in: playableWallpapers, selectedID: selectedWallpaperID)
+        rebuildWallpaperMenu()
 
         screenManager.onChange = { [weak self] in self?.reconcile() }
         coordinator.start()      // begin monitoring (no windows yet)
@@ -90,6 +98,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
 
         coordinator?.evaluate()
+    }
+
+    /// Swap every display's renderer to the current active wallpaper.
+    private func reloadRenderers() {
+        renderers.values.forEach { $0.tearDown() }
+        renderers.removeAll()
+        reconcile()
     }
 
     /// One renderer per display for the active wallpaper, routed to the right player by type, or the
@@ -132,6 +147,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         let menu = NSMenu()
 
+        let wallpaperItem = NSMenuItem(title: "Wallpaper", action: nil, keyEquivalent: "")
+        wallpaperItem.submenu = NSMenu()
+        menu.addItem(wallpaperItem)
+        wallpaperSubmenu = wallpaperItem.submenu
+        menu.addItem(.separator())
+
         let pause = NSMenuItem(title: "Pause Wallpapers", action: #selector(togglePause), keyEquivalent: "")
         pause.target = self
         menu.addItem(pause)
@@ -162,6 +183,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func updateMenuState() {
         pauseMenuItem?.title = isPaused ? "Resume Wallpapers" : "Pause Wallpapers"
         loginMenuItem?.state = loginItem.isEnabled ? .on : .off
+    }
+
+    /// Populate the Wallpaper submenu from the discovered library, checking the active one.
+    private func rebuildWallpaperMenu() {
+        guard let submenu = wallpaperSubmenu else { return }
+        submenu.removeAllItems()
+
+        guard !playableWallpapers.isEmpty else {
+            let empty = NSMenuItem(title: "No wallpapers found", action: nil, keyEquivalent: "")
+            empty.isEnabled = false
+            submenu.addItem(empty)
+            return
+        }
+
+        for wallpaper in playableWallpapers {
+            let name = wallpaper.manifest.title ?? ""
+            let item = NSMenuItem(title: name.isEmpty ? wallpaper.ref.id : name,
+                                  action: #selector(selectWallpaper(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = wallpaper.ref.id
+            item.state = (wallpaper.ref.id == activeWallpaper?.ref.id) ? .on : .off
+            submenu.addItem(item)
+        }
+    }
+
+    @objc private func selectWallpaper(_ sender: NSMenuItem) {
+        guard let id = sender.representedObject as? String else { return }
+        selectedWallpaperID = id
+        UserDefaults.standard.set(id, forKey: Self.selectedWallpaperKey)
+        activeWallpaper = PlayableWallpapers.active(in: playableWallpapers, selectedID: id)
+        reloadRenderers()
+        rebuildWallpaperMenu()
     }
 
     @objc private func togglePause() {
