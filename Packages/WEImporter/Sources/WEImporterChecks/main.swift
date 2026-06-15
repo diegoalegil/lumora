@@ -283,6 +283,63 @@ Check.throwsError("rejects an entry pointing out of bounds", {
     return try ScenePackage.read(d)
 }, satisfies: { if case ScenePackageError.entryOutOfBounds = $0 { return true }; return false })
 
+// MARK: - SceneTexture (.tex header reader)
+
+@MainActor func cstr(_ s: String) -> Data {
+    var d = Data(s.utf8); d.append(0); return d
+}
+
+/// Assemble a .tex header as Wallpaper Engine writes it: TEXV/TEXI labels, format + flags + the two
+/// dimension pairs + a trailing u32, then a TEXB mip-container label and a mip count.
+@MainActor func buildTexHeader(format: Int, texW: Int, texH: Int, imgW: Int, imgH: Int,
+                               mipContainer: String, mipCount: Int) -> Data {
+    var d = Data()
+    d.append(cstr("TEXV0005"))
+    d.append(cstr("TEXI0001"))
+    d.append(le32(format)); d.append(le32(2))            // flags
+    d.append(le32(texW)); d.append(le32(texH))
+    d.append(le32(imgW)); d.append(le32(imgH))
+    d.append(le32(0xff5c6b7f))                           // the trailing u32 before the mip container
+    d.append(cstr(mipContainer))
+    d.append(le32(mipCount))
+    return d
+}
+
+Check.section("SceneTexture")
+let texDXT5 = buildTexHeader(format: 4, texW: 4096, texH: 4096, imgW: 3840, imgH: 2160,
+                             mipContainer: "TEXB0003", mipCount: 1)
+if let h = Check.noThrow("reads a .tex header", { try SceneTexture.readHeader(texDXT5) }) {
+    Check.that("container version", h.containerVersion == "TEXV0005")
+    Check.that("format code maps to DXT5", h.format == .dxt5)
+    Check.that("texture (pow2) dims", h.textureWidth == 4096 && h.textureHeight == 4096)
+    Check.that("image dims", h.imageWidth == 3840 && h.imageHeight == 2160)
+    Check.that("mip container version", h.mipContainerVersion == "TEXB0003")
+    Check.that("mip count", h.mipCount == 1)
+    Check.that("TEXB0003 implies LZ4 compression", h.compression == .lz4)
+}
+Check.that("TEXB0002 is uncompressed",
+           (try? SceneTexture.readHeader(buildTexHeader(format: 0, texW: 512, texH: 512, imgW: 500, imgH: 500,
+                                                        mipContainer: "TEXB0002", mipCount: 3)))?.compression == TextureCompression.none)
+Check.that("RGBA8888 format code maps",
+           (try? SceneTexture.readHeader(buildTexHeader(format: 0, texW: 8, texH: 8, imgW: 8, imgH: 8,
+                                                        mipContainer: "TEXB0004", mipCount: 1)))?.format == TextureFormat.rgba8888)
+Check.that("R8 format code maps",
+           (try? SceneTexture.readHeader(buildTexHeader(format: 9, texW: 8, texH: 8, imgW: 8, imgH: 8,
+                                                        mipContainer: "TEXB0004", mipCount: 1)))?.format == TextureFormat.r8)
+Check.that("an unknown format code is preserved, not fatal", {
+    guard let h = try? SceneTexture.readHeader(buildTexHeader(format: 999, texW: 8, texH: 8, imgW: 8, imgH: 8,
+                                                              mipContainer: "TEXB0003", mipCount: 1)) else { return false }
+    return h.format == nil && h.formatCode == 999
+}())
+Check.throwsError("rejects a non-TEX container",
+                  { try SceneTexture.readHeader(cstr("ZIPV0001") + cstr("TEXI0001") + le32(0)) },
+                  satisfies: { if case SceneTextureError.badContainer = $0 { return true }; return false })
+Check.throwsError("rejects a truncated header", { try SceneTexture.readHeader(cstr("TEXV0005")) })
+Check.throwsError("rejects a bad mip container",
+                  { try SceneTexture.readHeader(buildTexHeader(format: 0, texW: 8, texH: 8, imgW: 8, imgH: 8,
+                                                               mipContainer: "JUNK0001", mipCount: 1)) },
+                  satisfies: { if case SceneTextureError.badMipContainer = $0 { return true }; return false })
+
 // MARK: - Done
 
 try? fm.removeItem(at: tmpRoot)
