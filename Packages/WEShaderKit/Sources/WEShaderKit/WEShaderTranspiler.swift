@@ -28,7 +28,8 @@ public enum WEShaderTranspiler {
         // gl_FragColor → a local we collect and return.
         body = qualify(body, name: "gl_FragColor", with: "_fragColor")
 
-        var msl = "#include <metal_stdlib>\nusing namespace metal;\n\n" + comboConstants(combos) + WEShaderPrelude.msl
+        var msl = "#include <metal_stdlib>\nusing namespace metal;\n\n" + comboConstants(combos)
+            + WEShaderPrelude.msl + helperFunctions(of: resolved)
 
         msl += "struct VaryingIn {\n"
         for (index, varying) in varyings.enumerated() {
@@ -76,7 +77,8 @@ public enum WEShaderTranspiler {
         for uniform in scalars { body = qualify(body, name: uniform.name, with: "u.\(uniform.name)") }
         body = qualify(body, name: "gl_Position", with: "out.position")
 
-        var msl = "#include <metal_stdlib>\nusing namespace metal;\n\n" + comboConstants(combos) + WEShaderPrelude.msl
+        var msl = "#include <metal_stdlib>\nusing namespace metal;\n\n" + comboConstants(combos)
+            + WEShaderPrelude.msl + helperFunctions(of: resolved)
         msl += "struct VertexIn {\n"
         for (index, attribute) in attributes.enumerated() {
             msl += "    \(mslType(attribute.type)) \(attribute.name) [[attribute(\(index))]];\n"
@@ -141,6 +143,74 @@ public enum WEShaderTranspiler {
         // the last, take the rest of the source rather than form an invalid range.
         guard let closing = cleaned.lastIndex(of: "}"), closing >= afterBrace else { return String(cleaned[afterBrace...]) }
         return String(cleaned[afterBrace..<closing])
+    }
+
+    /// The names of the functions the prelude already defines, so a shader's own copy isn't emitted on
+    /// top of them (a redefinition).
+    private static let preludeFunctionNames: Set<String> = {
+        var names: Set<String> = []
+        let regex = try! NSRegularExpression(pattern: #"inline\s+\w+\s+(\w+)\s*\("#)
+        WEShaderPrelude.msl.enumerateLines { line, _ in
+            let whole = NSRange(line.startIndex..., in: line)
+            if let m = regex.firstMatch(in: line, range: whole), let r = Range(m.range(at: 1), in: line) {
+                names.insert(String(line[r]))
+            }
+        }
+        return names
+    }()
+
+    /// Emit the shader's own top-level helper functions and structs (everything but `main`) so code that
+    /// calls them compiles. MSL free functions can't reach the fragment's globals, so a helper that
+    /// references a uniform/sampler (g_*, u_*, texSample, gl_*) is skipped, as is one whose name the
+    /// prelude already provides — both would otherwise fail to compile or redefine.
+    private static func helperFunctions(of source: String) -> String {
+        let cleaned = stripLineComments(stripBlockComments(source)).split(separator: "\n", omittingEmptySubsequences: false)
+            .filter { !$0.trimmingCharacters(in: .whitespaces).hasPrefix("#") }.joined(separator: "\n")
+        var out = ""
+        for (signature, body) in topLevelBlocks(cleaned) {
+            guard let paren = signature.firstIndex(of: "(") else {   // a struct or non-function block
+                if signature.trimmingCharacters(in: .whitespaces).hasPrefix("struct") {
+                    out += rewriteTypes(signature) + " {" + rewriteTypes(body) + "};\n"
+                }
+                continue
+            }
+            let name = String(signature[..<paren].split(whereSeparator: { !$0.isLetter && !$0.isNumber && $0 != "_" }).last ?? "")
+            if name.isEmpty || name == "main" || preludeFunctionNames.contains(name) { continue }
+            let text = signature + body
+            if text.contains("g_") || text.contains("u_") || text.contains("texSample") || text.contains("gl_") { continue }
+            out += rewriteTypes(rewriteIntrinsics(signature)) + " {" + rewriteTypes(rewriteIntrinsics(body)) + "}\n"
+        }
+        return out
+    }
+
+    /// Split a shader's top level into `(signature, body)` pairs — each `…{ … }` block (function or
+    /// struct), with `signature` the text since the previous top-level `;`/`}`.
+    private static func topLevelBlocks(_ source: String) -> [(signature: String, body: String)] {
+        var blocks: [(String, String)] = []
+        var depth = 0
+        var segmentStart = source.startIndex
+        var bodyStart: String.Index?
+        var i = source.startIndex
+        while i < source.endIndex {
+            switch source[i] {
+            case "{":
+                if depth == 0 { bodyStart = i }
+                depth += 1
+            case "}":
+                depth -= 1
+                if depth == 0, let start = bodyStart {
+                    blocks.append((String(source[segmentStart..<start]).trimmingCharacters(in: .whitespacesAndNewlines),
+                                   String(source[source.index(after: start)..<i])))
+                    bodyStart = nil
+                    segmentStart = source.index(after: i)
+                }
+            case ";" where depth == 0:
+                segmentStart = source.index(after: i)
+            default: break
+            }
+            i = source.index(after: i)
+        }
+        return blocks
     }
 
     private static func stripLineComments(_ source: String) -> String {
