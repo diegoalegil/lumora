@@ -93,6 +93,8 @@ makeItem(content1, id: "1008_missingasset",
 makeItem(content1, id: "1009_unknown",
          projectJSON: #"{"title":"Huh","type":"foo","file":"x.bin"}"#,
          assets: ["x.bin"])
+makeItem(content1, id: "1010_traversal",
+         projectJSON: #"{"title":"Escape","type":"video","file":"../../../../etc/passwd"}"#)
 
 // Library 2: one good wallpaper, proving multi-library discovery.
 makeItem(content2, id: "2001_video",
@@ -145,7 +147,7 @@ Check.that("default steam root is ~/Library/Application Support/Steam",
            SteamLibraryLocator.defaultSteamRoots().first?.path.hasSuffix("Library/Application Support/Steam") == true)
 
 let itemFolders = locator.workshopItemFolders()
-Check.that("finds all 10 item folders", itemFolders.count == 10)
+Check.that("finds all 11 item folders", itemFolders.count == 11)
 Check.that("includes lib2's item", itemFolders.contains { $0.lastPathComponent == "2001_video" })
 
 let emptyLocator = SteamLibraryLocator(steamRoots: [tmpRoot.appendingPathComponent("does_not_exist")])
@@ -173,13 +175,14 @@ if let video = result.wallpapers.first(where: { $0.ref.folderURL.lastPathCompone
 @MainActor func reason(_ folderName: String) -> ImportDiagnostic.Reason? {
     result.rejected.first { $0.folderURL.lastPathComponent == folderName }?.reason
 }
-Check.that("6 folders rejected", result.rejected.count == 6)
+Check.that("7 folders rejected", result.rejected.count == 7)
 Check.that("'application' type rejected", reason("1004_app") == .unsupportedApplication)
 Check.that("corrupt manifest rejected", isCorruptManifest(reason("1005_corrupt")))
 Check.that("missing project.json rejected", reason("1006_noproj") == .missingProjectJSON)
 Check.that("empty main file rejected", reason("1007_nofile") == .missingMainFile)
 Check.that("missing main asset rejected", reason("1008_missingasset") == .missingMainAsset("gone.mp4"))
 Check.that("unknown type rejected", reason("1009_unknown") == .unknownType("foo"))
+Check.that("path-traversal main file rejected", reason("1010_traversal") == .unsafeMainFile("../../../../etc/passwd"))
 
 // Direct single-folder scan also produces a diagnostic for a missing folder.
 let ghost = scanner.scan(folderURL: content1.appendingPathComponent("nope"))
@@ -192,7 +195,7 @@ Check.that("scanning a folder with no project.json is a failure", {
 
 Check.section("LibrarySummary")
 Check.that("summarizes the scanned library",
-           LibrarySummary.line(for: result) == "4 wallpapers (2 video, 1 web, 1 scene), 6 skipped")
+           LibrarySummary.line(for: result) == "4 wallpapers (2 video, 1 web, 1 scene), 7 skipped")
 Check.that("empty library reads cleanly",
            LibrarySummary.line(for: LibraryScanResult(wallpapers: [], rejected: [])) == "0 wallpapers")
 let oneVideo = result.wallpapers.filter { $0.type == .video }.prefix(1)

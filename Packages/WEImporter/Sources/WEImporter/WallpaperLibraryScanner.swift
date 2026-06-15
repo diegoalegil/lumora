@@ -77,9 +77,11 @@ public struct WallpaperLibraryScanner: Sendable {
             case .unknown(let raw):       return .unknownType(raw)
             }
         }
-        // RoutingError currently has the single `missingMainFile` case.
-        if error is RoutingError {
-            return .missingMainFile
+        if let routing = error as? RoutingError {
+            switch routing {
+            case .missingMainFile:        return .missingMainFile
+            case .unsafeMainFile(let f):  return .unsafeMainFile(f)
+            }
         }
         return .corruptManifest(message(for: error))
     }
