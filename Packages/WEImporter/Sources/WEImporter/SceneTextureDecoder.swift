@@ -80,6 +80,9 @@ public extension SceneTexture {
 
         let pixels: Data
         if isCompressed == 1 {
+            // A decompressed size larger than one full RGBA8 frame is a multi-frame texture we can't read
+            // as a single image — skip it rather than render a garbled frame.
+            guard decompressedSize <= mipWidth * mipHeight * 4 else { throw SceneTextureError.decodeFailed }
             pixels = try Self.lz4Decompress(payload, expectedSize: decompressedSize)
         } else {
             // A raw payload bigger than one full RGBA8 frame is a multi-frame texture we can't read as a
