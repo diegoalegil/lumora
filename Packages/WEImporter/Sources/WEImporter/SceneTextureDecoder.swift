@@ -86,9 +86,14 @@ public extension SceneTexture {
         return false
     }
 
+    /// The largest decoded mip we will allocate, to bound a hostile or corrupt size field. 256 MB
+    /// comfortably covers an 8192×8192 RGBA texture; the real library tops out near 33 MB.
+    internal static let maxDecodedBytes = 256 * 1024 * 1024
+
     /// LZ4 (raw block) decompression to exactly `expectedSize` bytes.
     internal static func lz4Decompress(_ source: Data, expectedSize: Int) throws -> Data {
-        guard expectedSize > 0 else { return Data() }
+        // `expectedSize` is an attacker-controlled u32 from the mip header — bound it before allocating.
+        guard expectedSize > 0, expectedSize <= maxDecodedBytes else { throw SceneTextureError.decodeFailed }
         var destination = Data(count: expectedSize)
         let produced = destination.withUnsafeMutableBytes { (dst: UnsafeMutableRawBufferPointer) -> Int in
             source.withUnsafeBytes { (src: UnsafeRawBufferPointer) -> Int in
@@ -106,7 +111,9 @@ public extension SceneTexture {
         guard let source = CGImageSourceCreateWithData(data as CFData, nil),
               let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else { return nil }
         let width = image.width, height = image.height
-        guard width > 0, height > 0 else { return nil }
+        // Dimensions come from an attacker-controlled embedded image; cap them at Metal's max texture
+        // size so a crafted header can't request a multi-gigabyte allocation.
+        guard width > 0, height > 0, width <= 16384, height <= 16384 else { return nil }
         var rgba = Data(count: width * height * 4)
         let ok = rgba.withUnsafeMutableBytes { (raw: UnsafeMutableRawBufferPointer) -> Bool in
             guard let base = raw.baseAddress,

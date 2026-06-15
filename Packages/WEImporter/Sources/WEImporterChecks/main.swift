@@ -426,6 +426,10 @@ Check.throwsError("rejects an LZ4 mip with a corrupt payload", {
     try SceneTexture.decodeFirstMip(buildTexWithMip(version: "TEXB0003", format: 0, mipW: 32, mipH: 32,
                                                     isCompressed: 1, decompressedSize: 4096, payload: Data(repeating: 0, count: 8)))
 })
+Check.throwsError("rejects an absurd decompressed size (allocation bound)", {
+    try SceneTexture.decodeFirstMip(buildTexWithMip(version: "TEXB0003", format: 0, mipW: 4, mipH: 4,
+                                                    isCompressed: 1, decompressedSize: 1_000_000_000, payload: Data(repeating: 0, count: 8)))
+})
 
 // MARK: - SceneGraph (scene.json -> renderable layers)
 
