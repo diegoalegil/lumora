@@ -60,8 +60,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // Discover the user's installed wallpapers once, before windows are built, so reconcile()
         // can pick a renderer. Disk-only; nothing is downloaded.
         let library = Self.scanLibrary()
-        videoWallpaper = VideoWallpaperSelector.firstPlayable(in: library)
-        webWallpaper = WebWallpaperSelector.firstPlayable(in: library)
+        NSLog("Lumora: \(LibrarySummary.line(for: library))")
+        videoWallpaper = VideoWallpaperSelector.firstPlayable(in: library.wallpapers)
+        webWallpaper = WebWallpaperSelector.firstPlayable(in: library.wallpapers)
 
         screenManager.onChange = { [weak self] in self?.reconcile() }
         coordinator.start()      // begin monitoring (no windows yet)
@@ -118,9 +119,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return SolidColorRenderer(color: NSColor(srgbRed: 0.16, green: 0.13, blue: 0.28, alpha: 1))
     }
 
-    /// Scan the installed Steam Workshop library into the resolved wallpapers we could play.
-    private static func scanLibrary() -> [ResolvedWallpaper] {
-        WallpaperLibraryScanner().scanLibrary(using: SteamLibraryLocator()).wallpapers
+    /// Scan the installed Steam Workshop library (resolved wallpapers plus skip diagnostics).
+    private static func scanLibrary() -> LibraryScanResult {
+        WallpaperLibraryScanner().scanLibrary(using: SteamLibraryLocator())
     }
 
     // MARK: Menu bar

@@ -185,6 +185,17 @@ Check.that("scanning a folder with no project.json is a failure", {
     return false
 }())
 
+// MARK: - LibrarySummary
+
+Check.section("LibrarySummary")
+Check.that("summarizes the scanned library",
+           LibrarySummary.line(for: result) == "4 wallpapers (2 video, 1 web, 1 scene), 6 skipped")
+Check.that("empty library reads cleanly",
+           LibrarySummary.line(for: LibraryScanResult(wallpapers: [], rejected: [])) == "0 wallpapers")
+let oneVideo = result.wallpapers.filter { $0.type == .video }.prefix(1)
+Check.that("single wallpaper is singular",
+           LibrarySummary.line(for: LibraryScanResult(wallpapers: Array(oneVideo), rejected: [])) == "1 wallpaper (1 video)")
+
 // MARK: - Done
 
 try? fm.removeItem(at: tmpRoot)
