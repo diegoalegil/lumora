@@ -5,13 +5,37 @@ import Foundation
 import Metal
 import WEShaderKit
 
-// Dev mode: parse a real shader file and list its uniforms.
-if CommandLine.arguments.count > 1,
-   let real = try? String(contentsOfFile: CommandLine.arguments[1], encoding: .utf8) {
-    let parsed = ShaderUniforms.parse(real)
-    print("\(parsed.count) uniforms:")
-    for uniform in parsed {
-        print("  \(uniform.type) \(uniform.name)  material=\(uniform.material ?? "-")  default=\(uniform.defaultValue ?? "-")  range=\(uniform.range.map(String.init(describing:)) ?? "-")")
+// Dev mode: a .frag file lists its uniforms; a directory measures transpiler coverage (how many real
+// shaders transpile to MSL that Metal accepts).
+if CommandLine.arguments.count > 1 {
+    let path = CommandLine.arguments[1]
+    var isDirectory: ObjCBool = false
+    FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory)
+    if isDirectory.boolValue {
+        let device = MTLCreateSystemDefaultDevice()
+        let files = ((try? FileManager.default.contentsOfDirectory(atPath: path)) ?? [])
+            .filter { $0.hasSuffix(".frag") }.sorted()
+        var compiled = 0, failed = 0
+        var sampleErrors: [String] = []
+        for file in files {
+            guard let source = try? String(contentsOfFile: path + "/" + file, encoding: .utf8),
+                  let device else { continue }
+            do { _ = try device.makeLibrary(source: WEShaderTranspiler.fragmentToMSL(source), options: nil); compiled += 1 }
+            catch {
+                failed += 1
+                if sampleErrors.count < 5 { sampleErrors.append("\(file): \("\(error)".prefix(120))") }
+            }
+        }
+        print("transpiler coverage: \(compiled)/\(compiled + failed) .frag compile to MSL")
+        for e in sampleErrors { print("  e.g. \(e)") }
+        exit(0)
+    }
+    if let real = try? String(contentsOfFile: path, encoding: .utf8) {
+        let parsed = ShaderUniforms.parse(real)
+        print("\(parsed.count) uniforms:")
+        for uniform in parsed {
+            print("  \(uniform.type) \(uniform.name)  material=\(uniform.material ?? "-")  default=\(uniform.defaultValue ?? "-")  range=\(uniform.range.map(String.init(describing:)) ?? "-")")
+        }
     }
     exit(0)
 }

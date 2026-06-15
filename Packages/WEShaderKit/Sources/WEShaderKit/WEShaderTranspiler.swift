@@ -12,8 +12,8 @@ public enum WEShaderTranspiler {
     /// `functionName`. Reuses `ShaderUniforms` to bind textures and a uniform buffer.
     public static func fragmentToMSL(_ source: String, functionName: String = "we_fragment") -> String {
         let uniforms = ShaderUniforms.parse(source)
-        let samplers = uniforms.filter { $0.type == "sampler2D" }
-        let scalars = uniforms.filter { $0.type != "sampler2D" }
+        let samplers = uniforms.filter { $0.type.hasPrefix("sampler") }
+        let scalars = uniforms.filter { !$0.type.hasPrefix("sampler") }
         let varyings = parseVaryings(source)
 
         var body = mainBody(of: source)
@@ -42,7 +42,8 @@ public enum WEShaderTranspiler {
         msl += "fragment float4 \(functionName)(VaryingIn in [[stage_in]]"
         if !scalars.isEmpty { msl += ",\n    constant Uniforms& u [[buffer(0)]]" }
         for (index, sampler) in samplers.enumerated() {
-            msl += ",\n    texture2d<float> \(sampler.name) [[texture(\(index))]]"
+            let textureType = sampler.type == "sampler2DComparison" ? "depth2d<float>" : "texture2d<float>"
+            msl += ",\n    \(textureType) \(sampler.name) [[texture(\(index))]]"
             msl += ",\n    sampler \(sampler.name)_smp [[sampler(\(index))]]"
         }
         msl += ") {\n    float4 _fragColor = float4(0.0);\n"
@@ -55,12 +56,14 @@ public enum WEShaderTranspiler {
 
     private static func parseVaryings(_ source: String) -> [(type: String, name: String)] {
         var result: [(String, String)] = []
+        var seen = Set<String>()
         let pattern = try! NSRegularExpression(pattern: #"^\s*varying\s+(\w+)\s+(\w+)\s*;"#)
         source.enumerateLines { line, _ in
             let whole = NSRange(line.startIndex..., in: line)
             guard let m = pattern.firstMatch(in: line, range: whole),
                   let t = Range(m.range(at: 1), in: line), let n = Range(m.range(at: 2), in: line) else { return }
-            result.append((String(line[t]), String(line[n])))
+            let name = String(line[n])
+            if seen.insert(name).inserted { result.append((String(line[t]), name)) }   // dedup repeats
         }
         return result
     }
