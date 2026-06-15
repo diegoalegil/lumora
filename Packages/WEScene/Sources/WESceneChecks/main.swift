@@ -226,6 +226,24 @@ if let package = try? ScenePackage.read(pkgData),
     Check.that("end-to-end scene produced a frame", false)
 }
 
+// Graceful degradation: an effect that blanks the layer is dropped at prepare, so the layer keeps its
+// artwork (blue) instead of being punched out to the clear colour (red).
+let blankFrag = "varying vec4 v_TexCoord;\nuniform sampler2D g_Texture0;\nvoid main() { gl_FragColor = vec4(0.0); }"
+let degradeJSON = Data(#"{"general":{"orthogonalprojection":{"width":8,"height":8},"clearcolor":"1 0 0"},"objects":[{"name":"base","image":"models/m.json","origin":"4 4 0","alpha":1,"effects":[{"file":"effects/blank/effect.json","passes":[{}]}]}]}"#.utf8)
+let degradePkg = buildPKG([
+    ("scene.json", degradeJSON), ("models/m.json", modelJSON),
+    ("materials/mat.json", materialJSON), ("materials/t.tex", blueTex),
+    ("effects/blank/effect.json", Data(#"{"passes":[{"material":"materials/effects/blank.json"}]}"#.utf8)),
+    ("materials/effects/blank.json", Data(#"{"passes":[{"shader":"effects/blank"}]}"#.utf8)),
+    ("shaders/effects/blank.frag", Data(blankFrag.utf8)),
+])
+if let package = try? ScenePackage.read(degradePkg), let document = try? SceneGraph.load(from: package),
+   let frame = renderer.render(document, package: package, width: 8, height: 8) {
+    let (r, g, b) = centerRGB(frame)
+    Check.that("an effect that blanks the layer is dropped, keeping the artwork (blue)",
+               near(r, 0) && near(g, 0) && near(b, 255))
+}
+
 // Effect pass machinery: a tint effect (transpiled WE shaders) halves the input texture.
 if let effectRenderer = EffectRenderer(device: renderer.device) {
     Check.section("EffectRenderer")
