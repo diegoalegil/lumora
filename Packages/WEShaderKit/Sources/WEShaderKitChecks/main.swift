@@ -130,7 +130,28 @@ if let device = MTLCreateSystemDefaultDevice() {
     let preludeMSL = WEShaderTranspiler.fragmentToMSL(preludeShader)
     Check.that("prelude compiles a shader using M_PI_2 and rotateVec2",
                (try? device.makeLibrary(source: preludeMSL, options: nil)) != nil)
+
+    // A combo declared in a // [COMBO] header seeds its default; ApplyBlending(BLENDMODE, …) then
+    // resolves to that integer and the blending prelude supplies the function.
+    let blendShader = """
+    // [COMBO] {"combo":"BLENDMODE","type":"imageblending","default":2}
+    varying vec4 v_TexCoord;
+    uniform sampler2D g_Texture0;
+    uniform vec3 g_Tint; // {"default":"1 0 0"}
+    void main() {
+        vec4 a = texSample2D(g_Texture0, v_TexCoord.xy);
+        gl_FragColor = vec4(ApplyBlending(BLENDMODE, a.rgb, a.rgb * g_Tint, 0.5), a.a);
+    }
+    """
+    let blendMSL = WEShaderTranspiler.fragmentToMSL(blendShader)
+    Check.that("seeds combo defaults and injects BLENDMODE as a #define", blendMSL.contains("#define BLENDMODE 2"))
+    Check.that("blending prelude compiles an ApplyBlending shader",
+               (try? device.makeLibrary(source: blendMSL, options: nil)) != nil)
 }
+Check.that("comboDefaults reads the // [COMBO] default",
+           ShaderPreprocessor.comboDefaults("// [COMBO] {\"combo\":\"BLENDMODE\",\"default\":9}\nvoid main(){}")["BLENDMODE"] == 9)
+Check.that("an explicit combo overrides the annotation default",
+           WEShaderTranspiler.fragmentToMSL("// [COMBO] {\"combo\":\"BLENDMODE\",\"default\":9}\nvoid main(){}", combos: ["BLENDMODE": 3]).contains("#define BLENDMODE 3"))
 
 let weVertex = """
 attribute vec3 a_Position;

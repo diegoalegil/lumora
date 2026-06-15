@@ -41,6 +41,21 @@ public enum ShaderPreprocessor {
         return output.joined(separator: "\n")
     }
 
+    /// Default combo values a shader declares in its `// [COMBO] {…"combo":NAME,"default":N}` header
+    /// lines (combo name → default int). These seed the combo set when an effect doesn't override them.
+    public static func comboDefaults(_ source: String) -> [String: Int] {
+        let source = source.replacingOccurrences(of: "\r\n", with: "\n").replacingOccurrences(of: "\r", with: "\n")
+        var defaults: [String: Int] = [:]
+        for line in source.split(separator: "\n", omittingEmptySubsequences: false) {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            guard trimmed.hasPrefix("// [COMBO]"), let brace = trimmed.firstIndex(of: "{"),
+                  let json = (try? JSONSerialization.jsonObject(with: Data(trimmed[brace...].utf8))) as? [String: Any],
+                  let name = json["combo"] as? String else { continue }
+            defaults[name] = (json["default"] as? NSNumber)?.intValue ?? 0
+        }
+        return defaults
+    }
+
     /// The condition text of an `#if`/`#ifdef`/`#ifndef` line, normalised to an expression.
     private static func condition(_ line: String) -> String {
         if line.hasPrefix("#ifdef ") { return "defined " + line.dropFirst(7).trimmingCharacters(in: .whitespaces) }

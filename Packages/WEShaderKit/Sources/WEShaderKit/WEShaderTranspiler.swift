@@ -12,6 +12,7 @@ public enum WEShaderTranspiler {
     /// `functionName`. Reuses `ShaderUniforms` to bind textures and a uniform buffer.
     public static func fragmentToMSL(_ source: String, functionName: String = "we_fragment",
                                      combos: [String: Int] = [:]) -> String {
+        let combos = ShaderPreprocessor.comboDefaults(source).merging(combos) { _, explicit in explicit }
         let resolved = ShaderPreprocessor.resolve(source, combos: combos)
         let uniforms = ShaderUniforms.parse(resolved)
         let samplers = uniforms.filter { $0.type.hasPrefix("sampler") }
@@ -27,7 +28,7 @@ public enum WEShaderTranspiler {
         // gl_FragColor → a local we collect and return.
         body = qualify(body, name: "gl_FragColor", with: "_fragColor")
 
-        var msl = "#include <metal_stdlib>\nusing namespace metal;\n\n" + WEShaderPrelude.msl
+        var msl = "#include <metal_stdlib>\nusing namespace metal;\n\n" + comboConstants(combos) + WEShaderPrelude.msl
 
         msl += "struct VaryingIn {\n"
         for (index, varying) in varyings.enumerated() {
@@ -59,6 +60,7 @@ public enum WEShaderTranspiler {
     /// `gl_Position` the output position.
     public static func vertexToMSL(_ source: String, functionName: String = "we_vertex",
                                    combos: [String: Int] = [:]) -> String {
+        let combos = ShaderPreprocessor.comboDefaults(source).merging(combos) { _, explicit in explicit }
         let resolved = ShaderPreprocessor.resolve(source, combos: combos)
         let uniforms = ShaderUniforms.parse(resolved)
         let samplers = uniforms.filter { $0.type.hasPrefix("sampler") }
@@ -74,7 +76,7 @@ public enum WEShaderTranspiler {
         for uniform in scalars { body = qualify(body, name: uniform.name, with: "u.\(uniform.name)") }
         body = qualify(body, name: "gl_Position", with: "out.position")
 
-        var msl = "#include <metal_stdlib>\nusing namespace metal;\n\n" + WEShaderPrelude.msl
+        var msl = "#include <metal_stdlib>\nusing namespace metal;\n\n" + comboConstants(combos) + WEShaderPrelude.msl
         msl += "struct VertexIn {\n"
         for (index, attribute) in attributes.enumerated() {
             msl += "    \(mslType(attribute.type)) \(attribute.name) [[attribute(\(index))]];\n"
@@ -103,6 +105,13 @@ public enum WEShaderTranspiler {
     }
 
     // MARK: - Pieces
+
+    /// Emit the selected combo values as `#define`s so code that uses a combo as a runtime value (e.g.
+    /// `ApplyBlending(BLENDMODE, …)`) sees its integer — matching how WE compiles combos into the shader.
+    private static func comboConstants(_ combos: [String: Int]) -> String {
+        guard !combos.isEmpty else { return "" }
+        return combos.sorted { $0.key < $1.key }.map { "#define \($0.key) \($0.value)\n" }.joined() + "\n"
+    }
 
     /// `<keyword> <type> <name>;` declarations (e.g. `varying`/`attribute`), de-duplicated by name.
     private static func parseDeclarations(_ source: String, keyword: String) -> [(type: String, name: String)] {
@@ -141,15 +150,41 @@ public enum WEShaderTranspiler {
 
     private static func rewriteIntrinsics(_ body: String) -> String {
         var out = body
+        out = rewriteTexLod(out)   // texSample2DLod(g_Tex, uv, lod) → g_Tex.sample(g_Tex_smp, uv, level(lod))
         // texSample2D(g_Tex, uv) → g_Tex.sample(g_Tex_smp, uv)
         let texCall = try! NSRegularExpression(pattern: #"texSample2D\(\s*(g_\w+)\s*,"#)
         out = texCall.stringByReplacingMatches(in: out, range: NSRange(out.startIndex..., in: out),
                                                withTemplate: "$1.sample($1_smp,")
         out = rewriteMul(out)   // HLSL-style mul(a, b) → (a * b)
-        for (glsl, msl) in [("frac", "fract"), ("mod", "fmod"), ("inversesqrt", "rsqrt")] {
+        for (glsl, msl) in [("frac", "fract"), ("mod", "fmod"), ("inversesqrt", "rsqrt"), ("lerp", "mix")] {
             out = replaceWord(out, glsl, msl)
         }
         return out
+    }
+
+    /// `texSample2DLod(g_Tex, uv, lod)` → `g_Tex.sample(g_Tex_smp, uv, level(lod))`, matching balanced
+    /// parens so nested calls in the uv/lod arguments survive.
+    private static func rewriteTexLod(_ source: String) -> String {
+        var s = source
+        while let call = s.range(of: "texSample2DLod(") {
+            var depth = 1, i = call.upperBound, start = call.upperBound
+            var args: [Substring] = []
+            var close: String.Index?
+            while i < s.endIndex {
+                switch s[i] {
+                case "(": depth += 1
+                case ")": depth -= 1; if depth == 0 { args.append(s[start..<i]); close = i }
+                case "," where depth == 1: args.append(s[start..<i]); start = s.index(after: i)
+                default: break
+                }
+                if close != nil { break }
+                i = s.index(after: i)
+            }
+            guard let closeIndex = close, args.count == 3 else { break }   // malformed — leave it
+            let a = args.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            s.replaceSubrange(call.lowerBound...closeIndex, with: "\(a[0]).sample(\(a[0])_smp, \(a[1]), level(\(a[2])))")
+        }
+        return s
     }
 
     /// Rewrite WE/HLSL `mul(a, b)` matrix products to Metal's `(a) * (b)`, matching balanced parens so
