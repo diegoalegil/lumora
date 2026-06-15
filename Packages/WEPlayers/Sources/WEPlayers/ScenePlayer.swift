@@ -3,6 +3,7 @@
 // once with WEScene's compositor, and drives a light animation loop (a gentle camera parallax) into a
 // layer-backed view. Scenes without parallax render a single still frame. Apple frameworks only. No GPL.
 import AppKit
+import ImageIO
 import WECore
 import WEImporter
 import WEScene
@@ -33,6 +34,7 @@ public final class ScenePlayer: WallpaperRenderer {
     private var elapsed = 0.0
     private var isPaused = false
     private var loggedRenderFailure = false
+    private var previewImage: CGImage?   // the wallpaper's own thumbnail, shown if the scene can't render
     private static let frameInterval = 1.0 / 30.0
 
     public init() {}
@@ -52,6 +54,21 @@ public final class ScenePlayer: WallpaperRenderer {
         package = scenePackage
         document = try SceneGraph.load(from: scenePackage)
         prepared = nil
+        previewImage = Self.loadPreview(besides: wallpaper.mainFileURL)
+    }
+
+    /// The wallpaper's bundled `preview.{jpg,png,gif}` (gif → first frame) as a static fallback for a
+    /// scene whose artwork can't be rendered (e.g. an unsupported animated texture).
+    private static func loadPreview(besides sceneURL: URL) -> CGImage? {
+        let folder = sceneURL.deletingLastPathComponent()
+        for name in ["preview.jpg", "preview.png", "preview.gif", "preview.jpeg"] {
+            let url = folder.appendingPathComponent(name)
+            if let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+               let image = CGImageSourceCreateImageAtIndex(source, 0, nil) {
+                return image
+            }
+        }
+        return nil
     }
 
     public func resume() {
@@ -75,6 +92,7 @@ public final class ScenePlayer: WallpaperRenderer {
         package = nil
         document = nil
         prepared = nil
+        previewImage = nil
     }
 
     // MARK: - Rendering
@@ -117,13 +135,18 @@ public final class ScenePlayer: WallpaperRenderer {
            let image = frame.makeCGImage() {
             hostView.layer?.backgroundColor = nil
             hostView.layer?.contents = image
+        } else if let previewImage {
+            // The scene has no renderable layers (e.g. an unsupported animated texture) — show the
+            // wallpaper's own preview thumbnail rather than an empty fill.
+            hostView.layer?.backgroundColor = nil
+            hostView.layer?.contents = previewImage
         } else {
             // No Metal device, decode failure, or nothing visible — show the proof-of-ownership fill
             // instead of a transparent (invisible) layer.
             hostView.layer?.contents = nil
             hostView.layer?.backgroundColor = SceneHostView.fallbackColor
             if !loggedRenderFailure {
-                NSLog("Lumora: scene render failed; showing the fallback fill")
+                NSLog("Lumora: scene render failed; showing the preview/fallback fill")
                 loggedRenderFailure = true
             }
         }
