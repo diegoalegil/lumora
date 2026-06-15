@@ -63,20 +63,67 @@ public enum ShaderPreprocessor {
         return String(line.dropFirst(4)).trimmingCharacters(in: .whitespaces)   // after "#if "
     }
 
-    /// Evaluate `NAME`, `NAME == N`, `NAME != N`, `defined NAME`, `!defined NAME` against the combos.
+    /// Evaluate a `#if` condition against the combos: `||`, `&&`, `!`, the comparisons `== != <= >= < >`,
+    /// `defined NAME`, parentheses, integer literals and bare combo names (missing reads as 0).
     private static func evaluate(_ expression: String, combos: [String: Int]) -> Bool {
+        value(of: expression, combos) != 0
+    }
+
+    /// The integer value of a condition sub-expression (0 = false, non-zero = true).
+    private static func value(of expression: String, _ combos: [String: Int]) -> Int {
         let expr = expression.trimmingCharacters(in: .whitespaces)
-        if expr.hasPrefix("defined ") { return combos[String(expr.dropFirst(8)).trimmingCharacters(in: .whitespaces)] != nil }
-        if expr.hasPrefix("!defined ") { return combos[String(expr.dropFirst(9)).trimmingCharacters(in: .whitespaces)] == nil }
-        for op in ["==", "!="] {
-            if let range = expr.range(of: op) {
-                let name = String(expr[..<range.lowerBound]).trimmingCharacters(in: .whitespaces)
-                let rhs = Int(String(expr[range.upperBound...]).trimmingCharacters(in: .whitespaces)) ?? 0
-                let value = combos[name] ?? 0
-                return op == "==" ? value == rhs : value != rhs
+        if expr.isEmpty { return 0 }
+        if let parts = splitTopLevel(expr, "||") { return parts.contains { value(of: $0, combos) != 0 } ? 1 : 0 }
+        if let parts = splitTopLevel(expr, "&&") { return parts.allSatisfy { value(of: $0, combos) != 0 } ? 1 : 0 }
+        for op in ["==", "!=", "<=", ">=", "<", ">"] {
+            if let (lhs, rhs) = splitFirstTopLevel(expr, op) {
+                let a = value(of: lhs, combos), b = value(of: rhs, combos)
+                switch op {
+                case "==": return a == b ? 1 : 0
+                case "!=": return a != b ? 1 : 0
+                case "<=": return a <= b ? 1 : 0
+                case ">=": return a >= b ? 1 : 0
+                case "<":  return a < b ? 1 : 0
+                default:   return a > b ? 1 : 0
+                }
             }
         }
-        if let literal = Int(expr) { return literal != 0 }
-        return (combos[expr] ?? 0) != 0
+        if expr.hasPrefix("!") { return value(of: String(expr.dropFirst()), combos) == 0 ? 1 : 0 }
+        if expr.hasPrefix("("), expr.hasSuffix(")") { return value(of: String(expr.dropFirst().dropLast()), combos) }
+        if expr.hasPrefix("defined") {
+            return combos[expr.dropFirst(7).trimmingCharacters(in: CharacterSet(charactersIn: " ()"))] != nil ? 1 : 0
+        }
+        if let literal = Int(expr) { return literal }
+        return combos[expr] ?? 0
+    }
+
+    /// Split `s` on every top-level (paren-depth 0) occurrence of `op`; nil if it appears zero times.
+    private static func splitTopLevel(_ s: String, _ op: String) -> [String]? {
+        var parts: [String] = [], depth = 0, start = s.startIndex, i = s.startIndex
+        while i < s.endIndex {
+            switch s[i] {
+            case "(": depth += 1; i = s.index(after: i)
+            case ")": depth -= 1; i = s.index(after: i)
+            case _ where depth == 0 && s[i...].hasPrefix(op):
+                parts.append(String(s[start..<i]))
+                i = s.index(i, offsetBy: op.count); start = i
+            default: i = s.index(after: i)
+            }
+        }
+        parts.append(String(s[start...]))
+        return parts.count > 1 ? parts : nil
+    }
+
+    /// Split `s` at the first top-level occurrence of `op` into (left, right); nil if absent.
+    private static func splitFirstTopLevel(_ s: String, _ op: String) -> (String, String)? {
+        var depth = 0, i = s.startIndex
+        while i < s.endIndex {
+            if s[i] == "(" { depth += 1 } else if s[i] == ")" { depth -= 1 }
+            else if depth == 0, s[i...].hasPrefix(op) {
+                return (String(s[s.startIndex..<i]), String(s[s.index(i, offsetBy: op.count)...]))
+            }
+            i = s.index(after: i)
+        }
+        return nil
     }
 }

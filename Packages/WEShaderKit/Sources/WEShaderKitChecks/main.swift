@@ -197,6 +197,13 @@ Check.that("#ifdef follows definedness, not value", ShaderPreprocessor.resolve("
 // never matches it and the whole shader collapses to one line — emptying every transpiled body.
 Check.that("normalises CRLF before resolving conditionals",
            ShaderPreprocessor.resolve("a\r\n#if MASK == 1\r\nb\r\n#endif\r\nc", combos: ["MASK": 0]) == "a\nc")
+// Logical and relational operators in #if must be evaluated, not silently treated as a single unknown
+// name (which drops the branch).
+Check.that("evaluates && (both true keeps the branch)", ShaderPreprocessor.resolve("#if A && B\nx\n#endif", combos: ["A": 1, "B": 1]) == "x")
+Check.that("evaluates && (one false drops the branch)", ShaderPreprocessor.resolve("#if A && B\nx\n#endif", combos: ["A": 1, "B": 0]) == "")
+Check.that("evaluates ||", ShaderPreprocessor.resolve("#if A || B\nx\n#endif", combos: ["A": 0, "B": 1]) == "x")
+Check.that("evaluates a > comparison", ShaderPreprocessor.resolve("#if QUALITY > 2\nx\n#endif", combos: ["QUALITY": 3]) == "x")
+Check.that("evaluates unary ! and parentheses", ShaderPreprocessor.resolve("#if !(MASK)\nx\n#endif", combos: ["MASK": 0]) == "x")
 let crlfShader = "varying vec4 v_TexCoord;\r\nuniform sampler2D g_Texture0;\r\nvoid main() {\r\n    gl_FragColor = texSample2D(g_Texture0, v_TexCoord.xy);\r\n}\r\n"
 Check.that("a CRLF shader transpiles to a non-empty body",
            WEShaderTranspiler.fragmentToMSL(crlfShader).contains("g_Texture0.sample("))
