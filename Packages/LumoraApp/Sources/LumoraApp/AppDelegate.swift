@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Provenance: clean-room. Thin menu-bar shell wiring ScreenManager + PlaybackCoordinator and
-// choosing a renderer per display: a looping video wallpaper when one is found on disk, else the
-// Phase 0 solid-colour fallback.
+// choosing a renderer per display: a looping video or a web wallpaper when one is found on disk,
+// else the Phase 0 solid-colour fallback.
 import AppKit
 import WECore
 import WallpaperShell
@@ -21,8 +21,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let loginItem = LoginItemService()
     private var isPaused = false
 
-    /// The video wallpaper to play, discovered once at launch (nil = none installed → fallback).
+    /// Wallpapers chosen at launch from the installed library (nil = none of that type → fallback).
     private var videoWallpaper: ResolvedWallpaper?
+    private var webWallpaper: ResolvedWallpaper?
 
     override init() {
         // Window factory: build the desktop window + an empty host. Renderers are attached in
@@ -58,7 +59,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         // Discover the user's installed wallpapers once, before windows are built, so reconcile()
         // can pick a renderer. Disk-only; nothing is downloaded.
-        videoWallpaper = Self.discoverVideoWallpaper()
+        let library = Self.scanLibrary()
+        videoWallpaper = VideoWallpaperSelector.firstPlayable(in: library)
+        webWallpaper = WebWallpaperSelector.firstPlayable(in: library)
 
         screenManager.onChange = { [weak self] in self?.reconcile() }
         coordinator.start()      // begin monitoring (no windows yet)
@@ -90,8 +93,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         coordinator?.evaluate()
     }
 
-    /// One renderer per display: a video player loaded with the discovered wallpaper, or the
-    /// deep-indigo solid-colour fallback when there's no video (or it fails to load).
+    /// One renderer per display: the first playable wallpaper found at launch — a video if one is in
+    /// a supported format, otherwise a web wallpaper — or the deep-indigo solid-colour fallback.
     private func makeRenderer() -> any WallpaperRenderer {
         if let video = videoWallpaper {
             let player = VideoPlayer()
@@ -99,17 +102,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 try player.load(video)
                 return player
             } catch {
-                NSLog("Lumora: video load failed (\(error)); using solid-colour fallback")
+                NSLog("Lumora: video load failed (\(error)); trying other wallpapers")
+            }
+        }
+        if let web = webWallpaper {
+            let player = WebPlayer()
+            do {
+                try player.load(web)
+                return player
+            } catch {
+                NSLog("Lumora: web load failed (\(error)); using solid-colour fallback")
             }
         }
         // Fallback proof-of-ownership fill so it's obvious Lumora owns the desktop.
         return SolidColorRenderer(color: NSColor(srgbRed: 0.16, green: 0.13, blue: 0.28, alpha: 1))
     }
 
-    /// Scan the installed Steam Workshop library and pick the first video wallpaper, if any.
-    private static func discoverVideoWallpaper() -> ResolvedWallpaper? {
-        let result = WallpaperLibraryScanner().scanLibrary(using: SteamLibraryLocator())
-        return VideoWallpaperSelector.firstPlayable(in: result.wallpapers)
+    /// Scan the installed Steam Workshop library into the resolved wallpapers we could play.
+    private static func scanLibrary() -> [ResolvedWallpaper] {
+        WallpaperLibraryScanner().scanLibrary(using: SteamLibraryLocator()).wallpapers
     }
 
     // MARK: Menu bar
