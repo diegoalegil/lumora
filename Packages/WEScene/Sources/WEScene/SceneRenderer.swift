@@ -390,13 +390,21 @@ public final class SceneRenderer {
     /// package), packaged sprites from the scene, else nil so the system is skipped.
     private func spriteTexture(named name: String, package: ScenePackage) -> MTLTexture? {
         if name.hasPrefix("util/") { return resolveAuxTexture(name, package: package) }
-        if name.hasPrefix("particle/halo") || name.hasSuffix("glow") || name == "particle/drop" {
-            return haloTexture
-        }
+        // Packaged sprite from the scene takes priority.
         if let entry = package.entry(named: "materials/\(name).tex"),
            let decoded = try? SceneTexture.decodeFirstMip(entry.data),
            let made = MetalTexture.make(decoded, device: device) {
             return made
+        }
+        // WE's unshipped built-in sprites: blob-like glows (halo, fire, fog, dot, flare, …) approximate
+        // well as a soft radial glow tinted by the particle's colour. Elongated shapes (shafts, beams,
+        // lightning) and detailed debris don't — skip those rather than draw a wrong blob.
+        if name.hasPrefix("particle/") {
+            let blob = ["halo", "glow", "drop", "fire", "dot", "fog", "flare", "smoke", "spark", "star", "bokeh", "circle"]
+            let elongated = ["shaft", "beam", "lightning", "bolt", "ray", "trail", "streak", "debris"]
+            if blob.contains(where: name.contains), !elongated.contains(where: name.contains) {
+                return haloTexture
+            }
         }
         return nil
     }
