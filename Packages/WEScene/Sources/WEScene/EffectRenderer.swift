@@ -1,49 +1,44 @@
 // SPDX-License-Identifier: MIT
 // Provenance: clean-room. Runs a WE post-process effect as a full-screen Metal pass: transpiles the
-// effect's WE-dialect shaders to MSL (via WEShaderKit), builds a pipeline, and draws a full-screen quad
-// that samples the layer's framebuffer as g_Texture0. Apple frameworks only. No GPL.
+// effect's WE-dialect fragment shader to MSL (via WEShaderKit), pairs it with a fixed full-screen
+// vertex (the effect work lives in the fragment), and draws a quad sampling the layer's framebuffer as
+// g_Texture0. Apple frameworks only. No GPL.
 import Foundation
 import Metal
+import WEImporter
 import WEShaderKit
-
-/// A full-screen-quad vertex for an effect pass: clip-space position + a texcoord carried in both halves
-/// of a vec4 (WE effect shaders read v_TexCoord.xy and .zw).
-private struct EffectVertex {
-    var position: SIMD3<Float>
-    var texcoord: SIMD4<Float>
-}
 
 /// Runs WE post-process effects (pulse, tint, blur…) as full-screen Metal passes over a layer's texture.
 public final class EffectRenderer {
     public let device: MTLDevice
     private let queue: MTLCommandQueue
-    private let quadBuffer: MTLBuffer
-    private let vertexDescriptor: MTLVertexDescriptor
+    private let vertexFunction: MTLFunction
     private let sampler: MTLSamplerState
 
+    // A fixed full-screen vertex that outputs v_TexCoord (in both halves of a vec4, as WE effect
+    // fragments expect). Effect vertex shaders are just full-screen passthroughs, so one fixed vertex
+    // serves them all and avoids per-shader vertex descriptors and MVP uniforms.
+    private static let vertexSource = """
+    #include <metal_stdlib>
+    using namespace metal;
+    struct VertexOut { float4 position [[position]]; float4 v_TexCoord [[user(locn0)]]; };
+    vertex VertexOut we_effect_vertex(uint vid [[vertex_id]]) {
+        float2 pos[4] = { float2(-1, -1), float2(1, -1), float2(-1, 1), float2(1, 1) };
+        float2 uv[4]  = { float2(0, 1),  float2(1, 1),  float2(0, 0),  float2(1, 0) };
+        VertexOut out;
+        out.position = float4(pos[vid], 0, 1);
+        out.v_TexCoord = float4(uv[vid], uv[vid]);
+        return out;
+    }
+    """
+
     public init?(device: MTLDevice? = MTLCreateSystemDefaultDevice()) {
-        guard let device, let queue = device.makeCommandQueue() else { return nil }
+        guard let device, let queue = device.makeCommandQueue(),
+              let library = try? device.makeLibrary(source: Self.vertexSource, options: nil),
+              let vertexFunction = library.makeFunction(name: "we_effect_vertex") else { return nil }
         self.device = device
         self.queue = queue
-
-        let quad: [EffectVertex] = [
-            EffectVertex(position: SIMD3(-1, -1, 0), texcoord: SIMD4(0, 1, 0, 1)),
-            EffectVertex(position: SIMD3(1, -1, 0), texcoord: SIMD4(1, 1, 1, 1)),
-            EffectVertex(position: SIMD3(-1, 1, 0), texcoord: SIMD4(0, 0, 0, 0)),
-            EffectVertex(position: SIMD3(1, 1, 0), texcoord: SIMD4(1, 0, 1, 0)),
-        ]
-        guard let buffer = device.makeBuffer(bytes: quad, length: MemoryLayout<EffectVertex>.stride * quad.count) else { return nil }
-        self.quadBuffer = buffer
-
-        let descriptor = MTLVertexDescriptor()
-        descriptor.attributes[0].format = .float3
-        descriptor.attributes[0].offset = 0
-        descriptor.attributes[0].bufferIndex = 0
-        descriptor.attributes[1].format = .float4
-        descriptor.attributes[1].offset = MemoryLayout<EffectVertex>.offset(of: \.texcoord) ?? 16
-        descriptor.attributes[1].bufferIndex = 0
-        descriptor.layouts[0].stride = MemoryLayout<EffectVertex>.stride
-        self.vertexDescriptor = descriptor
+        self.vertexFunction = vertexFunction
 
         let samplerDescriptor = MTLSamplerDescriptor()
         samplerDescriptor.minFilter = .linear
@@ -54,17 +49,14 @@ public final class EffectRenderer {
         self.sampler = sampler
     }
 
-    /// Build a pipeline from a WE effect's vertex + fragment shaders, or nil if either fails to transpile,
-    /// compile, or link.
-    public func makePipeline(vertexShader: String, fragmentShader: String) -> MTLRenderPipelineState? {
-        guard let vertexLibrary = try? device.makeLibrary(source: WEShaderTranspiler.vertexToMSL(vertexShader), options: nil),
-              let fragmentLibrary = try? device.makeLibrary(source: WEShaderTranspiler.fragmentToMSL(fragmentShader), options: nil),
-              let vertexFunction = vertexLibrary.makeFunction(name: "we_vertex"),
+    /// Build a pipeline pairing the fixed full-screen vertex with a WE effect's transpiled fragment, or
+    /// nil if it fails to transpile, compile, or link.
+    public func makePipeline(fragmentShader: String) -> MTLRenderPipelineState? {
+        guard let fragmentLibrary = try? device.makeLibrary(source: WEShaderTranspiler.fragmentToMSL(fragmentShader), options: nil),
               let fragmentFunction = fragmentLibrary.makeFunction(name: "we_fragment") else { return nil }
         let descriptor = MTLRenderPipelineDescriptor()
         descriptor.vertexFunction = vertexFunction
         descriptor.fragmentFunction = fragmentFunction
-        descriptor.vertexDescriptor = vertexDescriptor
         descriptor.colorAttachments[0].pixelFormat = .rgba8Unorm
         return try? device.makeRenderPipelineState(descriptor: descriptor)
     }
@@ -88,7 +80,6 @@ public final class EffectRenderer {
 
         guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: pass) else { return nil }
         encoder.setRenderPipelineState(pipeline)
-        encoder.setVertexBuffer(quadBuffer, offset: 0, index: 0)
         encoder.setFragmentTexture(input, index: 0)
         encoder.setFragmentSamplerState(sampler, index: 0)
         for (offset, texture) in auxTextures.enumerated() {
@@ -104,7 +95,42 @@ public final class EffectRenderer {
         encoder.endEncoding()
         commandBuffer.commit()
         commandBuffer.waitUntilCompleted()
+        if commandBuffer.error != nil { return nil }   // a GPU fault leaves the target undefined — fail cleanly
         return output
+    }
+
+    /// Apply a parsed `LayerEffect` to `input`: read its fragment shader from `package`, transpile it,
+    /// pack the effect's constants, bind `auxTexture` for the extra samplers, and render the pass.
+    public func apply(_ effect: LayerEffect, to input: MTLTexture, package: ScenePackage,
+                      auxTexture: MTLTexture, width: Int, height: Int) -> MTLTexture? {
+        guard let fragmentEntry = package.entry(named: effect.fragmentShaderPath) else { return nil }
+        let fragmentSource = String(decoding: fragmentEntry.data, as: UTF8.self)
+        guard let pipeline = makePipeline(fragmentShader: fragmentSource) else { return nil }
+
+        let resolved = ShaderPreprocessor.resolve(fragmentSource, combos: [:])
+        let scalars = ShaderUniforms.parse(resolved).filter { !$0.type.hasPrefix("sampler") }
+        let fragmentBuffer = UniformPacker.pack(scalars, values: effect.constants)
+        let samplerCount = ShaderUniforms.parse(resolved).filter { $0.type.hasPrefix("sampler") }.count
+        let aux = Array(repeating: auxTexture, count: max(0, samplerCount - 1))
+
+        return apply(pipeline: pipeline, to: input, auxTextures: aux,
+                     fragmentUniforms: fragmentBuffer.isEmpty ? nil : fragmentBuffer, width: width, height: height)
+    }
+
+    /// Upload tightly-packed RGBA8 bytes into a shader-readable texture (for an effect's input).
+    public func makeTexture(rgba: Data, width: Int, height: Int) -> MTLTexture? {
+        let descriptor = MTLTextureDescriptor.texture2DDescriptor(
+            pixelFormat: .rgba8Unorm, width: width, height: height, mipmapped: false)
+        descriptor.usage = [.shaderRead]
+        descriptor.storageMode = .shared
+        guard let texture = device.makeTexture(descriptor: descriptor) else { return nil }
+        rgba.withUnsafeBytes { raw in
+            if let base = raw.baseAddress {
+                texture.replace(region: MTLRegionMake2D(0, 0, width, height), mipmapLevel: 0,
+                                withBytes: base, bytesPerRow: width * 4)
+            }
+        }
+        return texture
     }
 
     /// Read an RGBA8 texture's pixels back (for tests and previews).

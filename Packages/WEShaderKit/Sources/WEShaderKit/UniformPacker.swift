@@ -8,15 +8,22 @@ public enum UniformPacker {
     /// Pack `uniforms` (the non-sampler uniforms, in declaration order) into a buffer matching the
     /// transpiler's MSL `Uniforms` struct. Each value comes from `values` (keyed by the uniform's
     /// `material` annotation), else the uniform's default, else zero.
-    public static func pack(_ uniforms: [ShaderUniform], values: [String: String]) -> Data {
+    public static func pack(_ uniforms: [ShaderUniform], values: [String: String],
+                            overrides: [String: [Float]] = [:]) -> Data {
         var buffer = Data()
         var maxAlignment = 4
         for uniform in uniforms {
             let info = layout(uniform.type)
             maxAlignment = max(maxAlignment, info.alignment)
             buffer.pad(to: align(buffer.count, to: info.alignment))
-            let source = uniform.material.flatMap { values[$0] } ?? uniform.defaultValue ?? "0"
-            for component in floats(source, count: info.components) { buffer.appendFloat(component) }
+            let components: [Float]
+            if let override = overrides[uniform.name] {   // a built-in supplied by the renderer
+                components = fit(override, to: info.components)
+            } else {
+                let source = uniform.material.flatMap { values[$0] } ?? uniform.defaultValue ?? "0"
+                components = floats(source, count: info.components)
+            }
+            for component in components { buffer.appendFloat(component) }
             buffer.pad(to: buffer.count + (info.stride - info.components * 4))
         }
         buffer.pad(to: align(buffer.count, to: maxAlignment))
@@ -36,7 +43,11 @@ public enum UniformPacker {
     }
 
     private static func floats(_ string: String, count: Int) -> [Float] {
-        var values = string.split(whereSeparator: { $0 == " " || $0 == "\t" }).map { Float($0) ?? 0 }
+        fit(string.split(whereSeparator: { $0 == " " || $0 == "\t" }).map { Float($0) ?? 0 }, to: count)
+    }
+
+    private static func fit(_ values: [Float], to count: Int) -> [Float] {
+        var values = values
         if values.count < count { values += Array(repeating: 0, count: count - values.count) }
         return Array(values.prefix(count))
     }

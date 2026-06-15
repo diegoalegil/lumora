@@ -12,6 +12,12 @@ public struct RenderedFrame: Sendable {
     public let width: Int
     public let height: Int
     public let rgba: Data
+
+    public init(width: Int, height: Int, rgba: Data) {
+        self.width = width
+        self.height = height
+        self.rgba = rgba
+    }
 }
 
 /// Per-layer quad placement in clip space (centre and half-extents in NDC).

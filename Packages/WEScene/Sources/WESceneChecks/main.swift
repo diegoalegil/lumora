@@ -140,6 +140,21 @@ if CommandLine.arguments.count > 1 {
     guard let frame = renderer.render(prepared, width: w, height: h, time: time) else { print("render failed"); exit(1) }
     let out = "/tmp/lumora_render\(time > 0 ? "_t\(Int(time))" : "").png"
     print("rendered \(prepared.layerCount) layer(s) @ \(w)x\(h) t=\(time) animated=\(prepared.hasAnimation); png=\(writePNG(frame, to: out)) -> \(out)")
+    if CommandLine.arguments.count > 2, CommandLine.arguments[2] == "effect",
+       let effectRenderer = EffectRenderer(device: renderer.device),
+       let layer = document.layers.first(where: { !$0.effects.isEmpty }),
+       let effect = layer.effects.first,
+       let input = effectRenderer.makeTexture(rgba: frame.rgba, width: w, height: h),
+       let white = effectRenderer.makeTexture(rgba: Data([255, 255, 255, 255]), width: 1, height: 1) {
+        if let output = effectRenderer.apply(effect, to: input, package: package, auxTexture: white, width: w, height: h) {
+            let outRGBA = effectRenderer.readback(output)
+            let c = (h / 2 * w + w / 2) * 4
+            let effected = RenderedFrame(width: w, height: h, rgba: outRGBA)
+            print("applied effect '\(effect.name)' (center \(Array(frame.rgba[c ..< c + 4])) -> \(Array(outRGBA[c ..< c + 4]))) -> /tmp/lumora_effect.png = \(writePNG(effected, to: "/tmp/lumora_effect.png"))")
+        } else {
+            print("effect '\(effect.name)' failed to apply (likely a shader/uniform mismatch)")
+        }
+    }
     exit(0)
 }
 
@@ -203,19 +218,13 @@ if let package = try? ScenePackage.read(pkgData),
 // Effect pass machinery: a tint effect (transpiled WE shaders) halves the input texture.
 if let effectRenderer = EffectRenderer(device: renderer.device) {
     Check.section("EffectRenderer")
-    let effectVertex = """
-    attribute vec3 a_Position;
-    attribute vec4 a_TexCoord;
-    varying vec4 v_TexCoord;
-    void main() { gl_Position = vec4(a_Position, 1.0); v_TexCoord = a_TexCoord; }
-    """
     let effectFragment = """
     varying vec4 v_TexCoord;
     uniform sampler2D g_Texture0;
     uniform float g_Tint;
     void main() { gl_FragColor = texSample2D(g_Texture0, v_TexCoord.xy) * g_Tint; }
     """
-    if let pipeline = effectRenderer.makePipeline(vertexShader: effectVertex, fragmentShader: effectFragment) {
+    if let pipeline = effectRenderer.makePipeline(fragmentShader: effectFragment) {
         Check.that("builds an effect pipeline from transpiled WE shaders", true)
         let inputDescriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .rgba8Unorm, width: 4, height: 4, mipmapped: false)
         inputDescriptor.usage = [.shaderRead]
