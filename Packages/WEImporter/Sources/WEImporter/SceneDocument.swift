@@ -135,6 +135,16 @@ public struct RenderableScene: Sendable, Equatable {
     public let orthoHeight: Int
     public let clearColor: SceneVec3
     public let layers: [SceneLayer]
+    public let particleSystems: [ParticleSystem]
+
+    public init(orthoWidth: Int, orthoHeight: Int, clearColor: SceneVec3,
+                layers: [SceneLayer], particleSystems: [ParticleSystem] = []) {
+        self.orthoWidth = orthoWidth
+        self.orthoHeight = orthoHeight
+        self.clearColor = clearColor
+        self.layers = layers
+        self.particleSystems = particleSystems
+    }
 }
 
 /// Why a scene graph could not be loaded.
@@ -163,7 +173,20 @@ public enum SceneGraph {
         let clearColor = SceneVec3(parsing: general["clearcolor"] as? String ?? "0 0 0")
 
         var layers: [SceneLayer] = []
+        var particleSystems: [ParticleSystem] = []
         for object in root["objects"] as? [[String: Any]] ?? [] {
+            // A particle object spawns sprites instead of drawing an image; collect it and move on.
+            if let particlePath = object["particle"] as? String,
+               isVisible(object["visible"]),
+               let particleJSON = json(package.entry(named: particlePath)),
+               var system = ParticleSystem.parse(particleJSON) {
+                let objectOrigin = originVec(object["origin"])
+                system.origin = SceneVec3(x: system.origin.x + objectOrigin.x,
+                                          y: system.origin.y + objectOrigin.y,
+                                          z: system.origin.z + objectOrigin.z)
+                particleSystems.append(system)
+                continue
+            }
             guard let imagePath = object["image"] as? String, !imagePath.isEmpty else { continue }
             let material = resolveMaterial(imagePath: imagePath, in: package)
             layers.append(SceneLayer(
@@ -189,8 +212,16 @@ public enum SceneGraph {
             orthoWidth: int(ortho["width"]),
             orthoHeight: int(ortho["height"]),
             clearColor: clearColor,
-            layers: layers
+            layers: layers,
+            particleSystems: particleSystems
         )
+    }
+
+    /// A `visible` field is a Bool, or a `{ "user": …, "value": Bool }` property binding — read either.
+    private static func isVisible(_ value: Any?) -> Bool {
+        if let flag = value as? Bool { return flag }
+        if let dict = value as? [String: Any], let flag = dict["value"] as? Bool { return flag }
+        return true
     }
 
     /// image (model json) → material json → its first pass's texture, blending and shader. The texture
