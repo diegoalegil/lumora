@@ -155,10 +155,9 @@ public extension SceneTexture {
         return pixels(from: image)
     }
 
-    /// Extract up to `count` evenly-spaced frames (RGBA8, resolution-capped) of a video-backed texture,
-    /// with the clip's loop duration, so the renderer can animate it. Returns nil if it isn't a video
-    /// or yields fewer than two frames.
-    public static func videoFrames(_ data: Data, count: Int = 24) -> (frames: [DecodedTexture], duration: Double)? {
+    /// The byte range of the embedded MP4 of a video-backed texture, or nil if the texture isn't a
+    /// video. Cheap: it walks the mip header and sniffs the first 12 payload bytes, copying nothing.
+    private static func videoPayloadRange(_ data: Data) -> Range<Int>? {
         guard let (header, mipOffset) = try? parse(data) else { return nil }
         let base = data.startIndex
         var cursor = mipOffset
@@ -173,9 +172,21 @@ public extension SceneTexture {
         let skip = max(0, (Int(header.mipContainerVersion.dropFirst(4)) ?? 1) - 1) + 4
         for _ in 0 ..< skip where u32() == nil { return nil }
         guard let payloadSize = u32(), payloadSize > 12, base + cursor + payloadSize <= data.count else { return nil }
-        // Sniff just the head before copying a potentially huge payload, so non-video layers bail cheaply.
-        guard looksLikeVideo(data.subdata(in: base + cursor ..< base + cursor + 12)) else { return nil }
-        let payload = data.subdata(in: base + cursor ..< base + cursor + payloadSize)
+        let start = base + cursor
+        guard looksLikeVideo(data.subdata(in: start ..< start + 12)) else { return nil }
+        return start ..< start + payloadSize
+    }
+
+    /// Whether a `.tex` payload is a video-backed (animated) texture — an embedded MP4. Decodes nothing,
+    /// so the renderer can cheaply decide to load a layer's frames off the render thread.
+    public static func isVideoTexture(_ data: Data) -> Bool { videoPayloadRange(data) != nil }
+
+    /// Extract up to `count` evenly-spaced frames (RGBA8, resolution-capped) of a video-backed texture,
+    /// with the clip's loop duration, so the renderer can animate it. Returns nil if it isn't a video
+    /// or yields fewer than two frames.
+    public static func videoFrames(_ data: Data, count: Int = 24) -> (frames: [DecodedTexture], duration: Double)? {
+        guard let range = videoPayloadRange(data) else { return nil }
+        let payload = data.subdata(in: range)
 
         let tempURL = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString).appendingPathExtension("mp4")
@@ -187,6 +198,11 @@ public extension SceneTexture {
         let generator = AVAssetImageGenerator(asset: asset)
         generator.appliesPreferredTrackTransform = true
         generator.maximumSize = CGSize(width: 1280, height: 1280)
+        // Demand the exact frame at each timestamp. With the default infinite tolerance the generator
+        // returns the nearest keyframe, so many of the sampled times collapse onto the same frame and
+        // the loop stutters; .zero on both sides gives a distinct frame per sample.
+        generator.requestedTimeToleranceBefore = .zero
+        generator.requestedTimeToleranceAfter = .zero
         var frames: [DecodedTexture] = []
         for i in 0 ..< count {
             let time = CMTime(seconds: duration * Double(i) / Double(count), preferredTimescale: 600)
