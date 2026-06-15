@@ -116,6 +116,7 @@ public final class SceneRenderer {
     private let haloTexture: MTLTexture            // soft radial glow for unshipped built-in sprites
     private let effectRenderer: EffectRenderer?   // compiles + runs per-layer post-process effects
     private var auxCache: [String: MTLTexture] = [:]   // resolved packaged aux textures, by name
+    private var pooledOutput: MTLTexture?              // reused frame target (rendering is synchronous)
 
     private static let shaderSource = """
     #include <metal_stdlib>
@@ -717,12 +718,22 @@ public final class SceneRenderer {
     /// Set up an offscreen target, run `draw` inside a clear render pass, and read the pixels back.
     private func withRenderPass(clearColor: SceneVec3, width: Int, height: Int,
                                 draw: (MTLRenderCommandEncoder) -> Void) -> RenderedFrame? {
-        let descriptor = MTLTextureDescriptor.texture2DDescriptor(
-            pixelFormat: .rgba8Unorm, width: width, height: height, mipmapped: false)
-        descriptor.usage = [.renderTarget, .shaderRead]
-        descriptor.storageMode = .shared
-        guard let output = device.makeTexture(descriptor: descriptor),
-              let commandBuffer = queue.makeCommandBuffer() else { return nil }
+        // Reuse the frame target across renders of the same size: the animation loop renders the same
+        // dimensions every frame and each render is synchronous (waitUntilCompleted), so the previous
+        // frame is fully read back before the next reuses the texture — no per-frame 33 MB allocation.
+        let output: MTLTexture
+        if let pooled = pooledOutput, pooled.width == width, pooled.height == height {
+            output = pooled
+        } else {
+            let descriptor = MTLTextureDescriptor.texture2DDescriptor(
+                pixelFormat: .rgba8Unorm, width: width, height: height, mipmapped: false)
+            descriptor.usage = [.renderTarget, .shaderRead]
+            descriptor.storageMode = .shared
+            guard let made = device.makeTexture(descriptor: descriptor) else { return nil }
+            output = made
+            pooledOutput = made
+        }
+        guard let commandBuffer = queue.makeCommandBuffer() else { return nil }
 
         let pass = MTLRenderPassDescriptor()
         pass.colorAttachments[0].texture = output
