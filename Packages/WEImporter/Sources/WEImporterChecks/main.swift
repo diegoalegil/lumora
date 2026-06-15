@@ -222,6 +222,67 @@ Check.that("presentable breaks title ties by id",
 Check.that("presentable sorts a missing title by its id fallback",
            WallpaperLibrary.presentable([mk(id: "zzz", title: nil), mk(id: "aaa", title: "Mango")]).map(\.ref.id) == ["aaa", "zzz"])
 
+// MARK: - ScenePackage (PKGV container reader)
+
+@MainActor func le32(_ v: Int) -> Data {
+    let u = UInt32(truncatingIfNeeded: v)
+    return Data([UInt8(u & 0xff), UInt8((u >> 8) & 0xff), UInt8((u >> 16) & 0xff), UInt8((u >> 24) & 0xff)])
+}
+
+/// Assemble a PKGV container exactly as Wallpaper Engine writes it: a length-prefixed version label, a
+/// TOC count, then [nameLen][utf8 path][offset][size] entries, then the contiguous blob region.
+@MainActor func buildPKG(version: String, files: [(String, Data)]) -> Data {
+    var toc = Data()
+    var blob = Data()
+    toc.append(le32(version.utf8.count)); toc.append(Data(version.utf8))
+    toc.append(le32(files.count))
+    for (path, fileData) in files {
+        let p = Data(path.utf8)
+        toc.append(le32(p.count)); toc.append(p)
+        toc.append(le32(blob.count))      // offset is relative to the blob region
+        toc.append(le32(fileData.count))
+        blob.append(fileData)
+    }
+    return toc + blob
+}
+
+Check.section("ScenePackage")
+let sceneBytes = Data(#"{"version":1}"#.utf8)
+let matBytes = Data("material".utf8)
+let pkg = buildPKG(version: "PKGV0009", files: [
+    ("scene.json", sceneBytes),
+    ("materials/anime.json", matBytes),
+    ("models/キャラ.json", Data("model".utf8)),
+])
+if let read = Check.noThrow("reads a PKGV0009 package", { try ScenePackage.read(pkg) }) {
+    Check.that("keeps the version label", read.version == "PKGV0009")
+    Check.that("finds all three entries", read.entries.count == 3)
+    Check.that("preserves TOC order",
+               read.entries.map(\.path) == ["scene.json", "materials/anime.json", "models/キャラ.json"])
+    Check.that("round-trips scene.json bytes", read.entry(named: "scene.json")?.data == sceneBytes)
+    Check.that("round-trips a non-first entry", read.entry(named: "materials/anime.json")?.data == matBytes)
+    Check.that("preserves UTF-8 / CJK paths", read.entries[2].path == "models/キャラ.json")
+    Check.that("sceneJSON helper returns scene.json", read.sceneJSON?.path == "scene.json")
+    Check.that("entry lookup is case-insensitive", read.entry(named: "SCENE.JSON") != nil)
+}
+Check.that("reads legacy PKGV0001 with an empty TOC",
+           (try? ScenePackage.read(buildPKG(version: "PKGV0001", files: [])))?.entries.isEmpty == true)
+Check.that("sceneJSON is nil for an empty package",
+           (try? ScenePackage.read(buildPKG(version: "PKGV0001", files: [])))?.sceneJSON == nil)
+Check.throwsError("rejects a non-PKGV signature",
+                  { try ScenePackage.read(buildPKG(version: "ZIP!", files: [])) },
+                  satisfies: { if case ScenePackageError.badSignature = $0 { return true }; return false })
+Check.throwsError("rejects too-small data", { try ScenePackage.read(Data([1, 2, 3])) })
+Check.throwsError("rejects a truncated TOC", {
+    var d = le32(8); d.append(Data("PKGV0009".utf8)); d.append(le32(5))
+    return try ScenePackage.read(d)
+})
+Check.throwsError("rejects an entry pointing out of bounds", {
+    var d = le32(8); d.append(Data("PKGV0009".utf8)); d.append(le32(1))
+    d.append(le32(1)); d.append(Data("x".utf8)); d.append(le32(0)); d.append(le32(9_999))
+    return try ScenePackage.read(d)
+}, satisfies: { if case ScenePackageError.entryOutOfBounds = $0 { return true }; return false })
+
 // MARK: - Done
 
 try? fm.removeItem(at: tmpRoot)
