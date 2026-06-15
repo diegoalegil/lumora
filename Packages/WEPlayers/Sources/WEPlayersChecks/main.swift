@@ -40,7 +40,15 @@ Check.that("nil when no video present",
            VideoWallpaperSelector.firstPlayable(in: [resolved(.web, "w"), resolved(.scene, "s")]) == nil)
 Check.that("nil for empty list", VideoWallpaperSelector.firstPlayable(in: []) == nil)
 
-Check.section("VideoPlayer")
-Check.that("handles the video type", VideoPlayer.supportedType == .video)
+Check.section("WebWallpaperSelector")
+let withWeb = [resolved(.scene, "s"), resolved(.web, "web1", file: "index.html"), resolved(.web, "web2", file: "index.html")]
+Check.that("picks the first web wallpaper", WebWallpaperSelector.firstPlayable(in: withWeb)?.ref.id == "web1")
+Check.that("nil when no web present",
+           WebWallpaperSelector.firstPlayable(in: [resolved(.video, "v"), resolved(.scene, "s")]) == nil)
+Check.that("nil for empty list", WebWallpaperSelector.firstPlayable(in: []) == nil)
+
+Check.section("Players")
+Check.that("VideoPlayer handles the video type", VideoPlayer.supportedType == .video)
+Check.that("WebPlayer handles the web type", WebPlayer.supportedType == .web)
 
 Check.summarize()
