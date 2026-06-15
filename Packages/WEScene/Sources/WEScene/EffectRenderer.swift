@@ -50,9 +50,9 @@ public final class EffectRenderer {
     }
 
     /// Build a pipeline pairing the fixed full-screen vertex with a WE effect's transpiled fragment, or
-    /// nil if it fails to transpile, compile, or link.
-    public func makePipeline(fragmentShader: String) -> MTLRenderPipelineState? {
-        guard let fragmentLibrary = try? device.makeLibrary(source: WEShaderTranspiler.fragmentToMSL(fragmentShader), options: nil),
+    /// nil if it fails to transpile, compile, or link. `combos` are the effect's combo selections.
+    public func makePipeline(fragmentShader: String, combos: [String: Int] = [:]) -> MTLRenderPipelineState? {
+        guard let fragmentLibrary = try? device.makeLibrary(source: WEShaderTranspiler.fragmentToMSL(fragmentShader, combos: combos), options: nil),
               let fragmentFunction = fragmentLibrary.makeFunction(name: "we_fragment") else { return nil }
         let descriptor = MTLRenderPipelineDescriptor()
         descriptor.vertexFunction = vertexFunction
@@ -105,9 +105,10 @@ public final class EffectRenderer {
                       auxTexture: MTLTexture, width: Int, height: Int) -> MTLTexture? {
         guard let fragmentEntry = package.entry(named: effect.fragmentShaderPath) else { return nil }
         let fragmentSource = String(decoding: fragmentEntry.data, as: UTF8.self)
-        guard let pipeline = makePipeline(fragmentShader: fragmentSource) else { return nil }
+        guard let pipeline = makePipeline(fragmentShader: fragmentSource, combos: effect.combos) else { return nil }
 
-        let resolved = ShaderPreprocessor.resolve(fragmentSource, combos: [:])
+        let resolved = ShaderPreprocessor.resolve(fragmentSource,
+            combos: ShaderPreprocessor.comboDefaults(fragmentSource).merging(effect.combos) { _, b in b })
         let scalars = ShaderUniforms.parse(resolved).filter { !$0.type.hasPrefix("sampler") }
         let fragmentBuffer = UniformPacker.pack(scalars, values: effect.constants)
         let samplerCount = ShaderUniforms.parse(resolved).filter { $0.type.hasPrefix("sampler") }.count

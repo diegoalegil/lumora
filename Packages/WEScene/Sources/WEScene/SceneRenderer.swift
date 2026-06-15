@@ -236,8 +236,9 @@ public final class SceneRenderer {
         for effect in effects {
             guard let entry = package.entry(named: effect.fragmentShaderPath) else { continue }
             let source = String(decoding: entry.data, as: UTF8.self)
-            guard let pipeline = effectRenderer.makePipeline(fragmentShader: source) else { continue }
-            let resolved = ShaderPreprocessor.resolve(source, combos: ShaderPreprocessor.comboDefaults(source))
+            guard let pipeline = effectRenderer.makePipeline(fragmentShader: source, combos: effect.combos) else { continue }
+            let resolved = ShaderPreprocessor.resolve(source,
+                combos: ShaderPreprocessor.comboDefaults(source).merging(effect.combos) { _, b in b })
             let uniforms = ShaderUniforms.parse(resolved)
             compiled.append(PreparedEffect(
                 pipeline: pipeline,

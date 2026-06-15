@@ -86,12 +86,15 @@ public struct LayerEffect: Sendable, Equatable {
     public let fragmentShaderPath: String   // e.g. "shaders/effects/pulse.frag"
     public let vertexShaderPath: String     // e.g. "shaders/effects/pulse.vert"
     public let constants: [String: String]  // property key → value (number or space-separated vector)
+    public let combos: [String: Int]        // combo selections (e.g. BLENDMODE) — override shader defaults
 
-    public init(name: String, fragmentShaderPath: String, vertexShaderPath: String, constants: [String: String]) {
+    public init(name: String, fragmentShaderPath: String, vertexShaderPath: String,
+                constants: [String: String], combos: [String: Int] = [:]) {
         self.name = name
         self.fragmentShaderPath = fragmentShaderPath
         self.vertexShaderPath = vertexShaderPath
         self.constants = constants
+        self.combos = combos
     }
 }
 
@@ -224,12 +227,21 @@ public enum SceneGraph {
                     constants[key] = constantString(value)
                 }
             }
+            // Combo selections (e.g. the blend mode): the material declares them, the scene's effect pass
+            // overrides — so an effect renders the mode the wallpaper picked, not just the shader default.
+            var combos: [String: Int] = [:]
+            for source in [(material["passes"] as? [[String: Any]])?.first?["combos"] as? [String: Any],
+                           (entry["passes"] as? [[String: Any]])?.first?["combos"] as? [String: Any]] {
+                for (key, value) in source ?? [:] {
+                    if let intValue = (value as? NSNumber)?.intValue { combos[key] = intValue }
+                }
+            }
             let name = URL(fileURLWithPath: file).deletingLastPathComponent().lastPathComponent
             result.append(LayerEffect(
                 name: name.isEmpty ? file : name,
                 fragmentShaderPath: "shaders/\(shader).frag",
                 vertexShaderPath: "shaders/\(shader).vert",
-                constants: constants))
+                constants: constants, combos: combos))
         }
         return result
     }
