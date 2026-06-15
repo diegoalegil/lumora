@@ -127,6 +127,13 @@ if let device = MTLCreateSystemDefaultDevice() {
     }
 }
 
+Check.section("ShaderPreprocessor")
+let conditional = "a\n#if MASK == 1\nb\n#else\nc\n#endif\nd"
+Check.that("keeps the active #if branch", ShaderPreprocessor.resolve(conditional, combos: ["MASK": 1]) == "a\nb\nd")
+Check.that("keeps the #else when the #if is inactive", ShaderPreprocessor.resolve(conditional, combos: ["MASK": 0]) == "a\nc\nd")
+Check.that("a missing combo reads as 0", ShaderPreprocessor.resolve(conditional, combos: [:]) == "a\nc\nd")
+Check.that("#ifdef follows definedness, not value", ShaderPreprocessor.resolve("#ifdef X\ny\n#endif", combos: ["X": 0]) == "y")
+
 Check.section("UniformPacker")
 let packed = UniformPacker.pack([
     ShaderUniform(type: "float", name: "g_A", material: "a"),

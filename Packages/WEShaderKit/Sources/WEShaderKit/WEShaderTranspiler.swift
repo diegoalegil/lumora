@@ -10,13 +10,15 @@ import Foundation
 public enum WEShaderTranspiler {
     /// Transpile a WE-dialect fragment shader to an MSL source string with a fragment function named
     /// `functionName`. Reuses `ShaderUniforms` to bind textures and a uniform buffer.
-    public static func fragmentToMSL(_ source: String, functionName: String = "we_fragment") -> String {
-        let uniforms = ShaderUniforms.parse(source)
+    public static func fragmentToMSL(_ source: String, functionName: String = "we_fragment",
+                                     combos: [String: Int] = [:]) -> String {
+        let resolved = ShaderPreprocessor.resolve(source, combos: combos)
+        let uniforms = ShaderUniforms.parse(resolved)
         let samplers = uniforms.filter { $0.type.hasPrefix("sampler") }
         let scalars = uniforms.filter { !$0.type.hasPrefix("sampler") }
-        let varyings = parseDeclarations(source, keyword: "varying")
+        let varyings = parseDeclarations(resolved, keyword: "varying")
 
-        var body = mainBody(of: source)
+        var body = mainBody(of: resolved)
         body = rewriteIntrinsics(body)
         body = rewriteTypes(body)
         // Qualify references: varyings come from stage_in, scalar uniforms from the uniform buffer.
@@ -55,14 +57,16 @@ public enum WEShaderTranspiler {
     /// Transpile a WE-dialect vertex shader to MSL with a vertex function named `functionName`.
     /// Attributes become a stage_in struct, varyings the output struct (carrying `[[position]]`), and
     /// `gl_Position` the output position.
-    public static func vertexToMSL(_ source: String, functionName: String = "we_vertex") -> String {
-        let uniforms = ShaderUniforms.parse(source)
+    public static func vertexToMSL(_ source: String, functionName: String = "we_vertex",
+                                   combos: [String: Int] = [:]) -> String {
+        let resolved = ShaderPreprocessor.resolve(source, combos: combos)
+        let uniforms = ShaderUniforms.parse(resolved)
         let samplers = uniforms.filter { $0.type.hasPrefix("sampler") }
         let scalars = uniforms.filter { !$0.type.hasPrefix("sampler") }
-        let attributes = parseDeclarations(source, keyword: "attribute")
-        let varyings = parseDeclarations(source, keyword: "varying")
+        let attributes = parseDeclarations(resolved, keyword: "attribute")
+        let varyings = parseDeclarations(resolved, keyword: "varying")
 
-        var body = mainBody(of: source)
+        var body = mainBody(of: resolved)
         body = rewriteIntrinsics(body)
         body = rewriteTypes(body)
         for attribute in attributes { body = qualify(body, name: attribute.name, with: "in.\(attribute.name)") }
