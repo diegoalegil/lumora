@@ -42,20 +42,28 @@ enum MetalTexture {
     /// represent it (e.g. BC formats on an unsupported GPU) or allocation fails.
     static func make(_ decoded: DecodedTexture, device: MTLDevice) -> MTLTexture? {
         if decoded.format.isBlockCompressed, !device.supportsBCTextureCompression { return nil }
+        guard decoded.width > 0, decoded.height > 0 else { return nil }
+
+        let bytesPerRow = decoded.format.bytesPerRow(width: decoded.width)
+        // Rows of pixels, or rows of 4×4 blocks for the BCn formats.
+        let rows = decoded.format.isBlockCompressed ? (decoded.height + 3) / 4 : decoded.height
+        let required = bytesPerRow * rows
+        // Never hand Metal a buffer smaller than the region it will read — that is an out-of-bounds
+        // read (a crash). Skip the texture instead.
+        guard decoded.pixels.count >= required else { return nil }
 
         let descriptor = MTLTextureDescriptor.texture2DDescriptor(
             pixelFormat: decoded.format.metalPixelFormat,
-            width: max(1, decoded.width), height: max(1, decoded.height), mipmapped: false)
+            width: decoded.width, height: decoded.height, mipmapped: false)
         descriptor.usage = .shaderRead
         guard let texture = device.makeTexture(descriptor: descriptor) else { return nil }
 
-        let bytesPerRow = decoded.format.bytesPerRow(width: decoded.width)
         let region = MTLRegionMake2D(0, 0, decoded.width, decoded.height)
         decoded.pixels.withUnsafeBytes { raw in
             guard let base = raw.baseAddress else { return }
             if decoded.format.isBlockCompressed {
                 texture.replace(region: region, mipmapLevel: 0, slice: 0, withBytes: base,
-                                bytesPerRow: bytesPerRow, bytesPerImage: decoded.pixels.count)
+                                bytesPerRow: bytesPerRow, bytesPerImage: required)
             } else {
                 texture.replace(region: region, mipmapLevel: 0, withBytes: base, bytesPerRow: bytesPerRow)
             }

@@ -72,20 +72,71 @@ import WEScene
     return CGImageDestinationFinalize(dest)
 }
 
-// Optional dev mode: `swift run WESceneChecks <path/to/scene.pkg>` renders a real wallpaper to a PNG.
+@MainActor func cgImage(_ frame: RenderedFrame) -> CGImage? {
+    var rgba = frame.rgba
+    return rgba.withUnsafeMutableBytes { (raw: UnsafeMutableRawBufferPointer) -> CGImage? in
+        CGContext(data: raw.baseAddress, width: frame.width, height: frame.height, bitsPerComponent: 8,
+                  bytesPerRow: frame.width * 4, space: CGColorSpaceCreateDeviceRGB(),
+                  bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)?.makeImage()
+    }
+}
+
+/// Render every `<dir>/*/scene.pkg` into a contact-sheet PNG, reporting non-blank / blank / failed.
+@MainActor func batchRender(_ dir: String, renderer: SceneRenderer) {
+    let fm = FileManager.default
+    let names = ((try? fm.contentsOfDirectory(atPath: dir)) ?? []).sorted()
+    let cellW = 240, cellH = 135, cols = 8
+    var cells: [CGImage?] = []
+    var ok = 0, blank = 0, failed = 0
+    for name in names {
+        let pkgPath = dir + "/" + name + "/scene.pkg"
+        guard fm.fileExists(atPath: pkgPath) else { continue }
+        guard let data = try? Data(contentsOf: URL(fileURLWithPath: pkgPath)),
+              let package = try? ScenePackage.read(data),
+              let document = try? SceneGraph.load(from: package),
+              let frame = renderer.render(document, package: package, width: cellW, height: cellH) else {
+            failed += 1; cells.append(nil); continue
+        }
+        var lo: UInt8 = 255, hi: UInt8 = 0
+        for i in stride(from: 0, to: frame.rgba.count, by: 257) { lo = min(lo, frame.rgba[i]); hi = max(hi, frame.rgba[i]) }
+        if Int(hi) - Int(lo) > 8 { ok += 1 } else { blank += 1 }
+        cells.append(cgImage(frame))
+    }
+    let rows = max(1, (cells.count + cols - 1) / cols)
+    let sheetW = cols * cellW, sheetH = rows * cellH
+    if let ctx = CGContext(data: nil, width: sheetW, height: sheetH, bitsPerComponent: 8,
+                           bytesPerRow: sheetW * 4, space: CGColorSpaceCreateDeviceRGB(),
+                           bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) {
+        ctx.setFillColor(CGColor(red: 0.09, green: 0.09, blue: 0.11, alpha: 1))
+        ctx.fill(CGRect(x: 0, y: 0, width: sheetW, height: sheetH))
+        for (index, cell) in cells.enumerated() {
+            guard let cell else { continue }
+            let col = index % cols, row = index / cols
+            ctx.draw(cell, in: CGRect(x: col * cellW, y: sheetH - (row + 1) * cellH, width: cellW, height: cellH))
+        }
+        if let image = ctx.makeImage(),
+           let dest = CGImageDestinationCreateWithURL(URL(fileURLWithPath: "/tmp/lumora_contact_sheet.png") as CFURL,
+                                                      "public.png" as CFString, 1, nil) {
+            CGImageDestinationAddImage(dest, image, nil); _ = CGImageDestinationFinalize(dest)
+        }
+    }
+    print("batch: \(ok) non-blank, \(blank) blank, \(failed) failed of \(cells.count) -> /tmp/lumora_contact_sheet.png")
+}
+
+// Optional dev mode: a scene.pkg path renders one wallpaper; a directory batch-renders a contact sheet.
 if CommandLine.arguments.count > 1 {
-    let pkgPath = CommandLine.arguments[1]
+    let arg = CommandLine.arguments[1]
     guard let renderer = SceneRenderer() else { print("no Metal device"); exit(0) }
-    guard let data = try? Data(contentsOf: URL(fileURLWithPath: pkgPath)),
+    var isDir: ObjCBool = false
+    _ = FileManager.default.fileExists(atPath: arg, isDirectory: &isDir)
+    if isDir.boolValue { batchRender(arg, renderer: renderer); exit(0) }
+    guard let data = try? Data(contentsOf: URL(fileURLWithPath: arg)),
           let package = try? ScenePackage.read(data),
-          let document = try? SceneGraph.load(from: package) else { print("failed to load \(pkgPath)"); exit(1) }
+          let document = try? SceneGraph.load(from: package) else { print("failed to load \(arg)"); exit(1) }
     let w = min(document.orthoWidth > 0 ? document.orthoWidth : 1920, 3840)
     let h = min(document.orthoHeight > 0 ? document.orthoHeight : 1080, 2160)
     guard let frame = renderer.render(document, package: package, width: w, height: h) else { print("render failed"); exit(1) }
-    var lo: UInt8 = 255, hi: UInt8 = 0
-    for i in stride(from: 0, to: frame.rgba.count, by: 1021) { lo = min(lo, frame.rgba[i]); hi = max(hi, frame.rgba[i]) }
-    let out = "/tmp/lumora_render.png"
-    print("rendered \(document.layers.count) layer(s) @ \(w)x\(h); png=\(writePNG(frame, to: out)) -> \(out); pixel spread=\(Int(hi) - Int(lo)) (>0 means non-blank)")
+    print("rendered \(document.layers.count) layer(s) @ \(w)x\(h); png=\(writePNG(frame, to: "/tmp/lumora_render.png"))")
     exit(0)
 }
 
