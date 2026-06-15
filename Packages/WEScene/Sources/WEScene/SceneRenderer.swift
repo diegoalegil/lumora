@@ -28,6 +28,7 @@ public final class SceneRenderer {
     private let pipelineOver: MTLRenderPipelineState
     private let pipelineAdditive: MTLRenderPipelineState
     private let sampler: MTLSamplerState
+    private let whiteTexture: MTLTexture
 
     private static let shaderSource = """
     #include <metal_stdlib>
@@ -45,9 +46,10 @@ public final class SceneRenderer {
     fragment float4 lumora_scene_fragment(VOut in [[stage_in]],
                                           texture2d<float> tex [[texture(0)]],
                                           sampler samp [[sampler(0)]],
-                                          constant float &layerAlpha [[buffer(0)]]) {
+                                          constant float &layerAlpha [[buffer(0)]],
+                                          constant float3 &tint [[buffer(1)]]) {
         float4 c = tex.sample(samp, in.uv);
-        return float4(c.rgb, c.a * layerAlpha);
+        return float4(c.rgb * tint, c.a * layerAlpha);
     }
     """
 
@@ -75,6 +77,16 @@ public final class SceneRenderer {
         samplerDescriptor.tAddressMode = .clampToEdge
         guard let sampler = device.makeSamplerState(descriptor: samplerDescriptor) else { return nil }
         self.sampler = sampler
+
+        // A 1×1 white texture lets solid-colour fill layers reuse the textured pipeline (tinted by
+        // their colour) instead of needing a separate shader.
+        let whiteDescriptor = MTLTextureDescriptor.texture2DDescriptor(
+            pixelFormat: .rgba8Unorm, width: 1, height: 1, mipmapped: false)
+        whiteDescriptor.usage = .shaderRead
+        guard let white = device.makeTexture(descriptor: whiteDescriptor) else { return nil }
+        var whitePixel: [UInt8] = [255, 255, 255, 255]
+        white.replace(region: MTLRegionMake2D(0, 0, 1, 1), mipmapLevel: 0, withBytes: &whitePixel, bytesPerRow: 4)
+        self.whiteTexture = white
     }
 
     private static func makePipeline(device: MTLDevice, vertex: MTLFunction, fragment: MTLFunction,
@@ -100,20 +112,39 @@ public final class SceneRenderer {
         let orthoH = Double(document.orthoHeight > 0 ? document.orthoHeight : height)
 
         return withRenderPass(clearColor: document.clearColor, width: width, height: height) { encoder in
-            for layer in document.layers where layer.visible && layer.texturePath != nil {
-                guard let path = layer.texturePath,
-                      let entry = package.entry(named: path),
-                      let decoded = try? SceneTexture.decodeFirstMip(entry.data),
-                      let texture = MetalTexture.make(decoded, device: device) else { continue }
+            // Solid fills are drawn only while still behind every textured layer (a background) — a
+            // solid layer above the artwork is usually an animated flash, which a static frame would
+            // wrongly show fully opaque.
+            var drewTexturedLayer = false
+            for layer in document.layers where layer.visible {
+                var texture: MTLTexture?
+                var textureW = 0.0, textureH = 0.0
+                var isSolidFill = false
+                if let path = layer.texturePath,
+                   let entry = package.entry(named: path),
+                   let decoded = try? SceneTexture.decodeFirstMip(entry.data),
+                   let made = MetalTexture.make(decoded, device: device) {
+                    texture = made
+                    textureW = Double(decoded.imageWidth)
+                    textureH = Double(decoded.imageHeight)
+                } else if layer.isSolidLayer, !drewTexturedLayer {
+                    texture = whiteTexture            // a background solid fill: white texel, tinted
+                    textureW = orthoW
+                    textureH = orthoH
+                    isSolidFill = true
+                }
+                guard let texture else { continue }   // unresolved non-solid, or a foreground fill: skip
+                if !isSolidFill { drewTexturedLayer = true }
 
-                let sizeW = (layer.size?.x ?? 0) > 0 ? layer.size!.x : Double(decoded.imageWidth)
-                let sizeH = (layer.size?.y ?? 0) > 0 ? layer.size!.y : Double(decoded.imageHeight)
+                let sizeW = (layer.size?.x ?? 0) > 0 ? layer.size!.x : (textureW > 0 ? textureW : orthoW)
+                let sizeH = (layer.size?.y ?? 0) > 0 ? layer.size!.y : (textureH > 0 ? textureH : orthoH)
                 let halfW = sizeW * layer.scale.x / 2
                 let halfH = sizeH * layer.scale.y / 2
                 var quad = QuadUniform(
                     center: SIMD2(Float(layer.origin.x / orthoW * 2 - 1), Float(layer.origin.y / orthoH * 2 - 1)),
                     halfExtent: SIMD2(Float(halfW / orthoW * 2), Float(halfH / orthoH * 2)))
                 var alpha = Float(layer.alpha)
+                var tint = SIMD3<Float>(Float(layer.color.x), Float(layer.color.y), Float(layer.color.z))
                 let isAdditive = layer.blending == "additive" || layer.blending == "add"
 
                 encoder.setRenderPipelineState(isAdditive ? pipelineAdditive : pipelineOver)
@@ -121,6 +152,7 @@ public final class SceneRenderer {
                 encoder.setFragmentTexture(texture, index: 0)
                 encoder.setFragmentSamplerState(sampler, index: 0)
                 encoder.setFragmentBytes(&alpha, length: MemoryLayout<Float>.size, index: 0)
+                encoder.setFragmentBytes(&tint, length: MemoryLayout<SIMD3<Float>>.stride, index: 1)
                 encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
             }
         }
@@ -138,11 +170,13 @@ public final class SceneRenderer {
             guard let texture else { return }
             var quad = QuadUniform(center: SIMD2(0, 0), halfExtent: SIMD2(1, 1))
             var layerAlpha = alpha
+            var tint = SIMD3<Float>(1, 1, 1)
             encoder.setRenderPipelineState(pipelineOver)
             encoder.setVertexBytes(&quad, length: MemoryLayout<QuadUniform>.stride, index: 0)
             encoder.setFragmentTexture(texture, index: 0)
             encoder.setFragmentSamplerState(sampler, index: 0)
             encoder.setFragmentBytes(&layerAlpha, length: MemoryLayout<Float>.size, index: 0)
+            encoder.setFragmentBytes(&tint, length: MemoryLayout<SIMD3<Float>>.stride, index: 1)
             encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
         }
     }
