@@ -113,7 +113,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if let wallpaper = activeWallpaper {
             let player: (any WallpaperRenderer)?
             switch wallpaper.type {
-            case .video: player = VideoPlayer()
+            case .video:
+                // AVFoundation for native containers; WebKit <video> fallback for the rest (webm…).
+                player = VideoFormatSupport.isNativelyPlayable(wallpaper.mainFileURL)
+                    ? VideoPlayer() : VideoFallbackPlayer()
             case .web:   player = WebPlayer()
             case .scene: player = nil   // no scene player yet
             }
