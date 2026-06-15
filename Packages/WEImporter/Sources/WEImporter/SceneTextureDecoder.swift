@@ -7,6 +7,7 @@ import Foundation
 import Compression
 import ImageIO
 import CoreGraphics
+import Accelerate
 
 /// A decoded texture mip ready to hand to the GPU: raw pixel bytes (RGBA8888 / R8 / RG88) or
 /// block-compressed bytes (DXT1/3/5) in `format`. `width`/`height` are the stored (power-of-two)
@@ -122,6 +123,11 @@ public extension SceneTexture {
                       bytesPerRow: width * 4, space: CGColorSpaceCreateDeviceRGB(),
                       bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return false }
             context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+            // CoreGraphics gives premultiplied RGBA; the renderer composites straight alpha, so undo
+            // the premultiply to keep one convention end-to-end (no double-darkened transparent edges).
+            var buffer = vImage_Buffer(data: base, height: vImagePixelCount(height),
+                                       width: vImagePixelCount(width), rowBytes: width * 4)
+            _ = vImageUnpremultiplyData_RGBA8888(&buffer, &buffer, 0)
             return true
         }
         return ok ? (width, height, rgba) : nil
