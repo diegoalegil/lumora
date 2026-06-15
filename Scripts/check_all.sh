@@ -15,6 +15,7 @@ run "WallpaperShell checks" bash -c 'cd Packages/WallpaperShell && swift run -q 
 run "WEImporter checks" bash -c 'cd Packages/WEImporter && swift run -q WEImporterChecks'
 run "WEPlayers checks" bash -c 'cd Packages/WEPlayers && swift run -q WEPlayersChecks'
 run "WEScene checks" bash -c 'cd Packages/WEScene && swift run -q WESceneChecks'
+run "WEShaderKit checks" bash -c 'cd Packages/WEShaderKit && swift run -q WEShaderKitChecks'
 run "LumoraApp build" bash -c 'cd Packages/LumoraApp && swift build'
 
 echo

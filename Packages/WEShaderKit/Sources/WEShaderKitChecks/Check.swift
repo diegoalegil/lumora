@@ -1,0 +1,31 @@
+// SPDX-License-Identifier: Apache-2.0
+// Provenance: clean-room. Minimal assertion harness (no XCTest dependency — CLT-only env).
+import Foundation
+
+enum Check {
+    nonisolated(unsafe) static var total = 0
+    nonisolated(unsafe) static var failures = 0
+
+    static func that(_ name: String, _ condition: @autoclosure () -> Bool) {
+        total += 1
+        if condition() {
+            print("  ✓ \(name)")
+        } else {
+            failures += 1
+            print("  ✗ \(name)")
+        }
+    }
+
+    static func section(_ title: String) { print("\n▸ \(title)") }
+
+    static func summarize() -> Never {
+        print("\n────────────────────────────────────────")
+        if failures == 0 {
+            print("ALL \(total) CHECKS PASSED")
+            exit(0)
+        } else {
+            print("\(failures)/\(total) CHECKS FAILED")
+            exit(1)
+        }
+    }
+}
