@@ -21,9 +21,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let loginItem = LoginItemService()
     private var isPaused = false
 
-    /// Wallpapers chosen at launch from the installed library (nil = none of that type → fallback).
-    private var videoWallpaper: ResolvedWallpaper?
-    private var webWallpaper: ResolvedWallpaper?
+    /// The wallpaper to play, chosen at launch from the installed library (nil → solid fallback).
+    private var activeWallpaper: ResolvedWallpaper?
 
     override init() {
         // Window factory: build the desktop window + an empty host. Renderers are attached in
@@ -61,8 +60,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // can pick a renderer. Disk-only; nothing is downloaded.
         let library = Self.scanLibrary()
         NSLog("Lumora: \(LibrarySummary.line(for: library))")
-        videoWallpaper = VideoWallpaperSelector.firstPlayable(in: library.wallpapers)
-        webWallpaper = WebWallpaperSelector.firstPlayable(in: library.wallpapers)
+        activeWallpaper = PlayableWallpapers.active(in: library.wallpapers, selectedID: nil)
 
         screenManager.onChange = { [weak self] in self?.reconcile() }
         coordinator.start()      // begin monitoring (no windows yet)
@@ -94,25 +92,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         coordinator?.evaluate()
     }
 
-    /// One renderer per display: the first playable wallpaper found at launch — a video if one is in
-    /// a supported format, otherwise a web wallpaper — or the deep-indigo solid-colour fallback.
+    /// One renderer per display for the active wallpaper, routed to the right player by type, or the
+    /// deep-indigo solid-colour fallback when there's nothing playable (or it fails to load).
     private func makeRenderer() -> any WallpaperRenderer {
-        if let video = videoWallpaper {
-            let player = VideoPlayer()
-            do {
-                try player.load(video)
-                return player
-            } catch {
-                NSLog("Lumora: video load failed (\(error)); trying other wallpapers")
+        if let wallpaper = activeWallpaper {
+            let player: (any WallpaperRenderer)?
+            switch wallpaper.type {
+            case .video: player = VideoPlayer()
+            case .web:   player = WebPlayer()
+            case .scene: player = nil   // no scene player yet
             }
-        }
-        if let web = webWallpaper {
-            let player = WebPlayer()
-            do {
-                try player.load(web)
-                return player
-            } catch {
-                NSLog("Lumora: web load failed (\(error)); using solid-colour fallback")
+            if let player {
+                do {
+                    try player.load(wallpaper)
+                    return player
+                } catch {
+                    NSLog("Lumora: failed to load wallpaper '\(wallpaper.ref.id)' (\(error)); using fallback")
+                }
             }
         }
         // Fallback proof-of-ownership fill so it's obvious Lumora owns the desktop.

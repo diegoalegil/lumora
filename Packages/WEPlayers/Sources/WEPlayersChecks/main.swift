@@ -26,26 +26,31 @@ Check.that("webm is not native", !VideoFormatSupport.isNativelyPlayable(URL(file
 Check.that("mkv is not native", !VideoFormatSupport.isNativelyPlayable(URL(fileURLWithPath: "/x/a.mkv")))
 Check.that("no extension is not native", !VideoFormatSupport.isNativelyPlayable(URL(fileURLWithPath: "/x/a")))
 
-Check.section("VideoWallpaperSelector")
-let mixed = [resolved(.web, "w"), resolved(.video, "v1"), resolved(.scene, "s"), resolved(.video, "v2")]
-Check.that("picks the first playable video", VideoWallpaperSelector.firstPlayable(in: mixed)?.ref.id == "v1")
-Check.that("skips a webm video for a later mp4 one",
-           VideoWallpaperSelector.firstPlayable(in: [
-               resolved(.video, "vweb", file: "a.webm"),
-               resolved(.video, "vmp4", file: "b.mp4"),
-           ])?.ref.id == "vmp4")
-Check.that("nil when the only video is webm",
-           VideoWallpaperSelector.firstPlayable(in: [resolved(.video, "vweb", file: "a.webm")]) == nil)
-Check.that("nil when no video present",
-           VideoWallpaperSelector.firstPlayable(in: [resolved(.web, "w"), resolved(.scene, "s")]) == nil)
-Check.that("nil for empty list", VideoWallpaperSelector.firstPlayable(in: []) == nil)
+Check.section("PlayableWallpapers.isPlayable")
+Check.that("mp4 video is playable", PlayableWallpapers.isPlayable(resolved(.video, "v", file: "a.mp4")))
+Check.that("webm video is not playable", !PlayableWallpapers.isPlayable(resolved(.video, "v", file: "a.webm")))
+Check.that("web is playable", PlayableWallpapers.isPlayable(resolved(.web, "w", file: "index.html")))
+Check.that("scene is not playable (no scene player yet)", !PlayableWallpapers.isPlayable(resolved(.scene, "s", file: "scene.pkg")))
 
-Check.section("WebWallpaperSelector")
-let withWeb = [resolved(.scene, "s"), resolved(.web, "web1", file: "index.html"), resolved(.web, "web2", file: "index.html")]
-Check.that("picks the first web wallpaper", WebWallpaperSelector.firstPlayable(in: withWeb)?.ref.id == "web1")
-Check.that("nil when no web present",
-           WebWallpaperSelector.firstPlayable(in: [resolved(.video, "v"), resolved(.scene, "s")]) == nil)
-Check.that("nil for empty list", WebWallpaperSelector.firstPlayable(in: []) == nil)
+Check.section("PlayableWallpapers.all / active")
+let library = [
+    resolved(.scene, "s", file: "scene.pkg"),     // excluded
+    resolved(.video, "vweb", file: "a.webm"),     // excluded (codec)
+    resolved(.web, "web1", file: "index.html"),
+    resolved(.video, "vmp4", file: "b.mp4"),
+]
+let playable = PlayableWallpapers.all(in: library)
+Check.that("all keeps only playable, in order", playable.map(\.ref.id) == ["web1", "vmp4"])
+Check.that("active picks first playable when no selection",
+           PlayableWallpapers.active(in: library, selectedID: nil)?.ref.id == "web1")
+Check.that("active honours a valid selection",
+           PlayableWallpapers.active(in: library, selectedID: "vmp4")?.ref.id == "vmp4")
+Check.that("active falls back when selection is unplayable",
+           PlayableWallpapers.active(in: library, selectedID: "vweb")?.ref.id == "web1")
+Check.that("active falls back when selection is unknown",
+           PlayableWallpapers.active(in: library, selectedID: "nope")?.ref.id == "web1")
+Check.that("active is nil when nothing is playable",
+           PlayableWallpapers.active(in: [resolved(.scene, "s", file: "scene.pkg")], selectedID: nil) == nil)
 
 Check.section("Players")
 Check.that("VideoPlayer handles the video type", VideoPlayer.supportedType == .video)
