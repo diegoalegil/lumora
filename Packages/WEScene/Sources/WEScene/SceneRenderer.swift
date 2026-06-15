@@ -67,6 +67,8 @@ private struct PreparedLayer {
     let originAnimation: Vec3Animation?
     let originScale: SIMD2<Float>   // scene units → NDC, for the position animation offset
     let effects: [PreparedEffect]   // post-process passes applied to this layer before compositing
+    let frames: [MTLTexture]        // video-texture animation frames (empty = static `texture`)
+    let frameDuration: Double       // seconds per frame for looping the video texture
 }
 
 /// A scene whose layer textures are decoded and uploaded once, ready to re-render every frame (so an
@@ -95,7 +97,7 @@ public final class PreparedScene {
     public var hasAnimation: Bool {
         !particles.isEmpty || layers.contains {
             $0.parallaxDepth != SIMD2<Float>(0, 0) || $0.alphaAnimation != nil
-                || $0.originAnimation != nil || !$0.effects.isEmpty
+                || $0.originAnimation != nil || !$0.effects.isEmpty || !$0.frames.isEmpty
         }
     }
 }
@@ -345,6 +347,16 @@ public final class SceneRenderer {
             let center = SIMD2(Float(layer.origin.x / orthoW * 2 - 1), Float(layer.origin.y / orthoH * 2 - 1))
             let halfExtent = SIMD2(Float(sizeW * layer.scale.x / orthoW), Float(sizeH * layer.scale.y / orthoH))
             let tint = SIMD3(Float(layer.color.x), Float(layer.color.y), Float(layer.color.z))
+
+            // A video-backed texture animates: upload its sampled frames to loop over (the static
+            // `texture` above is the first frame, the fallback if extraction yields nothing usable).
+            var frames: [MTLTexture] = []
+            var frameDuration = 0.0
+            if !isSolidFill, let path = layer.texturePath, let entry = package.entry(named: path),
+               let video = SceneTexture.videoFrames(entry.data) {
+                frames = video.frames.compactMap { MetalTexture.make($0, device: device) }
+                if frames.count >= 2 { frameDuration = video.duration / Double(frames.count) } else { frames = [] }
+            }
             prepared.append(PreparedLayer(
                 texture: texture,
                 center: center,
@@ -358,7 +370,8 @@ public final class SceneRenderer {
                 originAnimation: layer.originAnimation,
                 originScale: SIMD2(Float(2 / orthoW), Float(2 / orthoH)),
                 effects: prepareEffects(layer.effects, package: package, base: texture,
-                                        center: center, halfExtent: halfExtent, uvScale: uvScale, tint: tint)))
+                                        center: center, halfExtent: halfExtent, uvScale: uvScale, tint: tint),
+                frames: frames, frameDuration: frameDuration))
         }
 
         var preparedParticles: [PreparedParticles] = []
@@ -580,9 +593,9 @@ public final class SceneRenderer {
         if let effectRenderer, ProcessInfo.processInfo.environment["LUMORA_NO_EFFECTS"] == nil {
             for (index, layer) in scene.layers.enumerated() where !layer.effects.isEmpty {
                 let center = animatedCenter(layer, time: time, swayX: swayX, swayY: swayY)
-                guard var texture = renderQuadToTexture(layer.texture, center: center, halfExtent: layer.halfExtent,
-                                                        uvScale: layer.uvScale, tint: layer.tint,
-                                                        width: width, height: height) else { continue }
+                guard var texture = renderQuadToTexture(currentTexture(layer, time: time), center: center,
+                                                        halfExtent: layer.halfExtent, uvScale: layer.uvScale,
+                                                        tint: layer.tint, width: width, height: height) else { continue }
                 for effect in layer.effects {
                     let uniforms = UniformPacker.pack(effect.scalars, values: effect.constants,
                                                       overrides: ["g_Time": [Float(time)]])
@@ -613,7 +626,7 @@ public final class SceneRenderer {
                     quad = QuadUniform(center: animatedCenter(layer, time: time, swayX: swayX, swayY: swayY),
                                        halfExtent: layer.halfExtent, uvScale: layer.uvScale)
                     tint = layer.tint
-                    texture = layer.texture
+                    texture = currentTexture(layer, time: time)
                 }
                 encoder.setVertexBytes(&quad, length: MemoryLayout<QuadUniform>.stride, index: 0)
                 encoder.setFragmentTexture(texture, index: 0)
@@ -638,6 +651,16 @@ public final class SceneRenderer {
                 encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4, instanceCount: instances.count)
             }
         }
+    }
+
+    /// The layer's texture at `time`: the looping video frame for a video-backed layer, else its static
+    /// texture.
+    private func currentTexture(_ layer: PreparedLayer, time: Double) -> MTLTexture {
+        guard layer.frames.count >= 2, layer.frameDuration > 0 else { return layer.texture }
+        let total = layer.frameDuration * Double(layer.frames.count)
+        let loopTime = time.truncatingRemainder(dividingBy: total)
+        let index = min(layer.frames.count - 1, max(0, Int(loopTime / layer.frameDuration)))
+        return layer.frames[index]
     }
 
     /// The layer's clip-space centre at `time`: its placement nudged by the automatic parallax sway and

@@ -147,6 +147,48 @@ public extension SceneTexture {
         return pixels(from: image)
     }
 
+    /// Extract up to `count` evenly-spaced frames (RGBA8, resolution-capped) of a video-backed texture,
+    /// with the clip's loop duration, so the renderer can animate it. Returns nil if it isn't a video
+    /// or yields fewer than two frames.
+    public static func videoFrames(_ data: Data, count: Int = 24) -> (frames: [DecodedTexture], duration: Double)? {
+        guard let (header, mipOffset) = try? parse(data) else { return nil }
+        let base = data.startIndex
+        var cursor = mipOffset
+        func u32() -> Int? {
+            guard cursor + 4 <= data.count else { return nil }
+            let i = base + cursor
+            let value = UInt32(data[i]) | UInt32(data[i + 1]) << 8 | UInt32(data[i + 2]) << 16 | UInt32(data[i + 3]) << 24
+            cursor += 4
+            return Int(value)
+        }
+        // (version-1) sentinels, then width/height/isCompressed/decompressedSize, then payloadSize.
+        let skip = max(0, (Int(header.mipContainerVersion.dropFirst(4)) ?? 1) - 1) + 4
+        for _ in 0 ..< skip where u32() == nil { return nil }
+        guard let payloadSize = u32(), payloadSize > 12, base + cursor + payloadSize <= data.count else { return nil }
+        // Sniff just the head before copying a potentially huge payload, so non-video layers bail cheaply.
+        guard looksLikeVideo(data.subdata(in: base + cursor ..< base + cursor + 12)) else { return nil }
+        let payload = data.subdata(in: base + cursor ..< base + cursor + payloadSize)
+
+        let tempURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString).appendingPathExtension("mp4")
+        guard (try? payload.write(to: tempURL)) != nil else { return nil }
+        defer { try? FileManager.default.removeItem(at: tempURL) }
+        let asset = AVURLAsset(url: tempURL)
+        let duration = CMTimeGetSeconds(asset.duration)
+        guard duration.isFinite, duration > 0.01 else { return nil }
+        let generator = AVAssetImageGenerator(asset: asset)
+        generator.appliesPreferredTrackTransform = true
+        generator.maximumSize = CGSize(width: 1280, height: 1280)
+        var frames: [DecodedTexture] = []
+        for i in 0 ..< count {
+            let time = CMTime(seconds: duration * Double(i) / Double(count), preferredTimescale: 600)
+            guard let image = try? generator.copyCGImage(at: time, actualTime: nil), let px = pixels(from: image) else { continue }
+            frames.append(DecodedTexture(format: .rgba8888, width: px.width, height: px.height,
+                                         imageWidth: px.width, imageHeight: px.height, pixels: px.rgba))
+        }
+        return frames.count >= 2 ? (frames, duration) : nil
+    }
+
     /// Draw a CGImage into tightly-packed, straight-alpha RGBA8 bytes (capped at Metal's max size).
     private static func pixels(from image: CGImage) -> (width: Int, height: Int, rgba: Data)? {
         let width = image.width, height = image.height
