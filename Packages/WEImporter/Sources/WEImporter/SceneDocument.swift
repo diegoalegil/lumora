@@ -57,6 +57,24 @@ public struct AlphaAnimation: Sendable, Equatable {
     }
 }
 
+/// A per-component (x/y/z) keyframe animation — e.g. an animated position. Each axis reuses the scalar
+/// keyframe curve. The motion is reported relative to time 0, so a still frame is unchanged.
+public struct Vec3Animation: Sendable, Equatable {
+    public let x: AlphaAnimation?
+    public let y: AlphaAnimation?
+    public let z: AlphaAnimation?
+
+    public init(x: AlphaAnimation?, y: AlphaAnimation?, z: AlphaAnimation?) {
+        self.x = x; self.y = y; self.z = z
+    }
+
+    /// The (x, y) offset at `time` relative to time 0 (z ignored by the 2-D compositor).
+    public func offset(at time: Double) -> (x: Double, y: Double) {
+        ((x?.value(at: time) ?? 0) - (x?.value(at: 0) ?? 0),
+         (y?.value(at: time) ?? 0) - (y?.value(at: 0) ?? 0))
+    }
+}
+
 /// One renderable image layer of a scene: the texture to draw and where/how to draw it.
 public struct SceneLayer: Sendable, Equatable {
     public let name: String
@@ -76,6 +94,8 @@ public struct SceneLayer: Sendable, Equatable {
     public let color: SceneVec3
     /// A keyframe animation for the layer's alpha, if it has one (overrides `alpha` over time).
     public let alphaAnimation: AlphaAnimation?
+    /// A keyframe animation for the layer's position, if it has one (a drift added to `origin`).
+    public let originAnimation: Vec3Animation?
     public let parallaxDepth: SceneVec3
     public let visible: Bool
     public let blending: String?
@@ -123,13 +143,14 @@ public enum SceneGraph {
                 name: object["name"] as? String ?? "",
                 texturePath: material.texture,
                 isSolidLayer: imagePath.contains("solidlayer"),
-                origin: vec(object["origin"]),
+                origin: originVec(object["origin"]),
                 scale: vec(object["scale"], default: SceneVec3(x: 1, y: 1, z: 1)),
                 size: (object["size"] as? String).map(SceneVec3.init(parsing:)),
                 angles: vec(object["angles"]),
                 alpha: alphaValue(object["alpha"]),
                 color: vec(object["color"], default: SceneVec3(x: 1, y: 1, z: 1)),
                 alphaAnimation: alphaAnimation(object["alpha"]),
+                originAnimation: vec3Animation(object["origin"]),
                 parallaxDepth: vec(object["parallaxDepth"]),
                 visible: object["visible"] as? Bool ?? true,
                 blending: material.blending,
@@ -184,6 +205,38 @@ public enum SceneGraph {
         }.sorted { $0.frame < $1.frame }
         guard !keyframes.isEmpty, length > 0 else { return nil }
         return AlphaAnimation(keyframes: keyframes, fps: fps, length: length)
+    }
+
+    /// A position/scale value that may be a plain `"x y z"` string or an animated `{ "value": "x y z",
+    /// "animation": … }` object — take the base value either way.
+    private static func originVec(_ value: Any?) -> SceneVec3 {
+        if let string = value as? String { return SceneVec3(parsing: string) }
+        if let object = value as? [String: Any], let string = object["value"] as? String {
+            return SceneVec3(parsing: string)
+        }
+        return SceneVec3(x: 0, y: 0, z: 0)
+    }
+
+    /// The per-axis keyframe animation under a value's `animation.c0/c1/c2`, if present.
+    private static func vec3Animation(_ value: Any?) -> Vec3Animation? {
+        guard let object = value as? [String: Any],
+              let animation = object["animation"] as? [String: Any] else { return nil }
+        let options = animation["options"] as? [String: Any] ?? [:]
+        let fps = (options["fps"] as? NSNumber)?.doubleValue ?? 30
+        let length = (options["length"] as? NSNumber)?.doubleValue ?? 0
+        func curve(_ key: String) -> AlphaAnimation? {
+            guard let frames = animation[key] as? [[String: Any]] else { return nil }
+            let keyframes = frames.compactMap { keyframe -> AlphaKeyframe? in
+                guard let frame = (keyframe["frame"] as? NSNumber)?.doubleValue,
+                      let value = (keyframe["value"] as? NSNumber)?.doubleValue else { return nil }
+                return AlphaKeyframe(frame: frame, value: value)
+            }.sorted { $0.frame < $1.frame }
+            guard !keyframes.isEmpty, length > 0 else { return nil }
+            return AlphaAnimation(keyframes: keyframes, fps: fps, length: length)
+        }
+        let x = curve("c0"), y = curve("c1"), z = curve("c2")
+        guard x != nil || y != nil || z != nil else { return nil }
+        return Vec3Animation(x: x, y: y, z: z)
     }
 
     // MARK: - Defensive JSON helpers

@@ -484,6 +484,13 @@ let parsedAlpha = try? SceneGraph.load(from: ScenePackage.read(buildPKG(version:
 Check.that("an animated alpha is parsed onto the layer",
            parsedAlpha?.layers.first?.alphaAnimation?.keyframes.count == 2)
 
+let posAnim = Vec3Animation(x: AlphaAnimation(keyframes: [AlphaKeyframe(frame: 0, value: 0),
+                                                          AlphaKeyframe(frame: 60, value: 60)], fps: 60, length: 120),
+                            y: nil, z: nil)
+Check.that("position offset is zero at t=0 (motion is relative)",
+           posAnim.offset(at: 0).x == 0 && posAnim.offset(at: 0).y == 0)
+Check.that("position offset advances over time", abs(posAnim.offset(at: 0.5).x - 30) < 0.0001)
+
 // MARK: - Done
 
 try? fm.removeItem(at: tmpRoot)
