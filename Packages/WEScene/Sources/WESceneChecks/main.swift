@@ -145,8 +145,13 @@ if CommandLine.arguments.count > 1 {
           let package = try? ScenePackage.read(data),
           let document = try? SceneGraph.load(from: package) else { print("failed to load \(arg)"); exit(1) }
     let time = CommandLine.arguments.count > 2 ? (Double(CommandLine.arguments[2]) ?? 0) : 0
-    let w = min(document.orthoWidth > 0 ? document.orthoWidth : 1920, 3840)
-    let h = min(document.orthoHeight > 0 ? document.orthoHeight : 1080, 2160)
+    // Optional width/height override (args 3 and 4) so a scene can be rendered at an arbitrary target —
+    // e.g. a display's real pixel size/aspect — to reproduce size-dependent artifacts the scene's own
+    // ortho size hides.
+    let argW = CommandLine.arguments.count > 3 ? Int(CommandLine.arguments[3]) : nil
+    let argH = CommandLine.arguments.count > 4 ? Int(CommandLine.arguments[4]) : nil
+    let w = argW ?? min(document.orthoWidth > 0 ? document.orthoWidth : 1920, 3840)
+    let h = argH ?? min(document.orthoHeight > 0 ? document.orthoHeight : 1080, 2160)
     let prepared = renderer.prepare(document, package: package)
     guard let frame = renderer.render(prepared, width: w, height: h, time: time) else { print("render failed"); exit(1) }
     let out = "/tmp/lumora_render\(time > 0 ? "_t\(Int(time))" : "").png"

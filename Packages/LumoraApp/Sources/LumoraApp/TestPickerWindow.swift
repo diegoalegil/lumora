@@ -23,6 +23,7 @@ final class TestPickerWindowController: NSWindowController, NSTableViewDataSourc
                               backing: .buffered, defer: false)
         window.title = "Lumora — Test Picker"
         window.isReleasedWhenClosed = false
+        window.center()
         super.init(window: window)
         buildUI()
         window.initialFirstResponder = table

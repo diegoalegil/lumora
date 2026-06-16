@@ -74,6 +74,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         screenManager.onChange = { [weak self] in self?.reconcile() }
         coordinator.start()      // begin monitoring (no windows yet)
         screenManager.start()    // build windows -> onChange -> reconcile attaches renderers
+
+        // Test mode: surface the picker on launch so a live pass doesn't have to hunt for the menu-bar icon.
+        if ProcessInfo.processInfo.environment["LUMORA_LIBRARY_DIR"] != nil { openTestPicker() }
     }
 
     func applicationWillTerminate(_ notification: Notification) {
