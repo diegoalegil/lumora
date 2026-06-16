@@ -265,6 +265,32 @@ if let device = MTLCreateSystemDefaultDevice() {
     }
 }
 
+// The bundled clean-room headers declare the blend/colour helpers WE shaders pull in with #include.
+// A shader calling BlendOpacity (common_blending.h) and hsv2rgb/rgb2hsv (common.h) must transpile to
+// MSL that Metal accepts.
+let headerShader = """
+#include "common.h"
+#include "common_blending.h"
+varying vec4 v_TexCoord;
+uniform sampler2D g_Texture0;
+void main() {
+    vec4 albedo = texSample2D(g_Texture0, v_TexCoord.xy);
+    vec3 tinted = hsv2rgb(rgb2hsv(albedo.rgb));
+    gl_FragColor = vec4(BlendOpacity(albedo.rgb, tinted, BlendLinearDodge, 0.5), albedo.a);
+}
+"""
+let headerMSL = WEShaderTranspiler.fragmentToMSL(headerShader)
+Check.that("splices the bundled header helpers into the shader", headerMSL.contains("hsv2rgb") && headerMSL.contains("BlendOpacity"))
+if let device = MTLCreateSystemDefaultDevice() {
+    do {
+        _ = try device.makeLibrary(source: headerMSL, options: nil)
+        Check.that("an #include-using shader compiles via the bundled headers", true)
+    } catch {
+        print("──── MSL ────\n\(headerMSL)\n─────────────")
+        Check.that("an #include-using shader compiles via the bundled headers", false)
+    }
+}
+
 Check.section("ShaderPreprocessor")
 let conditional = "a\n#if MASK == 1\nb\n#else\nc\n#endif\nd"
 Check.that("keeps the active #if branch", ShaderPreprocessor.resolve(conditional, combos: ["MASK": 1]) == "a\nb\nd")
@@ -296,6 +322,18 @@ Check.that("a #define substitutes whole words only",
            ShaderPreprocessor.resolve("#define A 1\nApple AB A", combos: [:]) == "Apple AB 1")
 Check.that("a function-like macro is left untouched",
            ShaderPreprocessor.resolve("#define CAST3(x) vec3(x)\ng = CAST3(1.0);", combos: [:]).contains("CAST3(1.0)"))
+// #include resolution — the helpers WE shaders call live in engine headers that aren't packed in the
+// wallpaper, so the preprocessor splices them from a header map (recursively, cycle-safe).
+Check.that("splices an included header's source",
+           ShaderPreprocessor.resolve("#include \"h\"\ny = k();", combos: [:], includes: ["h": "float k() { return 1.0; }"]).contains("float k()"))
+Check.that("an included #define reaches the includer's #if",
+           ShaderPreprocessor.resolve("#include \"k\"\n#if K == 2\nx\n#endif", combos: [:], includes: ["k": "#define K 2"]) == "x")
+Check.that("an unknown #include is left in place",
+           ShaderPreprocessor.resolve("#include \"missing\"\ny", combos: [:], includes: [:]).contains("y"))
+Check.that("nested includes resolve",
+           ShaderPreprocessor.resolve("#include \"a\"", combos: [:], includes: ["a": "#include \"b\"", "b": "deep"]) == "deep")
+Check.that("a cyclic include terminates",
+           ShaderPreprocessor.resolve("#include \"a\"\ntail", combos: [:], includes: ["a": "#include \"a\"\nx"]).contains("tail"))
 let crlfShader = "varying vec4 v_TexCoord;\r\nuniform sampler2D g_Texture0;\r\nvoid main() {\r\n    gl_FragColor = texSample2D(g_Texture0, v_TexCoord.xy);\r\n}\r\n"
 Check.that("a CRLF shader transpiles to a non-empty body",
            WEShaderTranspiler.fragmentToMSL(crlfShader).contains("g_Texture0.sample("))

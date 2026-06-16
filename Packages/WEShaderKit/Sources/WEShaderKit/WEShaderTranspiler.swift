@@ -12,9 +12,10 @@ public enum WEShaderTranspiler {
     /// Transpile a WE-dialect fragment shader to an MSL source string with a fragment function named
     /// `functionName`. Reuses `ShaderUniforms` to bind textures and a uniform buffer.
     public static func fragmentToMSL(_ source: String, functionName: String = "we_fragment",
-                                     combos: [String: Int] = [:]) -> String {
+                                     combos: [String: Int] = [:],
+                                     includes: [String: String] = WEStandardHeaders.all) -> String {
         let combos = ShaderPreprocessor.comboDefaults(source).merging(combos) { _, explicit in explicit }
-        let resolved = ShaderPreprocessor.resolve(source, combos: combos)
+        let resolved = ShaderPreprocessor.resolve(source, combos: combos, includes: includes)
         let uniforms = ShaderUniforms.parse(resolved)
         let samplers = uniforms.filter { $0.type.hasPrefix("sampler") }
         let scalars = uniforms.filter { !$0.type.hasPrefix("sampler") }
@@ -59,9 +60,10 @@ public enum WEShaderTranspiler {
     /// Attributes become a stage_in struct, varyings the output struct (carrying `[[position]]`), and
     /// `gl_Position` the output position.
     public static func vertexToMSL(_ source: String, functionName: String = "we_vertex",
-                                   combos: [String: Int] = [:]) -> String {
+                                   combos: [String: Int] = [:],
+                                   includes: [String: String] = WEStandardHeaders.all) -> String {
         let combos = ShaderPreprocessor.comboDefaults(source).merging(combos) { _, explicit in explicit }
-        let resolved = ShaderPreprocessor.resolve(source, combos: combos)
+        let resolved = ShaderPreprocessor.resolve(source, combos: combos, includes: includes)
         let uniforms = ShaderUniforms.parse(resolved)
         let samplers = uniforms.filter { $0.type.hasPrefix("sampler") }
         let scalars = uniforms.filter { !$0.type.hasPrefix("sampler") }

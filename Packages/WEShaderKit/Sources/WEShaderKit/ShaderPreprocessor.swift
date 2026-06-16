@@ -5,12 +5,16 @@
 import Foundation
 
 public enum ShaderPreprocessor {
-    /// Keep only the lines in branches that are active for `combos` (a missing combo reads as 0).
-    public static func resolve(_ source: String, combos: [String: Int]) -> String {
+    /// Keep only the lines in branches that are active for `combos` (a missing combo reads as 0). Any
+    /// `#include "name"` is first spliced with `includes[name]` — WE's effect shaders pull blend, blur
+    /// and math helpers from standard headers that ship with the engine, not inside the wallpaper.
+    public static func resolve(_ source: String, combos: [String: Int], includes: [String: String] = [:]) -> String {
         // WE shaders ship with Windows CRLF endings. Swift treats "\r\n" as a single grapheme, so
         // split(separator: "\n") would never match it and the whole file would collapse into one
         // "line" — normalise to LF up front so every line-based step downstream works.
-        let source = source.replacingOccurrences(of: "\r\n", with: "\n").replacingOccurrences(of: "\r", with: "\n")
+        let normalized = source.replacingOccurrences(of: "\r\n", with: "\n").replacingOccurrences(of: "\r", with: "\n")
+        // Splice headers in before conditionals/macros so a header's own #define/#if participates.
+        let source = includes.isEmpty ? normalized : expandIncludes(normalized, includes)
         struct Frame { let parentEmitting: Bool; var taken: Bool; var active: Bool }
         var stack: [Frame] = []
         func emitting() -> Bool { stack.last.map { $0.parentEmitting && $0.active } ?? true }
@@ -88,6 +92,32 @@ public enum ShaderPreprocessor {
             if !changed { break }
         }
         return out
+    }
+
+    /// Replace each `#include "name"` (or `<name>`) line with the source of `includes[name]`, recursively
+    /// (a header may include another). A header already on the include path is skipped so a cycle
+    /// terminates; an unknown header is left in place (later dropped as a `#` line, exactly as before).
+    static func expandIncludes(_ source: String, _ includes: [String: String]) -> String {
+        func expand(_ text: String, _ onPath: Set<String>) -> String {
+            var out: [String] = []
+            for line in text.split(separator: "\n", omittingEmptySubsequences: false).map(String.init) {
+                if line.trimmingCharacters(in: .whitespaces).hasPrefix("#include"), let name = includeName(line) {
+                    if onPath.contains(name) { continue }                       // cycle — drop
+                    if let header = includes[name] { out.append(expand(header, onPath.union([name]))); continue }
+                }
+                out.append(line)
+            }
+            return out.joined(separator: "\n")
+        }
+        return expand(source, [])
+    }
+
+    /// The header name inside an `#include "name"` / `#include <name>` directive.
+    private static func includeName(_ line: String) -> String? {
+        guard let open = line.firstIndex(where: { $0 == "\"" || $0 == "<" }) else { return nil }
+        let after = line.index(after: open)
+        guard let close = line[after...].firstIndex(where: { $0 == "\"" || $0 == ">" }) else { return nil }
+        return after < close ? String(line[after..<close]) : nil
     }
 
     /// Default combo values a shader declares in its `// [COMBO] {…"combo":NAME,"default":N}` header
