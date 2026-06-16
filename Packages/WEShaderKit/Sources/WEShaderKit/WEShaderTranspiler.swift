@@ -377,7 +377,9 @@ public enum WEShaderTranspiler {
                             ("ivec2", "int2"), ("ivec3", "int3"), ("ivec4", "int4"),
                             // WE cast macros (their #define is stripped) → Metal constructors
                             ("CAST2", "float2"), ("CAST3", "float3"), ("CAST4", "float4"),
-                            ("CAST2X2", "float2x2"), ("CAST3X3", "float3x3"), ("CAST4X4", "float4x4")] {
+                            // CAST3X3 truncates a mat4 to its upper-left 3×3; Metal has no such
+                            // constructor, so route it through the prelude helper instead of float3x3(…).
+                            ("CAST2X2", "float2x2"), ("CAST3X3", "_weCast3x3"), ("CAST4X4", "float4x4")] {
             out = replaceWord(out, glsl, msl)
         }
         return out

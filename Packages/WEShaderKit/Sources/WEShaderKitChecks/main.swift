@@ -313,6 +313,38 @@ if let device = MTLCreateSystemDefaultDevice() {
     }
 }
 
+// Perspective/parallax vertex effects: GLSL's inverse() and mat3(mat4) have no Metal equivalent, so the
+// prelude supplies inverse(float3x3) and CAST3X3 lowers to _weCast3x3; squareToQuad comes from the header.
+let matrixVert = """
+#include "common_perspective.h"
+attribute vec3 a_Position;
+attribute vec2 a_TexCoord;
+uniform mat4 g_ModelViewProjectionMatrix;
+uniform mat4 g_EffectMatrix;
+uniform vec2 g_Point0;
+uniform vec2 g_Point1;
+uniform vec2 g_Point2;
+uniform vec2 g_Point3;
+varying vec3 v_Warp;
+void main() {
+    gl_Position = mul(vec4(a_Position, 1.0), g_ModelViewProjectionMatrix);
+    mat3 xform = inverse(squareToQuad(g_Point0, g_Point1, g_Point2, g_Point3));
+    mat3 rot = CAST3X3(g_EffectMatrix);
+    v_Warp = mul(vec3(a_TexCoord, 1.0), xform) + rot[0];
+}
+"""
+let matrixMSL = WEShaderTranspiler.vertexToMSL(matrixVert)
+Check.that("CAST3X3 lowers to the matrix-truncation helper, not float3x3(mat4)", matrixMSL.contains("_weCast3x3("))
+if let device = MTLCreateSystemDefaultDevice() {
+    do {
+        _ = try device.makeLibrary(source: matrixMSL, options: nil)
+        Check.that("a perspective vertex shader compiles (inverse, squareToQuad, CAST3X3)", true)
+    } catch {
+        print("──── MSL ────\n\(matrixMSL)\n─────────────")
+        Check.that("a perspective vertex shader compiles (inverse, squareToQuad, CAST3X3)", false)
+    }
+}
+
 Check.section("ShaderPreprocessor")
 let conditional = "a\n#if MASK == 1\nb\n#else\nc\n#endif\nd"
 Check.that("keeps the active #if branch", ShaderPreprocessor.resolve(conditional, combos: ["MASK": 1]) == "a\nb\nd")

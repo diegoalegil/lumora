@@ -122,5 +122,27 @@ public enum WEShaderPrelude {
         return base + (blend - base) * opacity;
     }
 
+    // --- Matrix helpers GLSL has and Metal doesn't ---------------------------------------------------
+    // GLSL's mat3(mat4) keeps the upper-left 3×3; Metal has no such truncating constructor, so take the
+    // first three components of the first three columns (WE's CAST3X3 macro lowers to this).
+    inline float3x3 _weCast3x3(float4x4 m) { return float3x3(m[0].xyz, m[1].xyz, m[2].xyz); }
+
+    // GLSL provides inverse(); Metal doesn't. 3×3 inverse via the adjugate over the determinant.
+    inline float3x3 inverse(float3x3 m) {
+        float c00 = m[1][1] * m[2][2] - m[1][2] * m[2][1];
+        float c01 = m[0][2] * m[2][1] - m[0][1] * m[2][2];
+        float c02 = m[0][1] * m[1][2] - m[0][2] * m[1][1];
+        float c10 = m[1][2] * m[2][0] - m[1][0] * m[2][2];
+        float c11 = m[0][0] * m[2][2] - m[0][2] * m[2][0];
+        float c12 = m[0][2] * m[1][0] - m[0][0] * m[1][2];
+        float c20 = m[1][0] * m[2][1] - m[1][1] * m[2][0];
+        float c21 = m[0][1] * m[2][0] - m[0][0] * m[2][1];
+        float c22 = m[0][0] * m[1][1] - m[0][1] * m[1][0];
+        float invDet = 1.0 / (m[0][0] * c00 + m[0][1] * c10 + m[0][2] * c20);
+        return float3x3(c00 * invDet, c01 * invDet, c02 * invDet,
+                        c10 * invDet, c11 * invDet, c12 * invDet,
+                        c20 * invDet, c21 * invDet, c22 * invDet);
+    }
+
     """
 }

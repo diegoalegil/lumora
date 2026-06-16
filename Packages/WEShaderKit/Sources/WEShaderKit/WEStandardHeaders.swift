@@ -17,7 +17,35 @@ public enum WEStandardHeaders {
         "common.h": common,
         "common_blending.h": commonBlending,
         "common_blur.h": commonBlur,
+        "common_perspective.h": commonPerspective,
     ]
+
+    /// Perspective warp. `squareToQuad` builds the homography mapping the unit square onto the quad
+    /// p0..p3 (the standard Heckbert construction); WE shaders use `inverse(squareToQuad(…))` with the
+    /// dialect's row-vector `mul(v, M)`, so the matrix is stored to match that convention. A near-affine
+    /// quad (a plain rectangle, e.g. the default transform) has a zero perspective denominator — fall back
+    /// to the affine map there instead of dividing by zero.
+    private static let commonPerspective = """
+    float3x3 squareToQuad(float2 p0, float2 p1, float2 p2, float2 p3) {
+        float dx1 = p1.x - p2.x, dx2 = p3.x - p2.x;
+        float dy1 = p1.y - p2.y, dy2 = p3.y - p2.y;
+        float sx = p0.x - p1.x + p2.x - p3.x;
+        float sy = p0.y - p1.y + p2.y - p3.y;
+        float den = dx1 * dy2 - dx2 * dy1;
+        float g = 0.0, h = 0.0;
+        if (abs(den) > 1e-7) {
+            g = (sx * dy2 - dx2 * sy) / den;
+            h = (dx1 * sy - sx * dy1) / den;
+        }
+        float a = p1.x - p0.x + g * p1.x;
+        float b = p3.x - p0.x + h * p3.x;
+        float c = p0.x;
+        float d = p1.y - p0.y + g * p1.y;
+        float e = p3.y - p0.y + h * p3.y;
+        float f = p0.y;
+        return float3x3(a, b, c, d, e, f, g, h, 1.0);
+    }
+    """
 
     /// Separable gaussian blur. WE's `blur{13,7,3}a(uv, step)` sample the framebuffer `g_Texture0` along a
     /// precomputed step direction (the paired vertex shader puts the centre uv in `.xy` and the per-tap
