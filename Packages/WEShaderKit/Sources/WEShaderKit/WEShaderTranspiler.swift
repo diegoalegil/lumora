@@ -19,7 +19,12 @@ public enum WEShaderTranspiler {
         let uniforms = ShaderUniforms.parse(resolved)
         let samplers = uniforms.filter { $0.type.hasPrefix("sampler") }
         let scalars = uniforms.filter { !$0.type.hasPrefix("sampler") }
-        let varyings = parseDeclarations(resolved, keyword: "varying")
+        // Drop varyings the fragment never reads. Some shaders declare a varying (e.g. waterripple's
+        // v_Scroll) the paired vertex never writes; left in the stage_in struct it shifts every later
+        // varying's location and the pipeline fails to link against the vertex. A varying only the vertex
+        // produces is harmless; one the fragment doesn't use is dead, so omitting it is safe and realigns
+        // the locations with the vertex's outputs.
+        let varyings = parseDeclarations(resolved, keyword: "varying").filter { isReferenced($0.name, in: resolved) }
 
         // Qualify references: scalar varyings come from stage_in, scalar uniforms from the uniform
         // buffer, gl_FragColor → the local we return. Array varyings stay bare — they resolve to a local
@@ -123,6 +128,15 @@ public enum WEShaderTranspiler {
         let combos = ShaderPreprocessor.comboDefaults(source).merging(combos) { _, explicit in explicit }
         let resolved = ShaderPreprocessor.resolve(source, combos: combos, includes: includes)
         return parseDeclarations(resolved, keyword: "attribute").map { ($0.type, $0.name) }
+    }
+
+    /// Whether `name` appears in `source` beyond a single declaration — i.e. it is actually used. A whole
+    /// word (not a substring or a `.member`); a declared-but-unused varying occurs exactly once (its
+    /// declaration) so this returns false for it.
+    private static func isReferenced(_ name: String, in source: String) -> Bool {
+        let escaped = NSRegularExpression.escapedPattern(for: name)
+        let regex = try! NSRegularExpression(pattern: "(?<![\\w.])\(escaped)(?![\\w])")
+        return regex.numberOfMatches(in: source, range: NSRange(source.startIndex..., in: source)) > 1
     }
 
     // MARK: - Pieces

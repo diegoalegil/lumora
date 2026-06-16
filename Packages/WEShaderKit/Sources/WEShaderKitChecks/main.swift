@@ -215,6 +215,19 @@ if let device = MTLCreateSystemDefaultDevice() {
     Check.that("common_composite.h compiles a blur-combine shader",
                (try? device.makeLibrary(source: WEShaderTranspiler.fragmentToMSL(combineShader), options: nil)) != nil)
 }
+// A fragment varying the shader never reads is dropped from stage_in — left in, it shifts every later
+// varying's location and the pass fails to link against the vertex (waterripple's unused v_Scroll).
+let unusedVaryingFrag = """
+varying vec4 v_TexCoord;
+varying vec2 v_Unused;
+varying vec4 v_Used;
+uniform sampler2D g_Texture0;
+void main() { gl_FragColor = texSample2D(g_Texture0, v_TexCoord.xy) + v_Used; }
+"""
+let unusedVaryingMSL = WEShaderTranspiler.fragmentToMSL(unusedVaryingFrag)
+Check.that("an unread fragment varying is dropped from stage_in", !unusedVaryingMSL.contains("v_Unused"))
+Check.that("a read fragment varying is kept in stage_in", unusedVaryingMSL.contains("v_Used"))
+
 Check.that("comboDefaults reads the // [COMBO] default",
            ShaderPreprocessor.comboDefaults("// [COMBO] {\"combo\":\"BLENDMODE\",\"default\":9}\nvoid main(){}")["BLENDMODE"] == 9)
 Check.that("an explicit combo overrides the annotation default",
