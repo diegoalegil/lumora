@@ -316,6 +316,50 @@ if let effectRenderer = EffectRenderer(device: renderer.device) {
     } else {
         Check.that("builds an effect pipeline from transpiled WE shaders", false)
     }
+
+    // An effect fragment that reads a varying the fixed full-screen vertex never produces (v_Scale) can
+    // only be drawn through the effect's OWN vertex — this is the interface mismatch that silently dropped
+    // most effects. The fixed-vertex pipeline must fail to link; pairing the own vertex must succeed.
+    let ownVertex = """
+    attribute vec3 a_Position;
+    attribute vec2 a_TexCoord;
+    uniform mat4 g_ModelViewProjectionMatrix;
+    varying vec4 v_TexCoord;
+    varying vec2 v_Scale;
+    void main() {
+        gl_Position = mul(vec4(a_Position, 1.0), g_ModelViewProjectionMatrix);
+        v_TexCoord = vec4(a_TexCoord, a_TexCoord);
+        v_Scale = vec2(0.5, 0.25);
+    }
+    """
+    let ownFragment = """
+    varying vec4 v_TexCoord;
+    varying vec2 v_Scale;
+    uniform sampler2D g_Texture0;
+    void main() { gl_FragColor = texSample2D(g_Texture0, v_TexCoord.xy) * vec4(v_Scale.x, v_Scale.y, 1.0, 1.0); }
+    """
+    Check.that("a fragment needing a custom varying can't pair with the fixed full-screen vertex",
+               effectRenderer.makePipeline(fragmentShader: ownFragment) == nil)
+    if let ownPipeline = effectRenderer.makeVertexPipeline(vertexShader: ownVertex, fragmentShader: ownFragment) {
+        Check.that("the effect's own vertex links the pipeline", true)
+        let descriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .rgba8Unorm, width: 4, height: 4, mipmapped: false)
+        descriptor.usage = [.shaderRead]
+        let input = renderer.device.makeTexture(descriptor: descriptor)!
+        var pixels = [UInt8](repeating: 200, count: 4 * 4 * 4)
+        for i in stride(from: 3, to: pixels.count, by: 4) { pixels[i] = 255 }
+        input.replace(region: MTLRegionMake2D(0, 0, 4, 4), mipmapLevel: 0, withBytes: &pixels, bytesPerRow: 16)
+        let identity: [Float] = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]
+        let vertexUniforms = identity.withUnsafeBytes { Data($0) }
+        if let output = effectRenderer.applyVertexEffect(pipeline: ownPipeline, to: input, vertexUniforms: vertexUniforms, width: 4, height: 4) {
+            let rgba = effectRenderer.readback(output)
+            let r = Int(rgba[(2 * 4 + 2) * 4]), g = Int(rgba[(2 * 4 + 2) * 4 + 1])
+            Check.that("the own-vertex effect runs over the grid (r 200→~100, g 200→~50)", abs(r - 100) <= 6 && abs(g - 50) <= 6)
+        } else {
+            Check.that("the own-vertex effect produced output", false)
+        }
+    } else {
+        Check.that("the effect's own vertex links the pipeline", false)
+    }
 }
 
 Check.summarize()

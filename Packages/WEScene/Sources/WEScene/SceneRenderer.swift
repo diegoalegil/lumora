@@ -48,11 +48,15 @@ private struct PreparedParticles {
     let instanceBuffer: MTLBuffer   // sized for `count` instances, refilled each frame (not reallocated)
 }
 
-/// A layer's effect compiled once: the full-screen pass plus the data to re-pack its uniforms each
-/// frame (so a time-varying effect like pulse animates without re-transpiling the shader).
+/// A layer's effect compiled once: the pass plus the data to re-pack its uniforms each frame (so a
+/// time-varying effect like pulse animates without re-transpiling the shader). When `hasVertex` is true
+/// the effect runs over the grid with its own vertex stage, and `vertexScalars` packs that stage's
+/// uniforms; otherwise it's a fragment-only pass over the fixed full-screen vertex.
 private struct PreparedEffect {
     let pipeline: MTLRenderPipelineState
-    let scalars: [ShaderUniform]      // non-sampler uniforms, in declaration order, for packing
+    let hasVertex: Bool                // pipeline pairs the effect's own vertex (grid draw) vs the fixed one
+    let scalars: [ShaderUniform]      // fragment non-sampler uniforms, in declaration order, for packing
+    let vertexScalars: [ShaderUniform] // vertex non-sampler uniforms (empty when !hasVertex)
     let constants: [String: String]   // the effect's constant values, keyed by material annotation
     let auxTextures: [MTLTexture]      // samplers after g_Texture0 (noise/normal/mask), in binding order
 }
@@ -500,11 +504,46 @@ public final class SceneRenderer {
         return nil
     }
 
-    /// Compile a layer's effects and keep only the ones that actually contribute. Each fragment shader is
-    /// transpiled into a pipeline; effects that fail to build are dropped. Then the chain is dry-run at
-    /// low resolution and any pass that blanks the layer (a not-yet-supported effect — vertex
-    /// displacement, multi-pass blur, …) is skipped, so an unsupported effect degrades gracefully
-    /// instead of turning the whole layer transparent.
+    /// Built-in uniform values the renderer supplies to every effect stage: the animation clock, an
+    /// identity model-view-projection (the effect quad already spans NDC), and each sampler's resolution
+    /// as (w, h, w, h) — the render targets are exact-size, so the padded-atlas ratio the shaders derive
+    /// from `.zw / .xy` is 1.
+    private static func effectOverrides(time: Float, width: Int, height: Int) -> [String: [Float]] {
+        let w = Float(width), h = Float(height)
+        var overrides: [String: [Float]] = [
+            "g_Time": [time],
+            "g_ModelViewProjectionMatrix": [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1],
+        ]
+        for n in 0 ... 7 { overrides["g_Texture\(n)Resolution"] = [w, h, w, h] }
+        return overrides
+    }
+
+    /// Run one prepared effect over `input` at `time`, packing the stage uniforms fresh (so a time-varying
+    /// effect animates). Own-vertex effects draw the grid through their vertex stage; fragment-only effects
+    /// take the fixed full-screen vertex.
+    private func applyEffect(_ effect: PreparedEffect, to input: MTLTexture, time: Float,
+                             width: Int, height: Int) -> MTLTexture? {
+        guard let effectRenderer else { return nil }
+        let overrides = Self.effectOverrides(time: time, width: width, height: height)
+        let fragmentUniforms = UniformPacker.pack(effect.scalars, values: effect.constants, overrides: overrides)
+        if effect.hasVertex {
+            let vertexUniforms = UniformPacker.pack(effect.vertexScalars, values: effect.constants, overrides: overrides)
+            return effectRenderer.applyVertexEffect(pipeline: effect.pipeline, to: input, auxTextures: effect.auxTextures,
+                                                    vertexUniforms: vertexUniforms.isEmpty ? nil : vertexUniforms,
+                                                    fragmentUniforms: fragmentUniforms.isEmpty ? nil : fragmentUniforms,
+                                                    width: width, height: height)
+        }
+        return effectRenderer.apply(pipeline: effect.pipeline, to: input, auxTextures: effect.auxTextures,
+                                    fragmentUniforms: fragmentUniforms.isEmpty ? nil : fragmentUniforms,
+                                    width: width, height: height)
+    }
+
+    /// Compile a layer's effects and keep only the ones that actually contribute. Each effect is paired
+    /// with its own transpiled vertex shader where it ships one (so rotation/shake/scroll/blur-tap effects
+    /// link and their vertex work runs), falling back to a fixed full-screen vertex for fragment-only
+    /// effects; effects that fail to build are dropped. Then the chain is dry-run at low resolution and any
+    /// pass that blanks the layer (an effect this renderer still can't do — multi-pass blur, mesh
+    /// displacement past the grid) is skipped, so it degrades gracefully instead of going transparent.
     private func prepareEffects(_ effects: [LayerEffect], package: ScenePackage, base: MTLTexture,
                                 center: SIMD2<Float>, halfExtent: SIMD2<Float>, uvScale: SIMD2<Float>,
                                 tint: SIMD3<Float>) -> [PreparedEffect] {
@@ -513,7 +552,25 @@ public final class SceneRenderer {
         for effect in effects {
             guard let entry = package.entry(named: effect.fragmentShaderPath) else { continue }
             let source = String(decoding: entry.data, as: UTF8.self)
-            guard let pipeline = effectRenderer.makePipeline(fragmentShader: source, combos: effect.combos) else { continue }
+
+            // Prefer the effect's own vertex stage (its varyings/displacement); fall back to the fixed
+            // full-screen vertex for a fragment-only effect or one whose vertex won't pair.
+            var pipeline: MTLRenderPipelineState?
+            var hasVertex = false
+            var vertexScalars: [ShaderUniform] = []
+            if let vertexEntry = package.entry(named: effect.vertexShaderPath) {
+                let vertexSource = String(decoding: vertexEntry.data, as: UTF8.self)
+                if let made = effectRenderer.makeVertexPipeline(vertexShader: vertexSource, fragmentShader: source, combos: effect.combos) {
+                    pipeline = made
+                    hasVertex = true
+                    let vertexResolved = ShaderPreprocessor.resolve(vertexSource,
+                        combos: ShaderPreprocessor.comboDefaults(vertexSource).merging(effect.combos) { _, b in b })
+                    vertexScalars = ShaderUniforms.parse(vertexResolved).filter { !$0.type.hasPrefix("sampler") }
+                }
+            }
+            if pipeline == nil { pipeline = effectRenderer.makePipeline(fragmentShader: source, combos: effect.combos) }
+            guard let pipeline else { continue }
+
             let resolved = ShaderPreprocessor.resolve(source,
                 combos: ShaderPreprocessor.comboDefaults(source).merging(effect.combos) { _, b in b })
             let uniforms = ShaderUniforms.parse(resolved)
@@ -528,16 +585,18 @@ public final class SceneRenderer {
             }
             compiled.append(PreparedEffect(
                 pipeline: pipeline,
+                hasVertex: hasVertex,
                 scalars: uniforms.filter { !$0.type.hasPrefix("sampler") },
+                vertexScalars: vertexScalars,
                 constants: effect.constants,
                 auxTextures: auxTextures))
         }
         guard !compiled.isEmpty else { return [] }
 
         // Dry-run the chain on a small copy of the layer and keep only passes that preserve the layer's
-        // coverage at every sampled time. An effect this renderer can't yet do (vertex displacement,
-        // multi-pass blur) punches the layer out to the clear colour — sometimes only at certain phases
-        // of its animation — so a pass is dropped unless it stays stable across the whole sample set.
+        // coverage at every sampled time. An effect this renderer can't yet do (multi-pass blur, mesh
+        // displacement past the grid) punches the layer out to the clear colour — sometimes only at certain
+        // phases of its animation — so a pass is dropped unless it stays stable across the whole sample set.
         let probeW = 320, probeH = 180
         let times: [Float] = [0, 1.3, 2.6, 4.1, 5.7]
         guard var probe = renderQuadToTexture(base, center: center, halfExtent: halfExtent, uvScale: uvScale,
@@ -547,15 +606,11 @@ public final class SceneRenderer {
         var probeDetail = detail(probeRGBA)
         var kept: [PreparedEffect] = []
         for effect in compiled {
-            let aux = effect.auxTextures
             var stableOutput: MTLTexture?
             var stableRGBA: Data?
             var stable = true
             for time in times {
-                let uniforms = UniformPacker.pack(effect.scalars, values: effect.constants, overrides: ["g_Time": [time]])
-                guard let output = effectRenderer.apply(pipeline: effect.pipeline, to: probe, auxTextures: aux,
-                                                        fragmentUniforms: uniforms.isEmpty ? nil : uniforms,
-                                                        width: probeW, height: probeH) else { stable = false; break }
+                guard let output = applyEffect(effect, to: probe, time: time, width: probeW, height: probeH) else { stable = false; break }
                 let rgba = effectRenderer.readback(output)
                 // Drop a pass that erases the layer's coverage OR flattens it to near-uniform colour — the
                 // latter catches effects that blend against the placeholder aux texture and blow out (e.g.
@@ -685,19 +740,14 @@ public final class SceneRenderer {
         // The result is keyed by layer index; layers without effects are drawn directly in the main pass.
         // Setting LUMORA_NO_EFFECTS skips this and composites every layer flat (a safety/debug switch).
         var effectResult: [Int: MTLTexture] = [:]
-        if let effectRenderer, ProcessInfo.processInfo.environment["LUMORA_NO_EFFECTS"] == nil {
+        if effectRenderer != nil, ProcessInfo.processInfo.environment["LUMORA_NO_EFFECTS"] == nil {
             for (index, layer) in scene.layers.enumerated() where !layer.effects.isEmpty {
                 let center = animatedCenter(layer, time: time, swayX: swayX, swayY: swayY)
                 guard var texture = renderQuadToTexture(currentTexture(layer, time: time), center: center,
                                                         halfExtent: layer.halfExtent, uvScale: layer.uvScale,
                                                         tint: layer.tint, width: width, height: height) else { continue }
                 for effect in layer.effects {
-                    let uniforms = UniformPacker.pack(effect.scalars, values: effect.constants,
-                                                      overrides: ["g_Time": [Float(time)]])
-                    let aux = effect.auxTextures
-                    guard let output = effectRenderer.apply(pipeline: effect.pipeline, to: texture, auxTextures: aux,
-                                                            fragmentUniforms: uniforms.isEmpty ? nil : uniforms,
-                                                            width: width, height: height) else { break }
+                    guard let output = applyEffect(effect, to: texture, time: Float(time), width: width, height: height) else { break }
                     texture = output
                 }
                 effectResult[index] = texture

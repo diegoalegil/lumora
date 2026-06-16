@@ -116,6 +116,15 @@ public enum WEShaderTranspiler {
         return msl
     }
 
+    /// The vertex shader's `attribute` declarations, in declaration order — the order the transpiled MSL
+    /// assigns their `[[attribute(i)]]` indices, so a caller can build a matching vertex descriptor.
+    public static func vertexAttributes(_ source: String, combos: [String: Int] = [:],
+                                        includes: [String: String] = WEStandardHeaders.all) -> [(type: String, name: String)] {
+        let combos = ShaderPreprocessor.comboDefaults(source).merging(combos) { _, explicit in explicit }
+        let resolved = ShaderPreprocessor.resolve(source, combos: combos, includes: includes)
+        return parseDeclarations(resolved, keyword: "attribute").map { ($0.type, $0.name) }
+    }
+
     // MARK: - Pieces
 
     /// Emit the selected combo values as `#define`s so code that uses a combo as a runtime value (e.g.

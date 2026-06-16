@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: MIT
-// Provenance: clean-room. Runs a WE post-process effect as a full-screen Metal pass: transpiles the
-// effect's WE-dialect fragment shader to MSL (via WEShaderKit), pairs it with a fixed full-screen
-// vertex (the effect work lives in the fragment), and draws a quad sampling the layer's framebuffer as
-// g_Texture0. Apple frameworks only. No GPL.
+// Provenance: clean-room. Runs a WE post-process effect as a Metal pass over a layer's framebuffer
+// (bound as g_Texture0). The fragment is transpiled to MSL (via WEShaderKit); where the effect ships a
+// vertex shader (rotation, shake, scroll, blur-tap offsets, mesh displacement…) it is transpiled too and
+// run over a tessellated quad so the vertex stage's varyings/displacement are honoured, falling back to a
+// fixed full-screen vertex for fragment-only effects. Apple frameworks only. No GPL.
 import Foundation
 import Metal
 import WEImporter
@@ -15,9 +16,17 @@ public final class EffectRenderer {
     private let vertexFunction: MTLFunction
     private let sampler: MTLSamplerState
 
+    // The effect's own vertex reads a_Position/a_TexCoord from this shared mesh. A grid (not a single
+    // quad) so vertex-displacement effects (waterwaves, ripple…) deform smoothly instead of moving four
+    // corners. Built once; positions are in NDC and texcoords top-left, matching the fixed vertex below.
+    private let gridVertexBuffer: MTLBuffer
+    private let gridIndexBuffer: MTLBuffer
+    private let gridIndexCount: Int
+    private static let gridCells = 64
+    private static let gridBufferIndex = 1   // the vertex uniform buffer is at buffer(0); keep the mesh clear of it
+
     // A fixed full-screen vertex that outputs v_TexCoord (in both halves of a vec4, as WE effect
-    // fragments expect). Effect vertex shaders are just full-screen passthroughs, so one fixed vertex
-    // serves them all and avoids per-shader vertex descriptors and MVP uniforms.
+    // fragments expect). Used for effects that have no vertex shader, or whose vertex can't be paired.
     private static let vertexSource = """
     #include <metal_stdlib>
     using namespace metal;
@@ -40,6 +49,30 @@ public final class EffectRenderer {
         self.queue = queue
         self.vertexFunction = vertexFunction
 
+        // Tessellated quad: (cells+1)² vertices of [px, py, pz, u, v] (tight 20-byte stride), two
+        // triangles per cell. NDC y is flipped so v=0 is the top, matching the fixed vertex's mapping.
+        let cells = Self.gridCells, side = cells + 1
+        var verts = [Float](); verts.reserveCapacity(side * side * 5)
+        for gy in 0 ... cells {
+            for gx in 0 ... cells {
+                let u = Float(gx) / Float(cells), v = Float(gy) / Float(cells)
+                verts.append(contentsOf: [u * 2 - 1, 1 - v * 2, 0, u, v])
+            }
+        }
+        var indices = [UInt32](); indices.reserveCapacity(cells * cells * 6)
+        for gy in 0 ..< cells {
+            for gx in 0 ..< cells {
+                let i00 = UInt32(gy * side + gx), i10 = i00 + 1
+                let i01 = i00 + UInt32(side), i11 = i01 + 1
+                indices.append(contentsOf: [i00, i10, i01, i10, i11, i01])
+            }
+        }
+        guard let vbuf = device.makeBuffer(bytes: verts, length: verts.count * 4, options: .storageModeShared),
+              let ibuf = device.makeBuffer(bytes: indices, length: indices.count * 4, options: .storageModeShared) else { return nil }
+        self.gridVertexBuffer = vbuf
+        self.gridIndexBuffer = ibuf
+        self.gridIndexCount = indices.count
+
         let samplerDescriptor = MTLSamplerDescriptor()
         samplerDescriptor.minFilter = .linear
         samplerDescriptor.magFilter = .linear
@@ -59,6 +92,98 @@ public final class EffectRenderer {
         descriptor.fragmentFunction = fragmentFunction
         descriptor.colorAttachments[0].pixelFormat = .rgba8Unorm
         return try? device.makeRenderPipelineState(descriptor: descriptor)
+    }
+
+    /// Build a pipeline pairing the effect's OWN transpiled vertex with its fragment, so the vertex
+    /// stage's varyings (blur-tap offsets, rotated/scaled coords, `v_Bounds`…) and any per-vertex
+    /// displacement are produced — the fixed full-screen vertex can't, and pairing it with these fragments
+    /// fails to link. Returns nil if either stage won't transpile/compile, the link fails, or the vertex
+    /// uses an attribute the shared grid mesh doesn't provide (every shipped effect uses a_Position +
+    /// a_TexCoord; anything else falls back to the fixed-vertex path).
+    public func makeVertexPipeline(vertexShader: String, fragmentShader: String, combos: [String: Int] = [:]) -> MTLRenderPipelineState? {
+        let attributes = WEShaderTranspiler.vertexAttributes(vertexShader, combos: combos)
+        guard !attributes.isEmpty,
+              attributes.allSatisfy({ $0.name == "a_Position" || $0.name == "a_TexCoord" }) else { return nil }
+        guard let vertexLibrary = try? device.makeLibrary(source: WEShaderTranspiler.vertexToMSL(vertexShader, combos: combos), options: nil),
+              let vertex = vertexLibrary.makeFunction(name: "we_vertex"),
+              let fragmentLibrary = try? device.makeLibrary(source: WEShaderTranspiler.fragmentToMSL(fragmentShader, combos: combos), options: nil),
+              let fragment = fragmentLibrary.makeFunction(name: "we_fragment") else { return nil }
+
+        let vertexDescriptor = MTLVertexDescriptor()
+        for (index, attribute) in attributes.enumerated() {
+            vertexDescriptor.attributes[index].bufferIndex = Self.gridBufferIndex
+            if attribute.name == "a_Position" {
+                vertexDescriptor.attributes[index].format = .float3
+                vertexDescriptor.attributes[index].offset = 0
+            } else {
+                vertexDescriptor.attributes[index].format = .float2
+                vertexDescriptor.attributes[index].offset = 12   // after the float3 position
+            }
+        }
+        vertexDescriptor.layouts[Self.gridBufferIndex].stride = 20   // float3 + float2, tightly packed
+        vertexDescriptor.layouts[Self.gridBufferIndex].stepFunction = .perVertex
+
+        let descriptor = MTLRenderPipelineDescriptor()
+        descriptor.vertexFunction = vertex
+        descriptor.fragmentFunction = fragment
+        descriptor.vertexDescriptor = vertexDescriptor
+        descriptor.colorAttachments[0].pixelFormat = .rgba8Unorm
+        return try? device.makeRenderPipelineState(descriptor: descriptor)
+    }
+
+    /// Render `input` through an own-vertex effect `pipeline` (built by `makeVertexPipeline`) over the
+    /// tessellated grid: `vertexUniforms`/`fragmentUniforms` feed each stage, `input` binds as g_Texture0
+    /// and `auxTextures` as g_Texture1…
+    public func applyVertexEffect(pipeline: MTLRenderPipelineState, to input: MTLTexture, auxTextures: [MTLTexture] = [],
+                                  vertexUniforms: Data? = nil, fragmentUniforms: Data? = nil,
+                                  width: Int, height: Int) -> MTLTexture? {
+        if let fragmentUniforms, fragmentUniforms.count > 4096 { return nil }
+        if let vertexUniforms, vertexUniforms.count > 4096 { return nil }
+        let outputDescriptor = MTLTextureDescriptor.texture2DDescriptor(
+            pixelFormat: .rgba8Unorm, width: width, height: height, mipmapped: false)
+        outputDescriptor.usage = [.renderTarget, .shaderRead]
+        outputDescriptor.storageMode = .shared
+        guard let output = device.makeTexture(descriptor: outputDescriptor),
+              let commandBuffer = queue.makeCommandBuffer() else { return nil }
+
+        let pass = MTLRenderPassDescriptor()
+        pass.colorAttachments[0].texture = output
+        pass.colorAttachments[0].loadAction = .clear
+        pass.colorAttachments[0].storeAction = .store
+        pass.colorAttachments[0].clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 0)
+
+        guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: pass) else { return nil }
+        encoder.setRenderPipelineState(pipeline)
+        encoder.setVertexBuffer(gridVertexBuffer, offset: 0, index: Self.gridBufferIndex)
+        if let vertexUniforms, !vertexUniforms.isEmpty {
+            vertexUniforms.withUnsafeBytes { raw in
+                if let base = raw.baseAddress { encoder.setVertexBytes(base, length: vertexUniforms.count, index: 0) }
+            }
+        }
+        // Bind the textures/sampler to both stages — a vertex displacement map is sampled in the vertex
+        // stage, the colour in the fragment; binding to a stage that doesn't declare them is harmless.
+        encoder.setVertexTexture(input, index: 0)
+        encoder.setVertexSamplerState(sampler, index: 0)
+        encoder.setFragmentTexture(input, index: 0)
+        encoder.setFragmentSamplerState(sampler, index: 0)
+        for (offset, texture) in auxTextures.enumerated() {
+            encoder.setVertexTexture(texture, index: offset + 1)
+            encoder.setVertexSamplerState(sampler, index: offset + 1)
+            encoder.setFragmentTexture(texture, index: offset + 1)
+            encoder.setFragmentSamplerState(sampler, index: offset + 1)
+        }
+        if let fragmentUniforms, !fragmentUniforms.isEmpty {
+            fragmentUniforms.withUnsafeBytes { raw in
+                if let base = raw.baseAddress { encoder.setFragmentBytes(base, length: fragmentUniforms.count, index: 0) }
+            }
+        }
+        encoder.drawIndexedPrimitives(type: .triangle, indexCount: gridIndexCount,
+                                      indexType: .uint32, indexBuffer: gridIndexBuffer, indexBufferOffset: 0)
+        encoder.endEncoding()
+        commandBuffer.commit()
+        commandBuffer.waitUntilCompleted()
+        if commandBuffer.error != nil { return nil }
+        return output
     }
 
     /// Render `input` through the effect `pipeline` into a new texture: `input` binds as g_Texture0,
