@@ -101,7 +101,10 @@ public struct ScenePackage: Sendable, Equatable {
         guard count >= 0, count <= data.count / 4 else { throw ScenePackageError.truncated }
 
         var table: [(path: String, offset: Int, size: Int)] = []
-        table.reserveCapacity(count)
+        // `count` is only bounded by data.count/4, but each entry occupies ≥12 bytes, so reserving `count`
+        // could pre-allocate many times the file size for a crafted .pkg. Cap the hint; the loop below still
+        // throws cleanly if the declared count outruns the data.
+        table.reserveCapacity(min(count, 4096))
         for _ in 0 ..< count {
             let path = try lpString()
             let offset = try u32()
@@ -113,7 +116,7 @@ public struct ScenePackage: Sendable, Equatable {
         // to it.
         let blobBase = cursor
         var entries: [ScenePackageEntry] = []
-        entries.reserveCapacity(count)
+        entries.reserveCapacity(min(count, 4096))
         for entry in table {
             let start = blobBase + entry.offset
             let end = start + entry.size

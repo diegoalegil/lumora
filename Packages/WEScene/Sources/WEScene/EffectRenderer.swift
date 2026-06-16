@@ -65,6 +65,9 @@ public final class EffectRenderer {
     /// `auxTextures` as g_Texture1…, and `fragmentUniforms` (if any) as the fragment uniform buffer.
     public func apply(pipeline: MTLRenderPipelineState, to input: MTLTexture, auxTextures: [MTLTexture] = [],
                       fragmentUniforms: Data? = nil, width: Int, height: Int) -> MTLTexture? {
+        // setFragmentBytes is capped at 4 KB; a crafted effect with a huge uniform block would abort the
+        // render, so drop the pass instead (the layer still composites without the effect).
+        if let fragmentUniforms, fragmentUniforms.count > 4096 { return nil }
         let outputDescriptor = MTLTextureDescriptor.texture2DDescriptor(
             pixelFormat: .rgba8Unorm, width: width, height: height, mipmapped: false)
         outputDescriptor.usage = [.renderTarget, .shaderRead]
