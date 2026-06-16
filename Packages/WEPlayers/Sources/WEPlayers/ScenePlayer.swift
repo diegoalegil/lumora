@@ -35,7 +35,15 @@ public final class ScenePlayer: WallpaperRenderer {
     private var isPaused = false
     private var loggedRenderFailure = false
     private var previewImage: CGImage?   // the wallpaper's own thumbnail, shown if the scene can't render
-    private static let frameInterval = 1.0 / 30.0
+    /// The frame rate the playback policy currently wants — 60 active, 30 on battery / low-power, 0 when
+    /// paused or occluded. Driven by `apply(_:)`; 60 until a directive says otherwise.
+    private var targetFPS = 60
+
+    /// The render-loop tick interval for a target frame rate, or nil when the rate is 0 — a paused or
+    /// occluded directive (targetFPS 0) wants no continuous rendering, just the last still frame held.
+    nonisolated public static func frameInterval(forTargetFPS fps: Int) -> Double? {
+        fps > 0 ? 1.0 / Double(fps) : nil
+    }
 
     public init() {}
 
@@ -82,7 +90,17 @@ public final class ScenePlayer: WallpaperRenderer {
     }
 
     public func apply(_ directive: PlaybackDirective) {
-        if directive.renderingEnabled { resume() } else { pause() }
+        guard directive.renderingEnabled else { pause(); return }
+        let rateChanged = directive.targetFPS != targetFPS
+        let wasRunning = timer != nil
+        targetFPS = directive.targetFPS
+        resume()
+        // If the loop was already running and the policy changed the rate (e.g. the Mac went on battery),
+        // rebuild the timer so the new interval takes effect instead of staying at the previous rate.
+        if rateChanged, wasRunning {
+            stopLoop()
+            startLoopIfAnimated()
+        }
     }
 
     public func tearDown() {
@@ -103,10 +121,11 @@ public final class ScenePlayer: WallpaperRenderer {
     }
 
     private func startLoopIfAnimated() {
-        guard !isPaused, timer == nil, let prepared, prepared.hasAnimation else { return }
+        guard !isPaused, timer == nil, let prepared, prepared.hasAnimation,
+              let interval = Self.frameInterval(forTargetFPS: targetFPS) else { return }
         // A block timer with a weak self avoids the retain cycle a `target: self` timer creates (the run
         // loop keeps the timer alive, so a strong target would outlive a torn-down player).
-        let timer = Timer(timeInterval: Self.frameInterval, repeats: true) { [weak self] _ in self?.tick() }
+        let timer = Timer(timeInterval: interval, repeats: true) { [weak self] _ in self?.tick() }
         RunLoop.main.add(timer, forMode: .common)
         self.timer = timer
     }
@@ -117,7 +136,7 @@ public final class ScenePlayer: WallpaperRenderer {
     }
 
     private func tick() {
-        elapsed += Self.frameInterval
+        elapsed += Self.frameInterval(forTargetFPS: targetFPS) ?? 0
         present()
     }
 

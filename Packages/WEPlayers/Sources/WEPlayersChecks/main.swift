@@ -97,4 +97,12 @@ let schemeServed = WallpaperNavigationPolicy()
 Check.that("allows the private asset scheme", schemeServed.allows(URL(string: "lumora-asset://asset/index.html")))
 Check.that("still blocks remote without confinement", !schemeServed.allows(URL(string: "https://evil.example")))
 
+Check.section("ScenePlayer frame pacing")
+// The playback policy's targetFPS must actually drive the scene loop: 60 active, 30 on battery / low-power,
+// and 0 (paused / occluded) means no continuous loop at all. Previously the loop was a hardcoded 30fps, so
+// the battery throttle did nothing and the active case under-rendered.
+Check.that("a 60fps directive drives a 1/60s loop interval", ScenePlayer.frameInterval(forTargetFPS: 60) == 1.0 / 60.0)
+Check.that("a battery 30fps throttle drives a 1/30s interval", ScenePlayer.frameInterval(forTargetFPS: 30) == 1.0 / 30.0)
+Check.that("a 0fps (paused / occluded) directive drives no loop", ScenePlayer.frameInterval(forTargetFPS: 0) == nil)
+
 Check.summarize()
