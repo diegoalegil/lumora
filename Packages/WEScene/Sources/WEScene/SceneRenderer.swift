@@ -536,7 +536,10 @@ public final class SceneRenderer {
             var puppet: PreparedPuppet?
             if ProcessInfo.processInfo.environment["LUMORA_PUPPET"] != nil,
                let puppetPath = layer.puppetPath, let entry = package.entry(named: puppetPath),
-               let mesh = PuppetModel.parseMesh(entry.data), mesh.indices.count >= 3 {
+               let mesh = PuppetModel.parseMesh(entry.data), mesh.indices.count >= 3,
+               // Only draw the live mesh when the skeleton assembled into a verified-good figure; otherwise
+               // the static-preview path keeps a clean image instead of scattered/exploded parts.
+               mesh.assembled || ProcessInfo.processInfo.environment["LUMORA_PUPPET_RAW"] != nil {
                 var verts = [Float](); verts.reserveCapacity(mesh.positions.count * 4)
                 for i in 0 ..< mesh.positions.count {
                     let p = mesh.positions[i], uv = mesh.uvs[i]

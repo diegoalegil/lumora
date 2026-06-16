@@ -12,11 +12,16 @@ public struct PuppetMesh: Sendable, Equatable {
     public let positions: [SIMD2<Float>]   // model-space x, y per vertex
     public let uvs: [SIMD2<Float>]         // atlas texcoord per vertex
     public let indices: [UInt32]           // triangle list
+    /// True when the skeleton assembled the flat atlas parts into a sane, composed figure (matrices finite,
+    /// bounds didn't blow up). False means the bone data didn't decode cleanly — the caller should keep the
+    /// static preview rather than draw scattered/exploded parts. Only verified-good puppets set this.
+    public let assembled: Bool
 
-    public init(positions: [SIMD2<Float>], uvs: [SIMD2<Float>], indices: [UInt32]) {
+    public init(positions: [SIMD2<Float>], uvs: [SIMD2<Float>], indices: [UInt32], assembled: Bool) {
         self.positions = positions
         self.uvs = uvs
         self.indices = indices
+        self.assembled = assembled
     }
 
     /// Axis-aligned bounds of the model-space positions (for placing the mesh in the scene).
@@ -81,71 +86,144 @@ public enum PuppetModel {
                 indices.append(idx)
             }
 
-            // Assemble the parts with the skeleton. The mesh is N connected components (one per bone, in
-            // order); each bone is a bind transform (rotation + translation, possibly nested via a parent).
-            // The stored positions are the flat atlas layout with Y already flipped, so the bone's world
-            // transform is applied in that flipped frame: x forward, y inverted.
-            assemble(&positions, indices: indices, data: raw, count: n)
+            // Assemble the parts with the skeleton (one connected component per bone). The skin transform
+            // `pose ∘ bind⁻¹` moves each component from its flat-atlas spot into the composed figure. If the
+            // bone data doesn't decode to a sane result, `assemble` leaves the positions untouched and
+            // reports false so the caller keeps the static preview.
+            let ok = assemble(&positions, indices: indices, data: raw, count: n)
 
-            return PuppetMesh(positions: positions, uvs: uvs, indices: indices)
+            return PuppetMesh(positions: positions, uvs: uvs, indices: indices, assembled: ok)
         }
     }
 
-    /// In-place skeletal assembly: move each connected component (a part) by its bone's world bind transform.
+    /// A 2-D affine transform (2×2 linear part + translation), row-vector convention `out = M·p + t`.
+    private struct Affine {
+        var a: Float = 1, b: Float = 0, c: Float = 0, d: Float = 1, tx: Float = 0, ty: Float = 0
+        func apply(_ p: SIMD2<Float>) -> SIMD2<Float> { SIMD2(a * p.x + b * p.y + tx, c * p.x + d * p.y + ty) }
+        /// self ∘ rhs (apply rhs first, then self).
+        func concat(_ r: Affine) -> Affine {
+            Affine(a: a * r.a + b * r.c, b: a * r.b + b * r.d, c: c * r.a + d * r.c, d: c * r.b + d * r.d,
+                   tx: a * r.tx + b * r.ty + tx, ty: c * r.tx + d * r.ty + ty)
+        }
+        var inverse: Affine {
+            let det = a * d - b * c
+            guard abs(det) > 1e-12 else { return Affine() }
+            let ia = d / det, ib = -b / det, ic = -c / det, id = a / det
+            return Affine(a: ia, b: ib, c: ic, d: id, tx: -(ia * tx + ib * ty), ty: -(ic * tx + id * ty))
+        }
+    }
+
+    /// In-place skeletal assembly: a WE puppet stores its vertices as the FLAT sprite atlas; the skeleton
+    /// composes them into the character. Each bone has a BIND pose (its rest frame, authored at the part's
+    /// atlas position) and a POSE (its assembled frame). A vertex is moved `pose ∘ bind⁻¹` — the bind⁻¹ takes
+    /// the part from its atlas spot to the bone's local frame, the pose places it in the assembled figure.
+    /// The mesh splits into one connected component per bone; a component is matched to the bone whose bind
+    /// translation sits at its atlas centroid. (The stored layout has Y flipped, so it's un/re-flipped here.)
+    @discardableResult
     private static func assemble(_ positions: inout [SIMD2<Float>], indices: [UInt32],
-                                 data raw: UnsafeRawBufferPointer, count n: Int) {
-        // Locate the MDLS skeleton block.
+                                 data raw: UnsafeRawBufferPointer, count n: Int) -> Bool {
         let needle: [UInt8] = [0x4d, 0x44, 0x4c, 0x53]   // "MDLS"
         var mdls = -1
         for i in stride(from: n - 4, through: 0, by: -1) {
             if raw[i] == needle[0], raw[i+1] == needle[1], raw[i+2] == needle[2], raw[i+3] == needle[3] { mdls = i; break }
         }
-        guard mdls >= 0 else { return }
+        guard mdls >= 0, mdls + 17 <= n else { return false }
         func u32(_ o: Int) -> UInt32 { raw.loadUnaligned(fromByteOffset: o, as: UInt32.self) }
         func i32(_ o: Int) -> Int32 { raw.loadUnaligned(fromByteOffset: o, as: Int32.self) }
         func f32(_ o: Int) -> Float { Float(bitPattern: u32(o)) }
+        // Read a 4×4 row-major matrix as a 2-D affine (rotation m0,m1,m4,m5; translation m12,m13).
+        func affine(_ mat: Int) -> Affine? {
+            guard mat >= 0, mat + 64 <= n else { return nil }
+            return Affine(a: f32(mat), b: f32(mat + 4), c: f32(mat + 16), d: f32(mat + 20), tx: f32(mat + 48), ty: f32(mat + 52))
+        }
         let boneCount = Int(u32(mdls + 13))
-        guard boneCount >= 1, boneCount < 4096 else { return }
-        // Per-bone bind transform: 2×2 rotation (m0,m1,m4,m5) + translation (m12,m13), and the parent.
-        struct Bone { var a, b, c, d, tx, ty: Float; var parent: Int }
-        var bones: [Bone] = []
-        let firstBone = mdls + 17, stride = 78
+        guard boneCount >= 1, boneCount <= 1024 else { return false }
+        func finite(_ m: Affine) -> Bool {
+            m.a.isFinite && m.b.isFinite && m.c.isFinite && m.d.isFinite && m.tx.isFinite && m.ty.isFinite
+        }
+
+        // Bind poses: one 78-byte record per bone (parent at +5, matrix at +13).
+        let firstBone = mdls + 17, bindStride = 78
+        var parents = [Int](repeating: -1, count: boneCount)
+        var bindLocal = [Affine](repeating: Affine(), count: boneCount)
         for k in 0 ..< boneCount {
-            let bp = firstBone + k * stride, mat = bp + 13
-            guard mat + 64 <= n else { return }
-            bones.append(Bone(a: f32(mat), b: f32(mat + 4), c: f32(mat + 16), d: f32(mat + 20),
-                              tx: f32(mat + 48), ty: f32(mat + 52), parent: Int(i32(bp + 5))))
+            let rec = firstBone + k * bindStride
+            guard rec + 13 + 64 <= n, let m = affine(rec + 13), finite(m) else { return false }
+            parents[k] = Int(i32(rec + 5)); bindLocal[k] = m
         }
-        // World transform of each bone = parent ∘ local (affine compose). The y translation is negated to
-        // match the stored layout's flipped Y.
-        func worldOf(_ k: Int) -> (a: Float, b: Float, c: Float, d: Float, tx: Float, ty: Float) {
-            let me = bones[k]
-            let local = (a: me.a, b: me.b, c: me.c, d: me.d, tx: me.tx, ty: -me.ty)
-            guard me.parent >= 0, me.parent < bones.count, me.parent != k else { return local }
-            let p = worldOf(me.parent)
-            // p ∘ local (column-vector affine: out = p.R * local.R, p.R * local.T + p.T)
-            return (a: p.a * local.a + p.b * local.c, b: p.a * local.b + p.b * local.d,
-                    c: p.c * local.a + p.d * local.c, d: p.c * local.b + p.d * local.d,
-                    tx: p.a * local.tx + p.b * local.ty + p.tx, ty: p.c * local.tx + p.d * local.ty + p.ty)
+        // Pose matrices: a back-to-back array of `boneCount` 64-byte matrices that begins right after the bind
+        // records (a few bytes of padding precede the first one — skip to the next clean affine).
+        var poseStart = firstBone + boneCount * bindStride
+        var scan = poseStart
+        while scan + 64 <= n, scan < poseStart + 32 {
+            if let m = affine(scan), abs(m.a) > 0.001, abs(m.d) > 0.001,
+               f32(scan + 8) == 0, f32(scan + 24) == 0 { poseStart = scan; break }
+            scan += 1
         }
-        let worlds = (0 ..< boneCount).map(worldOf)
-        // Connected components of the triangle graph → contiguous vertex ranges → component i = bone i.
-        var parentUF = Array(0 ..< positions.count)
-        func find(_ x: Int) -> Int { var x = x; while parentUF[x] != x { parentUF[x] = parentUF[parentUF[x]]; x = parentUF[x] }; return x }
+        var poseLocal = [Affine](repeating: Affine(), count: boneCount)
+        for k in 0 ..< boneCount {
+            if let m = affine(poseStart + k * 64) { poseLocal[k] = m }
+        }
+        // Accumulate local transforms up the parent chain into world transforms.
+        func world(_ locals: [Affine], _ k: Int, _ depth: Int) -> Affine {
+            guard depth < boneCount, k >= 0, k < boneCount else { return Affine() }
+            let p = parents[k]
+            return (p >= 0 && p < boneCount && p != k) ? world(locals, p, depth + 1).concat(locals[k]) : locals[k]
+        }
+        let bindWorld = (0 ..< boneCount).map { world(bindLocal, $0, 0) }
+        let poseWorld = (0 ..< boneCount).map { world(poseLocal, $0, 0) }
+        // skin transform for bone k: pose ∘ bind⁻¹. The stored atlas Y and the bind/pose Y share the same
+        // (already-flipped) convention, so no extra flip is needed here.
+        let skin = (0 ..< boneCount).map { poseWorld[$0].concat(bindWorld[$0].inverse) }
+
+        // Connected components (one per bone).
+        var uf = Array(0 ..< positions.count)
+        func find(_ x: Int) -> Int { var x = x; while uf[x] != x { uf[x] = uf[uf[x]]; x = uf[x] }; return x }
         var t = 0
-        while t + 2 < indices.count {
-            let a = Int(indices[t]), b = Int(indices[t+1]), c = Int(indices[t+2])
-            parentUF[find(a)] = find(b); parentUF[find(b)] = find(c); t += 3
+        while t + 2 < indices.count { uf[find(Int(indices[t]))] = find(Int(indices[t+1])); uf[find(Int(indices[t+1]))] = find(Int(indices[t+2])); t += 3 }
+        var members: [Int: [Int]] = [:]
+        for v in 0 ..< positions.count { members[find(v), default: []].append(v) }
+        // Match each component to the bone whose bind translation lies nearest its atlas centroid (the bone
+        // authored there), as a greedy bijection.
+        var free = Set(0 ..< boneCount)
+        var boneOf: [Int: Int] = [:]
+        for (r, vs) in members.sorted(by: { ($0.value.first ?? 0) < ($1.value.first ?? 0) }) {
+            var cx: Float = 0, cy: Float = 0
+            for v in vs { cx += positions[v].x; cy += positions[v].y }
+            cx /= Float(vs.count); cy /= Float(vs.count)
+            var best = -1; var bestD = Float.greatestFiniteMagnitude
+            for k in free {
+                let dx = bindWorld[k].tx - cx, dy = bindWorld[k].ty - cy   // same Y convention as the stored atlas
+                let d = dx * dx + dy * dy
+                if d < bestD { bestD = d; best = k }
+            }
+            if best >= 0 { boneOf[r] = best; free.remove(best) }
         }
-        // Order the component roots by their lowest vertex index, so component i lines up with bone i.
-        var rootOrder: [Int] = [], seen = Set<Int>()
-        for v in 0 ..< positions.count { let r = find(v); if !seen.contains(r) { seen.insert(r); rootOrder.append(r) } }
-        var boneOfRoot: [Int: Int] = [:]
-        for (i, r) in rootOrder.enumerated() { boneOfRoot[r] = min(i, boneCount - 1) }
-        for v in 0 ..< positions.count {
-            guard let k = boneOfRoot[find(v)] else { continue }
-            let w = worlds[k]; let p = positions[v]
-            positions[v] = SIMD2(w.a * p.x + w.b * p.y + w.tx, w.c * p.x + w.d * p.y + w.ty)
+        // The mesh must split into exactly one component per bone — otherwise the bone↔part bijection is
+        // ambiguous and the result can't be trusted.
+        guard members.count == boneCount else { return false }
+
+        // Apply the skin into a scratch copy, then sanity-check the result before committing. A wrong pose
+        // matrix (mis-located array, variant layout) sends parts flying; assembling can only ever PACK the
+        // flat atlas tighter, never spread it, so the assembled extent must not exceed the atlas extent.
+        func extent(_ ps: [SIMD2<Float>]) -> SIMD2<Float> {
+            var lo = ps[0], hi = ps[0]
+            for p in ps { lo = SIMD2(min(lo.x, p.x), min(lo.y, p.y)); hi = SIMD2(max(hi.x, p.x), max(hi.y, p.y)) }
+            return hi - lo
         }
+        guard !positions.isEmpty else { return false }
+        let atlasExtent = extent(positions)
+        var out = positions
+        for v in 0 ..< out.count {
+            guard let k = boneOf[find(v)], k < skin.count else { continue }
+            let p = skin[k].apply(out[v])
+            guard p.x.isFinite, p.y.isFinite else { return false }
+            out[v] = p
+        }
+        let asmExtent = extent(out)
+        let slack: Float = 1.05
+        guard asmExtent.x <= atlasExtent.x * slack, asmExtent.y <= atlasExtent.y * slack else { return false }
+        positions = out
+        return true
     }
 }
