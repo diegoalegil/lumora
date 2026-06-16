@@ -119,6 +119,33 @@ if let device = MTLCreateSystemDefaultDevice() {
     print("  ⚠︎ no Metal device — skipping the MSL compile check")
 }
 
+// A pure helper defined AFTER main() must be emitted at file scope, not swallowed into main's body.
+// Under the old "body runs to the file's last }" rule the helper landed inside main and was also
+// emitted separately, so the shader failed to compile (a nested/duplicate definition).
+let helperAfterMain = """
+varying vec4 v_TexCoord;
+uniform float g_Amount; // {"material":"ui_editor_properties_amount","default":1.0}
+void main() {
+    float v = boost(g_Amount);
+    gl_FragColor = vec4(v, v, v, 1.0);
+}
+float boost(float x) {
+    return x * 2.0 + 1.0;
+}
+"""
+let helperMSL = WEShaderTranspiler.fragmentToMSL(helperAfterMain)
+Check.that("emits a trailing helper at file scope", helperMSL.contains("boost"))
+Check.that("main still calls the helper", helperMSL.contains("boost(u.g_Amount)"))
+if let device = MTLCreateSystemDefaultDevice() {
+    do {
+        _ = try device.makeLibrary(source: helperMSL, options: nil)
+        Check.that("a helper defined after main compiles", true)
+    } catch {
+        print("──── MSL ────\n\(helperMSL)\n─────────────")
+        Check.that("a helper defined after main compiles", false)
+    }
+}
+
 // WE shaders assume math.h constants and helpers from their unshipped common headers; the prelude
 // supplies them. A shader using M_PI_2 and rotateVec2 must transpile to MSL that Metal accepts.
 let preludeShader = """

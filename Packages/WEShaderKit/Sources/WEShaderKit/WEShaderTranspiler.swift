@@ -130,19 +130,24 @@ public enum WEShaderTranspiler {
         return result
     }
 
-    /// The contents of `void main() { … }` with comments and preprocessor lines stripped.
+    /// The contents of `void main() { … }`, comments and preprocessor lines stripped. The body is
+    /// brace-matched from `main`'s own `{` (via `topLevelBlocks`), not taken up to the file's last `}`,
+    /// so a helper function defined *after* main isn't swallowed into the body — those are emitted
+    /// separately by `helperFunctions`.
     private static func mainBody(of source: String) -> String {
-        var cleaned = stripLineComments(stripBlockComments(source))
-        cleaned = cleaned.split(separator: "\n", omittingEmptySubsequences: false)
-            .filter { !$0.trimmingCharacters(in: .whitespaces).hasPrefix("#") }
-            .joined(separator: "\n")
-        guard let openRange = cleaned.range(of: "void main"),
-              let braceIndex = cleaned[openRange.upperBound...].firstIndex(of: "{") else { return "" }
-        let afterBrace = cleaned.index(after: braceIndex)
-        // The closing brace must come after the opening one; if comment stripping left an earlier `}` as
-        // the last, take the rest of the source rather than form an invalid range.
-        guard let closing = cleaned.lastIndex(of: "}"), closing >= afterBrace else { return String(cleaned[afterBrace...]) }
-        return String(cleaned[afterBrace..<closing])
+        let cleaned = stripLineComments(stripBlockComments(source)).split(separator: "\n", omittingEmptySubsequences: false)
+            .filter { !$0.trimmingCharacters(in: .whitespaces).hasPrefix("#") }.joined(separator: "\n")
+        for (signature, body) in topLevelBlocks(cleaned) where functionName(of: signature) == "main" {
+            return body
+        }
+        return ""
+    }
+
+    /// The function name in a top-level block signature — the identifier just before `(` — or "" for a
+    /// struct or any non-function block.
+    private static func functionName(of signature: String) -> String {
+        guard let paren = signature.firstIndex(of: "(") else { return "" }
+        return String(signature[..<paren].split(whereSeparator: { !$0.isLetter && !$0.isNumber && $0 != "_" }).last ?? "")
     }
 
     /// The names of the functions the prelude already defines, so a shader's own copy isn't emitted on
@@ -168,13 +173,13 @@ public enum WEShaderTranspiler {
             .filter { !$0.trimmingCharacters(in: .whitespaces).hasPrefix("#") }.joined(separator: "\n")
         var out = ""
         for (signature, body) in topLevelBlocks(cleaned) {
-            guard let paren = signature.firstIndex(of: "(") else {   // a struct or non-function block
+            guard signature.contains("(") else {   // a struct or non-function block
                 if signature.trimmingCharacters(in: .whitespaces).hasPrefix("struct") {
                     out += rewriteTypes(signature) + " {" + rewriteTypes(body) + "};\n"
                 }
                 continue
             }
-            let name = String(signature[..<paren].split(whereSeparator: { !$0.isLetter && !$0.isNumber && $0 != "_" }).last ?? "")
+            let name = functionName(of: signature)
             if name.isEmpty || name == "main" || preludeFunctionNames.contains(name) { continue }
             let text = signature + body
             if text.contains("g_") || text.contains("u_") || text.contains("texSample") || text.contains("gl_") { continue }
