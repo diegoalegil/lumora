@@ -713,8 +713,10 @@ public final class SceneRenderer {
                 var quad: QuadUniform
                 var tint: SIMD3<Float>
                 let texture: MTLTexture
-                if let effected = effectResult[index] {   // effect output already sits at the layer's placement
-                    quad = QuadUniform(center: SIMD2(0, 0), halfExtent: SIMD2(1, 1), uvScale: SIMD2(1, 1))
+                if let effected = effectResult[index] {   // effect output sits at the layer's placement in
+                    // scene-NDC (Pass 1 samples 1:1), so the composite carries the same cover scale as the
+                    // direct path — otherwise an effected layer would stretch while the rest is cropped.
+                    quad = QuadUniform(center: SIMD2(0, 0), halfExtent: SIMD2(1, 1), uvScale: SIMD2(1, 1), aspectScale: aspectScale)
                     tint = SIMD3(1, 1, 1)
                     texture = effected
                 } else {
