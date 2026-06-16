@@ -146,6 +146,17 @@ if let device = MTLCreateSystemDefaultDevice() {
     }
 }
 
+// A block comment between two tokens is whitespace, not nothing — it must not fuse them into one.
+let withInlineComment = WEShaderTranspiler.fragmentToMSL("""
+varying vec4 v_TexCoord;
+void main() {
+    float/* inline */value = 0.5;
+    gl_FragColor = vec4(value, value, value, 1.0);
+}
+""")
+Check.that("a block comment doesn't fuse the tokens around it",
+           !withInlineComment.contains("floatvalue") && withInlineComment.contains("value"))
+
 // WE shaders assume math.h constants and helpers from their unshipped common headers; the prelude
 // supplies them. A shader using M_PI_2 and rotateVec2 must transpile to MSL that Metal accepts.
 let preludeShader = """

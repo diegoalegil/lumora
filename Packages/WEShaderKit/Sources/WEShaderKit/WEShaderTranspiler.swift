@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 // Provenance: clean-room. Source-to-source transpiler from Wallpaper Engine's GLSL-ish fragment-shader
 // dialect to Metal Shading Language, derived from the shader bytes in the user's own packages and the
-// public WE shader docs (no GPL translator consulted). First cut: the common structure (varyings, g_*
-// uniforms, texSample2D, gl_FragColor, the standard intrinsics). The output should be compiled with
-// `device.makeLibrary(source:)` to confirm it is valid before use; unsupported constructs (#if combos,
-// includes, multiple render targets) simply won't compile yet.
+// public WE shader docs (no GPL translator consulted). It rewrites the dialect's varyings, g_*/u_*
+// uniforms, texSample2D, gl_FragColor and the standard intrinsics, resolves #if combos and includes,
+// and prepends a prelude alongside the shader's own helper functions. The output is compiled with
+// `device.makeLibrary(source:)`; a construct it doesn't model degrades to a no-op body rather than
+// emitting invalid MSL, so an unsupported effect drops out instead of breaking the scene.
 import Foundation
 
 public enum WEShaderTranspiler {
@@ -237,6 +238,8 @@ public enum WEShaderTranspiler {
             } else if source[index...].hasPrefix("/*") {
                 guard let end = source.range(of: "*/", range: index ..< source.endIndex) else { break }
                 index = end.upperBound
+                result.append(" ")   // a comment is whitespace — replace it with a space, not nothing,
+                                     // so `vec3/* */color` doesn't fuse into the token `vec3color`
             } else {
                 result.append(source[index])
                 index = source.index(after: index)
