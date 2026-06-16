@@ -202,6 +202,19 @@ Check.that("a non-finite lifetime clamps to the cap",
 Check.that("at least one slot is always allocated",
            SceneRenderer.particleInstanceCount(rate: 0.0001, lifetimeUpper: 0.0001, maxCount: 4000) == 1)
 
+// Aspect cover: a scene fills a differently-shaped target by scaling up the overflow axis (so it crops),
+// never stretching. Matching or degenerate aspects are identity.
+Check.that("a matching aspect is identity", SceneRenderer.coverScale(sceneAspect: 16.0 / 9, targetAspect: 16.0 / 9) == SIMD2<Float>(1, 1))
+Check.that("a narrower (taller) target grows X and crops the sides", {
+    let s = SceneRenderer.coverScale(sceneAspect: 16.0 / 9, targetAspect: 1.0)   // square target
+    return s.x > 1.0 && s.y == 1.0
+}())
+Check.that("a wider target grows Y and crops top/bottom", {
+    let s = SceneRenderer.coverScale(sceneAspect: 16.0 / 9, targetAspect: 21.0 / 9)
+    return s.y > 1.0 && s.x == 1.0
+}())
+Check.that("a degenerate aspect is identity", SceneRenderer.coverScale(sceneAspect: 0, targetAspect: 1.78) == SIMD2<Float>(1, 1))
+
 // 1) Clear-only: no texture -> the frame is the clear colour.
 if let frame = renderer.render(texture: nil, alpha: 1, clearColor: red, width: 8, height: 8) {
     let (r, g, b) = centerRGB(frame)

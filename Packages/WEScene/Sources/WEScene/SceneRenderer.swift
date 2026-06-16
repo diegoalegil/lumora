@@ -26,6 +26,9 @@ private struct QuadUniform {
     var center: SIMD2<Float>
     var halfExtent: SIMD2<Float>
     var uvScale: SIMD2<Float>
+    /// Per-axis clip-space scale that makes the scene COVER a target of a different aspect (fill + crop the
+    /// overflow) instead of stretching. Defaults to identity so every other call site is unchanged.
+    var aspectScale: SIMD2<Float> = SIMD2(1, 1)
 }
 
 /// One particle sprite for the instanced draw: clip-space centre + half-extent, RGB tint and alpha.
@@ -155,13 +158,15 @@ public final class SceneRenderer {
     private static let shaderSource = """
     #include <metal_stdlib>
     using namespace metal;
-    struct Quad { float2 center; float2 halfExtent; float2 uvScale; };
+    struct Quad { float2 center; float2 halfExtent; float2 uvScale; float2 aspectScale; };
     struct VOut { float4 position [[position]]; float2 uv; };
     vertex VOut lumora_scene_vertex(uint vid [[vertex_id]], constant Quad &quad [[buffer(0)]]) {
         float2 corner[4] = { float2(-1, -1), float2(1, -1), float2(-1, 1), float2(1, 1) };
         float2 uvs[4]    = { float2(0, 1),  float2(1, 1),  float2(0, 0),  float2(1, 0) };
         VOut out;
-        out.position = float4(quad.center + corner[vid] * quad.halfExtent, 0, 1);
+        // aspectScale (≥1 on one axis) scales the whole composition to cover a differently-shaped target,
+        // pushing the overflow past the clip bounds so it's cropped rather than stretching the content.
+        out.position = float4((quad.center + corner[vid] * quad.halfExtent) * quad.aspectScale, 0, 1);
         out.uv = uvs[vid] * quad.uvScale;   // sample only the content region of a padded texture
         return out;
     }
@@ -176,12 +181,13 @@ public final class SceneRenderer {
     struct PInst { float2 center; float2 halfExtent; float4 color; };
     struct POut { float4 position [[position]]; float2 uv; float4 color; };
     vertex POut lumora_particle_vertex(uint vid [[vertex_id]], uint iid [[instance_id]],
-                                       constant PInst *insts [[buffer(0)]]) {
+                                       constant PInst *insts [[buffer(0)]],
+                                       constant float2 &aspectScale [[buffer(1)]]) {
         float2 corner[4] = { float2(-1, -1), float2(1, -1), float2(-1, 1), float2(1, 1) };
         float2 uvs[4]    = { float2(0, 1),  float2(1, 1),  float2(0, 0),  float2(1, 0) };
         PInst p = insts[iid];
         POut out;
-        out.position = float4(p.center + corner[vid] * p.halfExtent, 0, 1);
+        out.position = float4((p.center + corner[vid] * p.halfExtent) * aspectScale, 0, 1);
         out.uv = uvs[vid];
         out.color = p.color;
         return out;
@@ -654,12 +660,26 @@ public final class SceneRenderer {
         let t = max(0, min(1, (x - e0) / (e1 - e0))); return t * t * (3 - 2 * t)
     }
 
+    /// The per-axis clip-space scale that makes a scene of `sceneAspect` COVER a target of `targetAspect`
+    /// (fill both axes, crop the overflow) without stretching — identity when the aspects match or are
+    /// degenerate. The axis that would otherwise letterbox is grown past the clip bounds so it crops.
+    public static func coverScale(sceneAspect: Double, targetAspect: Double) -> SIMD2<Float> {
+        guard sceneAspect > 0, targetAspect > 0, sceneAspect.isFinite, targetAspect.isFinite else { return SIMD2(1, 1) }
+        if targetAspect > sceneAspect { return SIMD2(1, Float(targetAspect / sceneAspect)) }
+        return SIMD2(Float(sceneAspect / targetAspect), 1)
+    }
+
     /// Render a prepared scene at `time` seconds, applying a gentle automatic camera parallax so layers
     /// configured with depth drift slightly — the wallpaper breathes instead of sitting perfectly still.
     /// `time = 0` is the still composite (no sway).
     public func render(_ scene: PreparedScene, width: Int, height: Int, time: Double = 0) -> RenderedFrame? {
         let swayX = Float(0.012 * sin(time * 0.6))
         let swayY = Float(0.009 * sin(time * 0.45))
+
+        // Fill the target without distortion: cover its aspect and crop the overflow rather than stretching
+        // a 16:9-authored scene onto a differently-shaped display.
+        let aspectScale = Self.coverScale(sceneAspect: scene.orthoWidth / scene.orthoHeight,
+                                          targetAspect: Double(width) / Double(height))
 
         // Pass 1: a layer with effects is rendered to its own texture and run through its effect chain.
         // The result is keyed by layer index; layers without effects are drawn directly in the main pass.
@@ -699,7 +719,7 @@ public final class SceneRenderer {
                     texture = effected
                 } else {
                     quad = QuadUniform(center: animatedCenter(layer, time: time, swayX: swayX, swayY: swayY),
-                                       halfExtent: layer.halfExtent, uvScale: layer.uvScale)
+                                       halfExtent: layer.halfExtent, uvScale: layer.uvScale, aspectScale: aspectScale)
                     tint = layer.tint
                     texture = currentTexture(layer, time: time)
                 }
@@ -720,6 +740,8 @@ public final class SceneRenderer {
                 guard n > 0 else { continue }
                 encoder.setRenderPipelineState(prepared.isAdditive ? particleAdditive : particleAlpha)
                 encoder.setVertexBuffer(prepared.instanceBuffer, offset: 0, index: 0)
+                var pAspect = aspectScale
+                encoder.setVertexBytes(&pAspect, length: MemoryLayout<SIMD2<Float>>.stride, index: 1)
                 encoder.setFragmentTexture(prepared.texture, index: 0)
                 encoder.setFragmentSamplerState(sampler, index: 0)
                 encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4, instanceCount: n)
