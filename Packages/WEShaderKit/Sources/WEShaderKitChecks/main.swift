@@ -448,6 +448,30 @@ if let device = MTLCreateSystemDefaultDevice() {
     }
 }
 
+// MSL has no min(int, float) overload, so WE's `min(x, 1)` with a float x is ambiguous — promote the
+// integer literal when a sibling argument is a non-literal; a genuine all-integer min(2, 3) is left alone.
+let promoteShader = """
+varying vec4 v_TexCoord;
+uniform sampler2D g_Texture0;
+void main() {
+    float v = texSample2D(g_Texture0, v_TexCoord.xy).r;
+    int n = min(2, 3);
+    gl_FragColor = vec4(min(v, 1), max(0, v), clamp(v, 0, 1), float(n));
+}
+"""
+let promoteMSL = WEShaderTranspiler.fragmentToMSL(promoteShader)
+Check.that("an integer literal beside a float is promoted in max", promoteMSL.contains("max(0.0, v)"))
+Check.that("an all-integer min keeps its integer type", promoteMSL.contains("min(2, 3)"))
+if let device = MTLCreateSystemDefaultDevice() {
+    do {
+        _ = try device.makeLibrary(source: promoteMSL, options: nil)
+        Check.that("a shader mixing int literals and floats in min/max/clamp compiles", true)
+    } catch {
+        print("──── MSL ────\n\(promoteMSL)\n─────────────")
+        Check.that("a shader mixing int literals and floats in min/max/clamp compiles", false)
+    }
+}
+
 Check.section("ShaderPreprocessor")
 let conditional = "a\n#if MASK == 1\nb\n#else\nc\n#endif\nd"
 Check.that("keeps the active #if branch", ShaderPreprocessor.resolve(conditional, combos: ["MASK": 1]) == "a\nb\nd")

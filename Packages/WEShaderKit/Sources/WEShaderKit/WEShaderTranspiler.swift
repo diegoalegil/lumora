@@ -422,12 +422,65 @@ public enum WEShaderTranspiler {
                                                withTemplate: "$1.sample($1_smp,")
         out = rewriteMul(out)   // HLSL-style mul(a, b) → (a * b)
         out = rewriteArrayConstructors(out)   // GLSL T[N](a, b, …) → MSL brace-init {a, b, …}
+        out = promoteNumericLiterals(out)   // min(x, 1) with a float x → min(x, 1.0)
         out = rewriteReservedWords(out)
         // (mod and two-arg atan are defined in the prelude — GLSL semantics differ from Metal's.)
         for (glsl, msl) in [("frac", "fract"), ("inversesqrt", "rsqrt"), ("lerp", "mix")] {
             out = replaceWord(out, glsl, msl)
         }
         return out
+    }
+
+    /// Promote a bare integer-literal argument of `min`/`max`/`clamp` to a float when a sibling argument is
+    /// not an integer literal. WE/HLSL treat these as float, but MSL has no `min(int, float)` overload, so
+    /// `min(x, 1)` with a float `x` is "call ambiguous". A call whose arguments are ALL integer literals
+    /// (`min(2, 3)`) is left untouched, so a genuine integer min/max keeps its type.
+    private static func promoteNumericLiterals(_ source: String) -> String {
+        let intLiteral = try! NSRegularExpression(pattern: #"^-?\d+$"#)
+        func isIntLiteral(_ s: Substring) -> Bool {
+            let t = s.trimmingCharacters(in: .whitespacesAndNewlines)
+            return intLiteral.firstMatch(in: t, range: NSRange(t.startIndex..., in: t)) != nil
+        }
+        var s = source
+        for fn in ["min", "max", "clamp"] {
+            var searchFrom = s.startIndex
+            while let call = s.range(of: fn + "(", range: searchFrom ..< s.endIndex) {
+                if call.lowerBound > s.startIndex {
+                    let before = s[s.index(before: call.lowerBound)]
+                    if before.isLetter || before.isNumber || before == "_" || before == "." { searchFrom = call.upperBound; continue }
+                }
+                // Collect top-level argument ranges.
+                var depth = 0, i = s.index(before: call.upperBound), argStart = call.upperBound
+                var args: [Range<String.Index>] = []
+                var close: String.Index?
+                while i < s.endIndex {
+                    switch s[i] {
+                    case "(": depth += 1
+                    case ")": depth -= 1; if depth == 0 { args.append(argStart..<i); close = i }
+                    case "," where depth == 1: args.append(argStart..<i); argStart = s.index(after: i)
+                    default: break
+                    }
+                    if close != nil { break }
+                    i = s.index(after: i)
+                }
+                guard let closeIndex = close else { break }
+                let mixed = args.contains { isIntLiteral(s[$0]) } && args.contains { !isIntLiteral(s[$0]) }
+                if mixed {
+                    // Rebuild the call, promoting each integer-literal argument to a float literal.
+                    var rebuilt = ""
+                    for (index, arg) in args.enumerated() {
+                        let text = s[arg]
+                        rebuilt += index == 0 ? "" : ","
+                        rebuilt += isIntLiteral(text) ? text.trimmingCharacters(in: .whitespacesAndNewlines) + ".0" : String(text)
+                    }
+                    s.replaceSubrange(call.upperBound...closeIndex, with: rebuilt + ")")
+                    searchFrom = s.startIndex   // string shifted; rescan
+                } else {
+                    searchFrom = closeIndex
+                }
+            }
+        }
+        return s
     }
 
     /// Rename shader identifiers that collide with MSL reserved words — a variable called `kernel` (Metal's
