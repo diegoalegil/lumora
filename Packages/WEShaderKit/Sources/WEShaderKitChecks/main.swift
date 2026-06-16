@@ -195,6 +195,25 @@ if let device = MTLCreateSystemDefaultDevice() {
     """
     Check.that("prelude compiles GLSL mod and two-arg atan",
                (try? device.makeLibrary(source: WEShaderTranspiler.fragmentToMSL(mathShader), options: nil)) != nil)
+
+    // The combine pass of a multi-pass blur folds the blurred buffer over the original via
+    // common_composite.h (ApplyComposite / ApplyCompositeOffset). It must transpile and compile so the
+    // four-pass blur graph completes instead of being dropped.
+    let combineShader = """
+    // [COMBO] {"combo":"COMPOSITE","type":"options","default":0}
+    #include "common_composite.h"
+    varying vec4 v_TexCoord;
+    uniform sampler2D g_Texture0; // {"hidden":true}
+    uniform sampler2D g_Texture2; // {"hidden":true}
+    uniform vec4 g_Texture0Resolution;
+    void main() {
+        vec4 blurred = texSample2D(g_Texture0, ApplyCompositeOffset(v_TexCoord.xy, g_Texture0Resolution.xy));
+        vec4 albedoOld = texSample2D(g_Texture2, v_TexCoord.xy);
+        gl_FragColor = ApplyComposite(albedoOld, blurred);
+    }
+    """
+    Check.that("common_composite.h compiles a blur-combine shader",
+               (try? device.makeLibrary(source: WEShaderTranspiler.fragmentToMSL(combineShader), options: nil)) != nil)
 }
 Check.that("comboDefaults reads the // [COMBO] default",
            ShaderPreprocessor.comboDefaults("// [COMBO] {\"combo\":\"BLENDMODE\",\"default\":9}\nvoid main(){}")["BLENDMODE"] == 9)

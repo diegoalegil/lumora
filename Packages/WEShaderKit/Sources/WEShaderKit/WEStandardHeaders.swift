@@ -18,7 +18,29 @@ public enum WEStandardHeaders {
         "common_blending.h": commonBlending,
         "common_blur.h": commonBlur,
         "common_perspective.h": commonPerspective,
+        "common_composite.h": commonComposite,
     ]
+
+    /// The combine pass of a multi-pass blur/glow reads the blurred buffer and the original layer and folds
+    /// them together. `ApplyCompositeOffset` is the sub-texel sampling correction when upscaling a
+    /// downsampled buffer — the bilinear sampler already covers the [0,1] buffer, so the identity uv is used
+    /// (any residual offset is below a texel). `ApplyComposite` is the standard four-way composite the
+    /// effect's COMPOSITE combo selects: normal replaces with the blurred, blend/under are source-over in
+    /// either order, cutout keeps the blurred only inside the original's coverage.
+    private static let commonComposite = """
+    float2 ApplyCompositeOffset(float2 uv, float2 resolution) { return uv; }
+    float4 ApplyComposite(float4 base, float4 blend) {
+    #if COMPOSITE == 1
+        return float4(mix(base.rgb, blend.rgb, blend.a), base.a + blend.a * (1.0 - base.a));
+    #elif COMPOSITE == 2
+        return float4(mix(blend.rgb, base.rgb, base.a), blend.a + base.a * (1.0 - blend.a));
+    #elif COMPOSITE == 3
+        return float4(blend.rgb, blend.a * base.a);
+    #else
+        return blend;
+    #endif
+    }
+    """
 
     /// Perspective warp. `squareToQuad` builds the homography mapping the unit square onto the quad
     /// p0..p3 (the standard Heckbert construction); WE shaders use `inverse(squareToQuad(…))` with the
