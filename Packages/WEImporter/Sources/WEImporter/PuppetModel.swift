@@ -36,8 +36,9 @@ public struct PuppetMesh: Sendable, Equatable {
 public enum PuppetModel {
     /// Parse the common 80-byte-vertex `.mdl` (the `MDLV…` form whose vertex section begins `0f 00 80 01`).
     /// A variant attribute layout (different stride) returns nil, so the caller keeps the static-preview
-    /// fallback rather than drawing a garbled mesh. The vertex is 20 float32: position in `[0,1]`, atlas UV
-    /// in `[18,19]`; the middle floats are skinning/normal data used later for animation.
+    /// fallback rather than drawing a garbled mesh. The 80-byte vertex is: position float32 at byte 0/4,
+    /// four bone indices uint32 at byte 40/44/48/52, four blend weights float32 at 56/60/64/68, atlas UV
+    /// float32 at 72/76. (The remaining floats are normal/tangent data we don't need to deform the sprite.)
     public static func parseMesh(_ data: Data) -> PuppetMesh? {
         let n = data.count
         guard n > 0x20 else { return nil }
@@ -74,10 +75,14 @@ public enum PuppetModel {
 
             var positions = [SIMD2<Float>](); positions.reserveCapacity(vertexCount)
             var uvs = [SIMD2<Float>](); uvs.reserveCapacity(vertexCount)
+            var boneIdx = [SIMD4<UInt32>](); boneIdx.reserveCapacity(vertexCount)
+            var weights = [SIMD4<Float>](); weights.reserveCapacity(vertexCount)
             for v in 0 ..< vertexCount {
                 let o = vertexBase + v * stride
                 positions.append(SIMD2(f32(o), f32(o + 4)))
                 uvs.append(SIMD2(f32(o + 72), f32(o + 76)))
+                boneIdx.append(SIMD4(u32(o + 40), u32(o + 44), u32(o + 48), u32(o + 52)))
+                weights.append(SIMD4(f32(o + 56), f32(o + 60), f32(o + 64), f32(o + 68)))
             }
             var indices = [UInt32](); indices.reserveCapacity(indexCount)
             for i in 0 ..< indexCount {
@@ -86,11 +91,11 @@ public enum PuppetModel {
                 indices.append(idx)
             }
 
-            // Assemble the parts with the skeleton (one connected component per bone). The skin transform
-            // `pose ∘ bind⁻¹` moves each component from its flat-atlas spot into the composed figure. If the
-            // bone data doesn't decode to a sane result, `assemble` leaves the positions untouched and
-            // reports false so the caller keeps the static preview.
-            let ok = assemble(&positions, indices: indices, data: raw, count: n)
+            // Deform the flat atlas into the assembled figure with linear-blend skinning: each vertex is
+            // moved by its bones' `pose ∘ bind⁻¹` transforms, weighted. If the skeleton doesn't decode to a
+            // sane result, `assemble` leaves the positions untouched and reports false so the caller keeps
+            // the static preview.
+            let ok = assemble(&positions, boneIdx: boneIdx, weights: weights, data: raw, count: n)
 
             return PuppetMesh(positions: positions, uvs: uvs, indices: indices, assembled: ok)
         }
@@ -114,14 +119,15 @@ public enum PuppetModel {
     }
 
     /// In-place skeletal assembly: a WE puppet stores its vertices as the FLAT sprite atlas; the skeleton
-    /// composes them into the character. Each bone has a BIND pose (its rest frame, authored at the part's
-    /// atlas position) and a POSE (its assembled frame). A vertex is moved `pose ∘ bind⁻¹` — the bind⁻¹ takes
-    /// the part from its atlas spot to the bone's local frame, the pose places it in the assembled figure.
-    /// The mesh splits into one connected component per bone; a component is matched to the bone whose bind
-    /// translation sits at its atlas centroid. (The stored layout has Y flipped, so it's un/re-flipped here.)
+    /// deforms them into the character. Each bone has a BIND pose (its rest frame, authored at the part's
+    /// atlas position) and a POSE (its assembled frame); a vertex's skin transform is `pose ∘ bind⁻¹` — the
+    /// bind⁻¹ takes the part from its atlas spot to the bone's local frame, the pose places it in the figure.
+    /// Each vertex carries up to four (bone, weight) pairs, so the assembled position is the weighted blend
+    /// (linear-blend skinning). Rigid puppets like Toga simply weight every vertex 100% to one bone; soft
+    /// rigs blend across bones. (The stored layout shares the bind/pose Y convention, so no flip is needed.)
     @discardableResult
-    private static func assemble(_ positions: inout [SIMD2<Float>], indices: [UInt32],
-                                 data raw: UnsafeRawBufferPointer, count n: Int) -> Bool {
+    private static func assemble(_ positions: inout [SIMD2<Float>], boneIdx: [SIMD4<UInt32>],
+                                 weights: [SIMD4<Float>], data raw: UnsafeRawBufferPointer, count n: Int) -> Bool {
         let needle: [UInt8] = [0x4d, 0x44, 0x4c, 0x53]   // "MDLS"
         var mdls = -1
         for i in stride(from: n - 4, through: 0, by: -1) {
@@ -176,50 +182,33 @@ public enum PuppetModel {
         // (already-flipped) convention, so no extra flip is needed here.
         let skin = (0 ..< boneCount).map { poseWorld[$0].concat(bindWorld[$0].inverse) }
 
-        // Connected components (one per bone).
-        var uf = Array(0 ..< positions.count)
-        func find(_ x: Int) -> Int { var x = x; while uf[x] != x { uf[x] = uf[uf[x]]; x = uf[x] }; return x }
-        var t = 0
-        while t + 2 < indices.count { uf[find(Int(indices[t]))] = find(Int(indices[t+1])); uf[find(Int(indices[t+1]))] = find(Int(indices[t+2])); t += 3 }
-        var members: [Int: [Int]] = [:]
-        for v in 0 ..< positions.count { members[find(v), default: []].append(v) }
-        // Match each component to the bone whose bind translation lies nearest its atlas centroid (the bone
-        // authored there), as a greedy bijection.
-        var free = Set(0 ..< boneCount)
-        var boneOf: [Int: Int] = [:]
-        for (r, vs) in members.sorted(by: { ($0.value.first ?? 0) < ($1.value.first ?? 0) }) {
-            var cx: Float = 0, cy: Float = 0
-            for v in vs { cx += positions[v].x; cy += positions[v].y }
-            cx /= Float(vs.count); cy /= Float(vs.count)
-            var best = -1; var bestD = Float.greatestFiniteMagnitude
-            for k in free {
-                let dx = bindWorld[k].tx - cx, dy = bindWorld[k].ty - cy   // same Y convention as the stored atlas
-                let d = dx * dx + dy * dy
-                if d < bestD { bestD = d; best = k }
-            }
-            if best >= 0 { boneOf[r] = best; free.remove(best) }
-        }
-        // The mesh must split into exactly one component per bone — otherwise the bone↔part bijection is
-        // ambiguous and the result can't be trusted.
-        guard members.count == boneCount else { return false }
-
-        // Apply the skin into a scratch copy, then sanity-check the result before committing. A wrong pose
-        // matrix (mis-located array, variant layout) sends parts flying; assembling can only ever PACK the
-        // flat atlas tighter, never spread it, so the assembled extent must not exceed the atlas extent.
+        // Linear-blend skin into a scratch copy, then sanity-check before committing. A mis-located/variant
+        // pose array would send parts flying; assembling can only ever PACK the flat atlas tighter, never
+        // spread it, so the assembled extent must not exceed the atlas extent (and every result stays finite).
         func extent(_ ps: [SIMD2<Float>]) -> SIMD2<Float> {
             var lo = ps[0], hi = ps[0]
             for p in ps { lo = SIMD2(min(lo.x, p.x), min(lo.y, p.y)); hi = SIMD2(max(hi.x, p.x), max(hi.y, p.y)) }
             return hi - lo
         }
-        guard !positions.isEmpty else { return false }
+        guard positions.count == boneIdx.count, positions.count == weights.count, !positions.isEmpty else { return false }
         let atlasExtent = extent(positions)
         var out = positions
+        var moved = 0
         for v in 0 ..< out.count {
-            guard let k = boneOf[find(v)], k < skin.count else { continue }
-            let p = skin[k].apply(out[v])
+            let p0 = out[v], idx = boneIdx[v], w = weights[v]
+            var acc = SIMD2<Float>(0, 0), wsum: Float = 0
+            for j in 0 ..< 4 {
+                let wj = w[j], k = Int(idx[j])
+                guard wj > 0, k >= 0, k < skin.count else { continue }
+                acc += wj * skin[k].apply(p0); wsum += wj
+            }
+            guard wsum > 1e-4 else { continue }   // unweighted vertex — leave it at the atlas position
+            let p = acc / wsum
             guard p.x.isFinite, p.y.isFinite else { return false }
-            out[v] = p
+            out[v] = p; moved += 1
         }
+        // If almost nothing was skinned, the weights didn't decode — don't claim a (non-)assembly.
+        guard moved > out.count / 2 else { return false }
         let asmExtent = extent(out)
         let slack: Float = 1.05
         guard asmExtent.x <= atlasExtent.x * slack, asmExtent.y <= atlasExtent.y * slack else { return false }
