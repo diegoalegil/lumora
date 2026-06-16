@@ -23,8 +23,9 @@ public enum WEShaderTranspiler {
         var body = mainBody(of: resolved)
         body = rewriteIntrinsics(body)
         body = rewriteTypes(body)
-        // Qualify references: varyings come from stage_in, scalar uniforms from the uniform buffer.
-        for varying in varyings { body = qualify(body, name: varying.name, with: "in.\(varying.name)") }
+        // Qualify references: scalar varyings come from stage_in, scalar uniforms from the uniform
+        // buffer. Array varyings stay bare — they resolve to a local array rebuilt below.
+        for varying in varyings where varying.count == nil { body = qualify(body, name: varying.name, with: "in.\(varying.name)") }
         for uniform in scalars { body = qualify(body, name: uniform.name, with: "u.\(uniform.name)") }
         // gl_FragColor → a local we collect and return.
         body = qualify(body, name: "gl_FragColor", with: "_fragColor")
@@ -32,11 +33,7 @@ public enum WEShaderTranspiler {
         var msl = "#include <metal_stdlib>\nusing namespace metal;\n\n" + comboConstants(combos)
             + WEShaderPrelude.msl + helperFunctions(of: resolved)
 
-        msl += "struct VaryingIn {\n"
-        for (index, varying) in varyings.enumerated() {
-            msl += "    \(mslType(varying.type)) \(varying.name) [[user(locn\(index))]];\n"
-        }
-        msl += "};\n\n"
+        msl += "struct VaryingIn {\n" + varyingMembers(varyings) + "};\n\n"
 
         if !scalars.isEmpty {
             msl += "struct Uniforms {\n"
@@ -52,6 +49,7 @@ public enum WEShaderTranspiler {
             msl += ",\n    sampler \(sampler.name)_smp [[sampler(\(index))]]"
         }
         msl += ") {\n    float4 _fragColor = float4(0.0);\n"
+        msl += arrayVaryingLocals(varyings, from: "in")
         msl += body
         msl += "\n    return _fragColor;\n}\n"
         return msl
@@ -74,7 +72,8 @@ public enum WEShaderTranspiler {
         body = rewriteIntrinsics(body)
         body = rewriteTypes(body)
         for attribute in attributes { body = qualify(body, name: attribute.name, with: "in.\(attribute.name)") }
-        for varying in varyings { body = qualify(body, name: varying.name, with: "out.\(varying.name)") }
+        // Array varyings stay bare: the body writes a local array that's copied to the output below.
+        for varying in varyings where varying.count == nil { body = qualify(body, name: varying.name, with: "out.\(varying.name)") }
         for uniform in scalars { body = qualify(body, name: uniform.name, with: "u.\(uniform.name)") }
         body = qualify(body, name: "gl_Position", with: "out.position")
 
@@ -84,11 +83,7 @@ public enum WEShaderTranspiler {
         for (index, attribute) in attributes.enumerated() {
             msl += "    \(mslType(attribute.type)) \(attribute.name) [[attribute(\(index))]];\n"
         }
-        msl += "};\n\nstruct VertexOut {\n    float4 position [[position]];\n"
-        for (index, varying) in varyings.enumerated() {
-            msl += "    \(mslType(varying.type)) \(varying.name) [[user(locn\(index))]];\n"
-        }
-        msl += "};\n\n"
+        msl += "};\n\nstruct VertexOut {\n    float4 position [[position]];\n" + varyingMembers(varyings) + "};\n\n"
         if !scalars.isEmpty {
             msl += "struct Uniforms {\n"
             for uniform in scalars { msl += "    \(mslType(uniform.type)) \(uniform.name);\n" }
@@ -102,7 +97,9 @@ public enum WEShaderTranspiler {
             msl += ",\n    sampler \(sampler.name)_smp [[sampler(\(index))]]"
         }
         msl += ") {\n    VertexOut out;\n"
+        msl += arrayVaryingDeclarations(varyings)
         msl += body
+        msl += arrayVaryingWriteback(varyings)
         msl += "\n    return out;\n}\n"
         return msl
     }
@@ -116,19 +113,68 @@ public enum WEShaderTranspiler {
         return combos.sorted { $0.key < $1.key }.map { "#define \($0.key) \($0.value)\n" }.joined() + "\n"
     }
 
-    /// `<keyword> <type> <name>;` declarations (e.g. `varying`/`attribute`), de-duplicated by name.
-    private static func parseDeclarations(_ source: String, keyword: String) -> [(type: String, name: String)] {
-        var result: [(String, String)] = []
+    /// `<keyword> <type> <name>;` declarations (e.g. `varying`/`attribute`), de-duplicated by name. A
+    /// `<name>[N]` array suffix (the blur/godray family declares `varying vec2 v_TexCoord[4]`) is captured
+    /// as `count`; a non-literal size like `[RESOLUTION]` doesn't match and the declaration is skipped.
+    private static func parseDeclarations(_ source: String, keyword: String) -> [(type: String, name: String, count: Int?)] {
+        var result: [(type: String, name: String, count: Int?)] = []
         var seen = Set<String>()
-        let pattern = try! NSRegularExpression(pattern: #"^\s*\#(keyword)\s+(\w+)\s+(\w+)\s*;"#)
+        let pattern = try! NSRegularExpression(pattern: #"^\s*\#(keyword)\s+(\w+)\s+(\w+)\s*(?:\[\s*(\d+)\s*\])?\s*;"#)
         source.enumerateLines { line, _ in
             let whole = NSRange(line.startIndex..., in: line)
             guard let m = pattern.firstMatch(in: line, range: whole),
                   let t = Range(m.range(at: 1), in: line), let n = Range(m.range(at: 2), in: line) else { return }
             let name = String(line[n])
-            if seen.insert(name).inserted { result.append((String(line[t]), name)) }   // dedup repeats
+            let count = Range(m.range(at: 3), in: line).flatMap { Int(line[$0]) }
+            if seen.insert(name).inserted { result.append((type: String(line[t]), name: name, count: count)) }   // dedup repeats
         }
         return result
+    }
+
+    /// The `[[user(locn…)]]` member declarations for `varyings`. MSL forbids an array member in a
+    /// `[[stage_in]]` or vertex-out struct, so an array varying `T name[N]` is expanded into N
+    /// consecutively-located scalar members `name_0 … name_{N-1}` that the body packs into / unpacks from
+    /// a local array. A running counter (not the declaration index) assigns locations so an array's N
+    /// members don't collide with later varyings.
+    private static func varyingMembers(_ varyings: [(type: String, name: String, count: Int?)]) -> String {
+        var out = ""
+        var location = 0
+        for varying in varyings {
+            if let count = varying.count {
+                for k in 0..<count { out += "    \(mslType(varying.type)) \(varying.name)_\(k) [[user(locn\(location))]];\n"; location += 1 }
+            } else {
+                out += "    \(mslType(varying.type)) \(varying.name) [[user(locn\(location))]];\n"; location += 1
+            }
+        }
+        return out
+    }
+
+    /// For each array varying, a local `T name[N] = { in.name_0, … };` rebuilt from the expanded stage_in
+    /// members, so the fragment body can index it — including with a dynamic loop variable, which a struct
+    /// member can't be. Scalar varyings are read straight through `in.name`.
+    private static func arrayVaryingLocals(_ varyings: [(type: String, name: String, count: Int?)], from container: String) -> String {
+        var out = ""
+        for varying in varyings {
+            guard let count = varying.count else { continue }
+            let elements = (0..<count).map { "\(container).\(varying.name)_\($0)" }.joined(separator: ", ")
+            out += "    \(mslType(varying.type)) \(varying.name)[\(count)] = { \(elements) };\n"
+        }
+        return out
+    }
+
+    /// The local array declarations a vertex body writes into before they're copied to the output struct.
+    private static func arrayVaryingDeclarations(_ varyings: [(type: String, name: String, count: Int?)]) -> String {
+        varyings.compactMap { varying in varying.count.map { "    \(mslType(varying.type)) \(varying.name)[\($0)];\n" } }.joined()
+    }
+
+    /// Copy each local array varying back into the output struct's expanded members before `return out`.
+    private static func arrayVaryingWriteback(_ varyings: [(type: String, name: String, count: Int?)]) -> String {
+        var out = ""
+        for varying in varyings {
+            guard let count = varying.count else { continue }
+            for k in 0..<count { out += "    out.\(varying.name)_\(k) = \(varying.name)[\(k)];\n" }
+        }
+        return out
     }
 
     /// The contents of `void main() { … }`, comments and preprocessor lines stripped. The body is

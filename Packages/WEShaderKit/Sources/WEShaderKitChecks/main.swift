@@ -225,6 +225,46 @@ if let device = MTLCreateSystemDefaultDevice() {
     }
 }
 
+// Array varyings — the blur/godray/downsample family declares `varying vec2 v_TexCoord[N]` and indexes
+// it with a loop variable. MSL forbids an array member in a stage_in / vertex-out struct, so the
+// transpiler expands it into per-element members and rebuilds a local array the body can index.
+let arrayVertex = """
+attribute vec3 a_Position;
+attribute vec2 a_TexCoord;
+varying vec2 v_TexCoord[4];
+varying vec2 v_TexCoordBase;
+void main() {
+    gl_Position = vec4(a_Position, 1.0);
+    v_TexCoordBase = a_TexCoord;
+    for (int i = 0; i < 4; i++) v_TexCoord[i] = a_TexCoord;
+}
+"""
+let arrayVertexMSL = WEShaderTranspiler.vertexToMSL(arrayVertex)
+Check.that("array varying expands into per-element output members", arrayVertexMSL.contains("v_TexCoord_0 [[user(locn"))
+Check.that("a later scalar varying takes the location after the array's elements", arrayVertexMSL.contains("v_TexCoordBase [[user(locn4)]]"))
+Check.that("the array varying is written via a local copied to the output", arrayVertexMSL.contains("out.v_TexCoord_0 = v_TexCoord[0]"))
+let arrayFragment = """
+varying vec2 v_TexCoord[4];
+uniform sampler2D g_Texture0;
+void main() {
+    vec4 sum = vec4(0.0);
+    for (int i = 0; i < 4; i++) sum += texSample2D(g_Texture0, v_TexCoord[i]);
+    gl_FragColor = sum;
+}
+"""
+let arrayFragmentMSL = WEShaderTranspiler.fragmentToMSL(arrayFragment)
+Check.that("array varying rebuilds a local array from stage_in", arrayFragmentMSL.contains("float2 v_TexCoord[4] = {"))
+if let device = MTLCreateSystemDefaultDevice() {
+    do {
+        _ = try device.makeLibrary(source: arrayVertexMSL, options: nil)
+        _ = try device.makeLibrary(source: arrayFragmentMSL, options: nil)
+        Check.that("an array-varying vertex and fragment both compile", true)
+    } catch {
+        print("──── vertex ────\n\(arrayVertexMSL)\n──── fragment ────\n\(arrayFragmentMSL)\n─────────────")
+        Check.that("an array-varying vertex and fragment both compile", false)
+    }
+}
+
 Check.section("ShaderPreprocessor")
 let conditional = "a\n#if MASK == 1\nb\n#else\nc\n#endif\nd"
 Check.that("keeps the active #if branch", ShaderPreprocessor.resolve(conditional, combos: ["MASK": 1]) == "a\nb\nd")
