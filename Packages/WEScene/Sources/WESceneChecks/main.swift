@@ -288,6 +288,56 @@ if let package = try? ScenePackage.read(degradePkg), let document = try? SceneGr
                near(r, 0) && near(g, 0) && near(b, 255))
 }
 
+// A combo's // [COMBO] default annotated in only one stage (here SCALE, in the fragment) must gate the
+// matching varying in BOTH — else the vertex omits v_Mul, the fragment expects it, and the pass fails to
+// link (shine's NOISE). With the defaults shared, the effect halves the blue layer (b 255 → ~128).
+let scaleVert = """
+attribute vec3 a_Position;
+attribute vec2 a_TexCoord;
+uniform mat4 g_ModelViewProjectionMatrix;
+varying vec4 v_TexCoord;
+#if SCALE
+varying vec3 v_Mul;
+#endif
+void main() {
+    gl_Position = mul(vec4(a_Position, 1.0), g_ModelViewProjectionMatrix);
+    v_TexCoord = vec4(a_TexCoord, a_TexCoord);
+#if SCALE
+    v_Mul = vec3(0.5);
+#endif
+}
+"""
+let scaleFrag = """
+// [COMBO] {"combo":"SCALE","default":1}
+varying vec4 v_TexCoord;
+#if SCALE
+varying vec3 v_Mul;
+#endif
+uniform sampler2D g_Texture0;
+void main() {
+    vec4 c = texSample2D(g_Texture0, v_TexCoord.xy);
+#if SCALE
+    c.rgb *= v_Mul;
+#endif
+    gl_FragColor = c;
+}
+"""
+let scaleSceneJSON = Data(#"{"general":{"orthogonalprojection":{"width":8,"height":8},"clearcolor":"1 0 0"},"objects":[{"name":"base","image":"models/m.json","origin":"4 4 0","alpha":1,"effects":[{"file":"effects/scale/effect.json","passes":[{}]}]}]}"#.utf8)
+let scalePkg = buildPKG([
+    ("scene.json", scaleSceneJSON),
+    ("models/m.json", modelJSON), ("materials/mat.json", materialJSON), ("materials/t.tex", blueTex),
+    ("effects/scale/effect.json", Data(#"{"passes":[{"material":"materials/effects/scale.json"}]}"#.utf8)),
+    ("materials/effects/scale.json", Data(#"{"passes":[{"shader":"effects/scale"}]}"#.utf8)),
+    ("shaders/effects/scale.vert", Data(scaleVert.utf8)),
+    ("shaders/effects/scale.frag", Data(scaleFrag.utf8)),
+])
+if let package = try? ScenePackage.read(scalePkg), let document = try? SceneGraph.load(from: package),
+   let frame = renderer.render(document, package: package, width: 8, height: 8) {
+    let (_, _, b) = centerRGB(frame)
+    Check.that("a combo annotated in one stage gates both, so the effect links and halves the layer (b ~128)",
+               abs(b - 128) <= 12)
+}
+
 // A layer's roll angle (angles.z) must be honoured — it was ignored, so rolled layers drew axis-aligned.
 // A full-frame texture that's red on top and blue on the bottom, rolled 180°, must swap: the top reads blue.
 var splitPixels = Data()
