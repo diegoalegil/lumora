@@ -81,22 +81,64 @@ public struct Vec3Animation: Sendable, Equatable {
 
 /// A post-process effect applied to a layer (pulse, blur, tint, water…): the shader to run and the
 /// constant uniform values to feed it, keyed by the shader's `ui_editor_properties_*` annotation.
+/// One render pass of a (possibly multi-pass) effect: a shader, its combos and aux sampler bindings, the
+/// named render target it writes (nil = the effect's output), and which input each sampler reads.
+public struct EffectPass: Sendable, Equatable {
+    public let fragmentShaderPath: String
+    public let vertexShaderPath: String
+    public let combos: [String: Int]
+    public let textures: [String?]      // material's sampler bindings (aux), by index
+    public let target: String?          // named FBO this pass renders into; nil = the effect output (full size)
+    public let binds: [EffectBind]      // input name (`previous` = the effect input, or an FBO) → sampler index
+
+    public init(fragmentShaderPath: String, vertexShaderPath: String, combos: [String: Int] = [:],
+                textures: [String?] = [], target: String? = nil, binds: [EffectBind] = []) {
+        self.fragmentShaderPath = fragmentShaderPath
+        self.vertexShaderPath = vertexShaderPath
+        self.combos = combos
+        self.textures = textures
+        self.target = target
+        self.binds = binds
+    }
+}
+
+/// A pass input binding: which named texture feeds which sampler slot (g_Texture<index>).
+public struct EffectBind: Sendable, Equatable {
+    public let name: String   // `previous` = the effect's input, or a named FBO
+    public let index: Int     // g_Texture<index>
+    public init(name: String, index: Int) { self.name = name; self.index = index }
+}
+
+/// An intermediate render target an effect declares: a name, a downscale factor (1 = full, 4 = quarter),
+/// and a pixel format token (`rgba_backbuffer`, `rgb161616f`, …).
+public struct EffectFBO: Sendable, Equatable {
+    public let name: String
+    public let scale: Int
+    public let format: String
+    public init(name: String, scale: Int, format: String) { self.name = name; self.scale = scale; self.format = format }
+}
+
 public struct LayerEffect: Sendable, Equatable {
     public let name: String
-    public let fragmentShaderPath: String   // e.g. "shaders/effects/pulse.frag"
+    public let fragmentShaderPath: String   // e.g. "shaders/effects/pulse.frag" — the first pass's shader
     public let vertexShaderPath: String     // e.g. "shaders/effects/pulse.vert"
     public let constants: [String: String]  // property key → value (number or space-separated vector)
     public let combos: [String: Int]        // combo selections (e.g. BLENDMODE) — override shader defaults
     public let textures: [String?]          // material's sampler bindings by index (g_Texture0 = nil/framebuffer)
+    public let passes: [EffectPass]          // the full pass graph (single-pass effects have one)
+    public let fbos: [EffectFBO]             // the intermediate render targets the passes wire together
 
     public init(name: String, fragmentShaderPath: String, vertexShaderPath: String,
-                constants: [String: String], combos: [String: Int] = [:], textures: [String?] = []) {
+                constants: [String: String], combos: [String: Int] = [:], textures: [String?] = [],
+                passes: [EffectPass] = [], fbos: [EffectFBO] = []) {
         self.name = name
         self.fragmentShaderPath = fragmentShaderPath
         self.vertexShaderPath = vertexShaderPath
         self.constants = constants
         self.combos = combos
         self.textures = textures
+        self.passes = passes
+        self.fbos = fbos
     }
 }
 
@@ -254,44 +296,65 @@ public enum SceneGraph {
         return (texture, pass["blending"] as? String, pass["shader"] as? String)
     }
 
-    /// Resolve a layer's post-process effects: each `object.effects[i].file` → effect.json → material →
-    /// shader path, with the constant uniform values from the effect's `constantshadervalues`.
+    /// Resolve a layer's post-process effects. Each `object.effects[i].file` → effect.json, which is a
+    /// graph of passes (a multi-pass effect like blur is downsample → gaussian-x → gaussian-y → combine,
+    /// wired through named `fbos`). Each pass → its material → shader, combos and aux textures; the pass's
+    /// `target` and `bind` come from the effect.json. The user's `constantshadervalues` and combo overrides
+    /// (e.g. the blend mode) are shared across the passes.
     static func effects(of object: [String: Any], in package: ScenePackage) -> [LayerEffect] {
         guard let entries = object["effects"] as? [[String: Any]] else { return [] }
         var result: [LayerEffect] = []
         for entry in entries {
             guard let file = entry["file"] as? String,
                   let effect = json(package.entry(named: file)),
-                  let materialPath = (effect["passes"] as? [[String: Any]])?.first?["material"] as? String,
-                  let material = json(package.entry(named: materialPath)),
-                  let shader = (material["passes"] as? [[String: Any]])?.first?["shader"] as? String else { continue }
+                  let effectPasses = effect["passes"] as? [[String: Any]], !effectPasses.isEmpty else { continue }
+
             var constants: [String: String] = [:]
             if let pass = (entry["passes"] as? [[String: Any]])?.first,
                let values = pass["constantshadervalues"] as? [String: Any] {
-                for (key, value) in values where constantString(value) != nil {
-                    constants[key] = constantString(value)
-                }
+                for (key, value) in values where constantString(value) != nil { constants[key] = constantString(value) }
             }
-            // Combo selections (e.g. the blend mode): the material declares them, the scene's effect pass
-            // overrides — so an effect renders the mode the wallpaper picked, not just the shader default.
-            var combos: [String: Int] = [:]
-            for source in [(material["passes"] as? [[String: Any]])?.first?["combos"] as? [String: Any],
-                           (entry["passes"] as? [[String: Any]])?.first?["combos"] as? [String: Any]] {
-                for (key, value) in source ?? [:] {
-                    if let intValue = (value as? NSNumber)?.intValue { combos[key] = intValue }
-                }
+            // The user's combo overrides (e.g. the blend mode the wallpaper picked) apply across all passes.
+            var entryCombos: [String: Int] = [:]
+            if let source = (entry["passes"] as? [[String: Any]])?.first?["combos"] as? [String: Any] {
+                for (key, value) in source { if let i = (value as? NSNumber)?.intValue { entryCombos[key] = i } }
             }
-            // The material binds each sampler (g_Texture0…) to a texture name; g_Texture0 is the layer
-            // framebuffer (usually null). Capture them so the renderer can supply the real noise/normal/
-            // mask textures instead of a placeholder.
-            let materialPass = (material["passes"] as? [[String: Any]])?.first
-            let textures = (materialPass?["textures"] as? [Any])?.map { $0 as? String }
+
+            var passes: [EffectPass] = []
+            for jsonPass in effectPasses {
+                guard let materialPath = jsonPass["material"] as? String,
+                      let material = json(package.entry(named: materialPath)),
+                      let materialPass = (material["passes"] as? [[String: Any]])?.first,
+                      let shader = materialPass["shader"] as? String else { continue }
+                var combos = entryCombos   // the material's own combos (e.g. VERTICAL on the y-pass) override
+                if let materialCombos = materialPass["combos"] as? [String: Any] {
+                    for (key, value) in materialCombos { if let i = (value as? NSNumber)?.intValue { combos[key] = i } }
+                }
+                let textures = (materialPass["textures"] as? [Any])?.map { $0 as? String } ?? []
+                let binds: [EffectBind] = ((jsonPass["bind"] as? [[String: Any]]) ?? []).compactMap {
+                    guard let name = $0["name"] as? String, let index = ($0["index"] as? NSNumber)?.intValue else { return nil }
+                    return EffectBind(name: name, index: index)
+                }
+                passes.append(EffectPass(fragmentShaderPath: "shaders/\(shader).frag",
+                                         vertexShaderPath: "shaders/\(shader).vert",
+                                         combos: combos, textures: textures,
+                                         target: jsonPass["target"] as? String, binds: binds))
+            }
+            guard let first = passes.first else { continue }
+
+            let fbos: [EffectFBO] = ((effect["fbos"] as? [[String: Any]]) ?? []).compactMap {
+                guard let name = $0["name"] as? String else { return nil }
+                let scale = ($0["scale"] as? NSNumber)?.intValue ?? 1
+                return EffectFBO(name: name, scale: max(1, scale), format: ($0["format"] as? String) ?? "rgba_backbuffer")
+            }
+
             let name = URL(fileURLWithPath: file).deletingLastPathComponent().lastPathComponent
             result.append(LayerEffect(
                 name: name.isEmpty ? file : name,
-                fragmentShaderPath: "shaders/\(shader).frag",
-                vertexShaderPath: "shaders/\(shader).vert",
-                constants: constants, combos: combos, textures: textures ?? []))
+                fragmentShaderPath: first.fragmentShaderPath,
+                vertexShaderPath: first.vertexShaderPath,
+                constants: constants, combos: first.combos, textures: first.textures,
+                passes: passes, fbos: fbos))
         }
         return result
     }

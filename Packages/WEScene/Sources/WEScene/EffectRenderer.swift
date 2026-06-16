@@ -84,13 +84,14 @@ public final class EffectRenderer {
 
     /// Build a pipeline pairing the fixed full-screen vertex with a WE effect's transpiled fragment, or
     /// nil if it fails to transpile, compile, or link. `combos` are the effect's combo selections.
-    public func makePipeline(fragmentShader: String, combos: [String: Int] = [:]) -> MTLRenderPipelineState? {
+    public func makePipeline(fragmentShader: String, combos: [String: Int] = [:],
+                             pixelFormat: MTLPixelFormat = .rgba8Unorm) -> MTLRenderPipelineState? {
         guard let fragmentLibrary = try? device.makeLibrary(source: WEShaderTranspiler.fragmentToMSL(fragmentShader, combos: combos), options: nil),
               let fragmentFunction = fragmentLibrary.makeFunction(name: "we_fragment") else { return nil }
         let descriptor = MTLRenderPipelineDescriptor()
         descriptor.vertexFunction = vertexFunction
         descriptor.fragmentFunction = fragmentFunction
-        descriptor.colorAttachments[0].pixelFormat = .rgba8Unorm
+        descriptor.colorAttachments[0].pixelFormat = pixelFormat
         return try? device.makeRenderPipelineState(descriptor: descriptor)
     }
 
@@ -100,7 +101,8 @@ public final class EffectRenderer {
     /// fails to link. Returns nil if either stage won't transpile/compile, the link fails, or the vertex
     /// uses an attribute the shared grid mesh doesn't provide (every shipped effect uses a_Position +
     /// a_TexCoord; anything else falls back to the fixed-vertex path).
-    public func makeVertexPipeline(vertexShader: String, fragmentShader: String, combos: [String: Int] = [:]) -> MTLRenderPipelineState? {
+    public func makeVertexPipeline(vertexShader: String, fragmentShader: String, combos: [String: Int] = [:],
+                                   pixelFormat: MTLPixelFormat = .rgba8Unorm) -> MTLRenderPipelineState? {
         let attributes = WEShaderTranspiler.vertexAttributes(vertexShader, combos: combos)
         guard !attributes.isEmpty,
               attributes.allSatisfy({ $0.name == "a_Position" || $0.name == "a_TexCoord" }) else { return nil }
@@ -127,24 +129,42 @@ public final class EffectRenderer {
         descriptor.vertexFunction = vertex
         descriptor.fragmentFunction = fragment
         descriptor.vertexDescriptor = vertexDescriptor
-        descriptor.colorAttachments[0].pixelFormat = .rgba8Unorm
+        descriptor.colorAttachments[0].pixelFormat = pixelFormat
         return try? device.makeRenderPipelineState(descriptor: descriptor)
     }
 
-    /// Render `input` through an own-vertex effect `pipeline` (built by `makeVertexPipeline`) over the
-    /// tessellated grid: `vertexUniforms`/`fragmentUniforms` feed each stage, `input` binds as g_Texture0
-    /// and `auxTextures` as g_Texture1…
-    public func applyVertexEffect(pipeline: MTLRenderPipelineState, to input: MTLTexture, auxTextures: [MTLTexture] = [],
-                                  vertexUniforms: Data? = nil, fragmentUniforms: Data? = nil,
-                                  width: Int, height: Int) -> MTLTexture? {
-        if let fragmentUniforms, fragmentUniforms.count > 4096 { return nil }
-        if let vertexUniforms, vertexUniforms.count > 4096 { return nil }
-        let outputDescriptor = MTLTextureDescriptor.texture2DDescriptor(
-            pixelFormat: .rgba8Unorm, width: width, height: height, mipmapped: false)
-        outputDescriptor.usage = [.renderTarget, .shaderRead]
-        outputDescriptor.storageMode = .shared
-        guard let output = device.makeTexture(descriptor: outputDescriptor),
-              let commandBuffer = queue.makeCommandBuffer() else { return nil }
+    /// Map a WE FBO format token to a Metal pixel format. Intermediate blur/glow buffers are usually the
+    /// backbuffer's rgba8; HDR bloom uses 16-bit float so bright values survive accumulation.
+    public static func pixelFormat(for weFormat: String) -> MTLPixelFormat {
+        switch weFormat {
+        case "rgb161616f", "rgba16f", "rgba16161616f": return .rgba16Float
+        case "r8": return .r8Unorm
+        case "rg88": return .rg8Unorm
+        default: return .rgba8Unorm   // rgba_backbuffer, rgba8888
+        }
+    }
+
+    /// A render-target texture of the given size and format (shader-readable, so a later pass can sample it).
+    public func makeTarget(width: Int, height: Int, pixelFormat: MTLPixelFormat = .rgba8Unorm) -> MTLTexture? {
+        let descriptor = MTLTextureDescriptor.texture2DDescriptor(
+            pixelFormat: pixelFormat, width: max(1, width), height: max(1, height), mipmapped: false)
+        descriptor.usage = [.renderTarget, .shaderRead]
+        descriptor.storageMode = .shared
+        return device.makeTexture(descriptor: descriptor)
+    }
+
+    /// Run one effect pass into `output`: bind each `(index, texture)` to both stages at its sampler slot,
+    /// feed the stage uniform buffers, and draw — the tessellated grid through the effect's own vertex when
+    /// `hasVertex`, else the fixed full-screen quad. Returns false on a uniform overflow or GPU fault.
+    public func renderPass(pipeline: MTLRenderPipelineState, hasVertex: Bool,
+                           inputs: [(index: Int, texture: MTLTexture)],
+                           vertexUniforms: Data? = nil, fragmentUniforms: Data? = nil,
+                           into output: MTLTexture) -> Bool {
+        // setVertexBytes/setFragmentBytes are capped at 4 KB; a crafted effect with a huge uniform block
+        // would abort the render, so drop the pass instead (the layer still composites without it).
+        if let fragmentUniforms, fragmentUniforms.count > 4096 { return false }
+        if let vertexUniforms, vertexUniforms.count > 4096 { return false }
+        guard let commandBuffer = queue.makeCommandBuffer() else { return false }
 
         let pass = MTLRenderPassDescriptor()
         pass.colorAttachments[0].texture = output
@@ -152,79 +172,58 @@ public final class EffectRenderer {
         pass.colorAttachments[0].storeAction = .store
         pass.colorAttachments[0].clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 0)
 
-        guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: pass) else { return nil }
+        guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: pass) else { return false }
         encoder.setRenderPipelineState(pipeline)
-        encoder.setVertexBuffer(gridVertexBuffer, offset: 0, index: Self.gridBufferIndex)
+        if hasVertex { encoder.setVertexBuffer(gridVertexBuffer, offset: 0, index: Self.gridBufferIndex) }
         if let vertexUniforms, !vertexUniforms.isEmpty {
             vertexUniforms.withUnsafeBytes { raw in
                 if let base = raw.baseAddress { encoder.setVertexBytes(base, length: vertexUniforms.count, index: 0) }
             }
         }
-        // Bind the textures/sampler to both stages — a vertex displacement map is sampled in the vertex
-        // stage, the colour in the fragment; binding to a stage that doesn't declare them is harmless.
-        encoder.setVertexTexture(input, index: 0)
-        encoder.setVertexSamplerState(sampler, index: 0)
-        encoder.setFragmentTexture(input, index: 0)
-        encoder.setFragmentSamplerState(sampler, index: 0)
-        for (offset, texture) in auxTextures.enumerated() {
-            encoder.setVertexTexture(texture, index: offset + 1)
-            encoder.setVertexSamplerState(sampler, index: offset + 1)
-            encoder.setFragmentTexture(texture, index: offset + 1)
-            encoder.setFragmentSamplerState(sampler, index: offset + 1)
+        // Bind to both stages — a displacement/flow map is sampled in the vertex, colour in the fragment;
+        // binding to a stage that doesn't declare the sampler is harmless.
+        for (index, texture) in inputs {
+            encoder.setVertexTexture(texture, index: index)
+            encoder.setVertexSamplerState(sampler, index: index)
+            encoder.setFragmentTexture(texture, index: index)
+            encoder.setFragmentSamplerState(sampler, index: index)
         }
         if let fragmentUniforms, !fragmentUniforms.isEmpty {
             fragmentUniforms.withUnsafeBytes { raw in
                 if let base = raw.baseAddress { encoder.setFragmentBytes(base, length: fragmentUniforms.count, index: 0) }
             }
         }
-        encoder.drawIndexedPrimitives(type: .triangle, indexCount: gridIndexCount,
-                                      indexType: .uint32, indexBuffer: gridIndexBuffer, indexBufferOffset: 0)
+        if hasVertex {
+            encoder.drawIndexedPrimitives(type: .triangle, indexCount: gridIndexCount,
+                                          indexType: .uint32, indexBuffer: gridIndexBuffer, indexBufferOffset: 0)
+        } else {
+            encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
+        }
         encoder.endEncoding()
         commandBuffer.commit()
         commandBuffer.waitUntilCompleted()
-        if commandBuffer.error != nil { return nil }
-        return output
+        return commandBuffer.error == nil   // a GPU fault leaves the target undefined — fail cleanly
     }
 
-    /// Render `input` through the effect `pipeline` into a new texture: `input` binds as g_Texture0,
-    /// `auxTextures` as g_Texture1…, and `fragmentUniforms` (if any) as the fragment uniform buffer.
+    /// Render `input` through an own-vertex effect `pipeline` into a fresh full-size texture: `input` binds
+    /// as g_Texture0, `auxTextures` as g_Texture1…, drawing the grid through the effect's vertex stage.
+    public func applyVertexEffect(pipeline: MTLRenderPipelineState, to input: MTLTexture, auxTextures: [MTLTexture] = [],
+                                  vertexUniforms: Data? = nil, fragmentUniforms: Data? = nil,
+                                  width: Int, height: Int) -> MTLTexture? {
+        guard let output = makeTarget(width: width, height: height) else { return nil }
+        let inputs = [(index: 0, texture: input)] + auxTextures.enumerated().map { (index: $0.offset + 1, texture: $0.element) }
+        return renderPass(pipeline: pipeline, hasVertex: true, inputs: inputs,
+                          vertexUniforms: vertexUniforms, fragmentUniforms: fragmentUniforms, into: output) ? output : nil
+    }
+
+    /// Render `input` through a fragment-only effect `pipeline` (fixed full-screen vertex) into a fresh
+    /// texture: `input` binds as g_Texture0, `auxTextures` as g_Texture1…
     public func apply(pipeline: MTLRenderPipelineState, to input: MTLTexture, auxTextures: [MTLTexture] = [],
                       fragmentUniforms: Data? = nil, width: Int, height: Int) -> MTLTexture? {
-        // setFragmentBytes is capped at 4 KB; a crafted effect with a huge uniform block would abort the
-        // render, so drop the pass instead (the layer still composites without the effect).
-        if let fragmentUniforms, fragmentUniforms.count > 4096 { return nil }
-        let outputDescriptor = MTLTextureDescriptor.texture2DDescriptor(
-            pixelFormat: .rgba8Unorm, width: width, height: height, mipmapped: false)
-        outputDescriptor.usage = [.renderTarget, .shaderRead]
-        outputDescriptor.storageMode = .shared
-        guard let output = device.makeTexture(descriptor: outputDescriptor),
-              let commandBuffer = queue.makeCommandBuffer() else { return nil }
-
-        let pass = MTLRenderPassDescriptor()
-        pass.colorAttachments[0].texture = output
-        pass.colorAttachments[0].loadAction = .clear
-        pass.colorAttachments[0].storeAction = .store
-        pass.colorAttachments[0].clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 0)
-
-        guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: pass) else { return nil }
-        encoder.setRenderPipelineState(pipeline)
-        encoder.setFragmentTexture(input, index: 0)
-        encoder.setFragmentSamplerState(sampler, index: 0)
-        for (offset, texture) in auxTextures.enumerated() {
-            encoder.setFragmentTexture(texture, index: offset + 1)
-            encoder.setFragmentSamplerState(sampler, index: offset + 1)
-        }
-        if let fragmentUniforms, !fragmentUniforms.isEmpty {
-            fragmentUniforms.withUnsafeBytes { raw in
-                if let base = raw.baseAddress { encoder.setFragmentBytes(base, length: fragmentUniforms.count, index: 0) }
-            }
-        }
-        encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
-        encoder.endEncoding()
-        commandBuffer.commit()
-        commandBuffer.waitUntilCompleted()
-        if commandBuffer.error != nil { return nil }   // a GPU fault leaves the target undefined — fail cleanly
-        return output
+        guard let output = makeTarget(width: width, height: height) else { return nil }
+        let inputs = [(index: 0, texture: input)] + auxTextures.enumerated().map { (index: $0.offset + 1, texture: $0.element) }
+        return renderPass(pipeline: pipeline, hasVertex: false, inputs: inputs,
+                          fragmentUniforms: fragmentUniforms, into: output) ? output : nil
     }
 
     /// Apply a parsed `LayerEffect` to `input`: read its fragment shader from `package`, transpile it,

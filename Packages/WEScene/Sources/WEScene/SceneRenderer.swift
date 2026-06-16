@@ -52,17 +52,31 @@ private struct PreparedParticles {
     let instanceBuffer: MTLBuffer   // sized for `count` instances, refilled each frame (not reallocated)
 }
 
-/// A layer's effect compiled once: the pass plus the data to re-pack its uniforms each frame (so a
-/// time-varying effect like pulse animates without re-transpiling the shader). When `hasVertex` is true
-/// the effect runs over the grid with its own vertex stage, and `vertexScalars` packs that stage's
-/// uniforms; otherwise it's a fragment-only pass over the fixed full-screen vertex.
-private struct PreparedEffect {
+/// How a pass's sampler slot gets its texture each frame: the effect's input ("previous"), a named
+/// intermediate buffer, or a fixed aux texture (noise/mask) resolved once at prepare time.
+private enum EffectInput {
+    case previous
+    case buffer(String)
+    case aux(MTLTexture)
+}
+
+/// One compiled pass of an effect: the pipeline, whether it runs its own vertex over the grid, the uniform
+/// layouts to re-pack each frame, the named target it writes (nil = the effect output), and, per declared
+/// sampler, the WE g_Texture<n> number it is plus where its texture comes from.
+private struct PreparedPass {
     let pipeline: MTLRenderPipelineState
-    let hasVertex: Bool                // pipeline pairs the effect's own vertex (grid draw) vs the fixed one
-    let scalars: [ShaderUniform]      // fragment non-sampler uniforms, in declaration order, for packing
+    let hasVertex: Bool
+    let scalars: [ShaderUniform]       // fragment non-sampler uniforms, declaration order
     let vertexScalars: [ShaderUniform] // vertex non-sampler uniforms (empty when !hasVertex)
-    let constants: [String: String]   // the effect's constant values, keyed by material annotation
-    let auxTextures: [MTLTexture]      // samplers after g_Texture0 (noise/normal/mask), in binding order
+    let constants: [String: String]
+    let target: String?                // named FBO it renders into; nil = the effect's full-size output
+    let samplers: [(slot: Int, number: Int, input: EffectInput)]   // slot = bind index; number = g_Texture<number>
+}
+
+/// A layer's effect compiled once: its pass graph and the intermediate buffers the passes wire together.
+private struct PreparedEffect {
+    let passes: [PreparedPass]
+    let fbos: [EffectFBO]
 }
 
 /// One layer of a `PreparedScene`: an uploaded texture plus its resolution-independent placement.
@@ -525,91 +539,135 @@ public final class SceneRenderer {
     }
 
     /// Built-in uniform values the renderer supplies to every effect stage: the animation clock, an
-    /// identity model-view-projection (the effect quad already spans NDC), and each sampler's resolution
-    /// as (w, h, w, h) — the render targets are exact-size, so the padded-atlas ratio the shaders derive
-    /// from `.zw / .xy` is 1.
-    private static func effectOverrides(time: Float, width: Int, height: Int) -> [String: [Float]] {
-        let w = Float(width), h = Float(height)
+    /// identity model-view-projection (the effect quad already spans NDC), and each bound sampler's
+    /// resolution as (w, h, w, h) — the render targets are exact-size, so the padded-atlas ratio the
+    /// shaders derive from `.zw / .xy` is 1, and a downsample/blur sees its INPUT's real size.
+    private static func effectOverrides(time: Float, resolutions: [Int: SIMD2<Int>]) -> [String: [Float]] {
         var overrides: [String: [Float]] = [
             "g_Time": [time],
             "g_ModelViewProjectionMatrix": [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1],
         ]
-        for n in 0 ... 7 { overrides["g_Texture\(n)Resolution"] = [w, h, w, h] }
+        for (number, size) in resolutions {
+            let w = Float(size.x), h = Float(size.y)
+            overrides["g_Texture\(number)Resolution"] = [w, h, w, h]
+        }
         return overrides
     }
 
-    /// Run one prepared effect over `input` at `time`, packing the stage uniforms fresh (so a time-varying
-    /// effect animates). Own-vertex effects draw the grid through their vertex stage; fragment-only effects
-    /// take the fixed full-screen vertex.
+    /// Run one prepared effect over `input` at `time`, executing its pass graph: allocate the named
+    /// intermediate buffers at their scaled size, run each pass (binding `previous`/buffers/aux per slot,
+    /// packing the stage uniforms fresh so it animates) into its target, and return the final full-size
+    /// output. A separable blur is x→buffer→y→output; a downsample chain ping-pongs the quarter buffers.
     private func applyEffect(_ effect: PreparedEffect, to input: MTLTexture, time: Float,
                              width: Int, height: Int) -> MTLTexture? {
         guard let effectRenderer else { return nil }
-        let overrides = Self.effectOverrides(time: time, width: width, height: height)
-        let fragmentUniforms = UniformPacker.pack(effect.scalars, values: effect.constants, overrides: overrides)
-        if effect.hasVertex {
-            let vertexUniforms = UniformPacker.pack(effect.vertexScalars, values: effect.constants, overrides: overrides)
-            return effectRenderer.applyVertexEffect(pipeline: effect.pipeline, to: input, auxTextures: effect.auxTextures,
-                                                    vertexUniforms: vertexUniforms.isEmpty ? nil : vertexUniforms,
-                                                    fragmentUniforms: fragmentUniforms.isEmpty ? nil : fragmentUniforms,
-                                                    width: width, height: height)
+        var buffers: [String: MTLTexture] = [:]
+        for fbo in effect.fbos {
+            let scale = max(1, fbo.scale)
+            guard let target = effectRenderer.makeTarget(width: width / scale, height: height / scale,
+                                                         pixelFormat: EffectRenderer.pixelFormat(for: fbo.format)) else { return nil }
+            buffers[fbo.name] = target
         }
-        return effectRenderer.apply(pipeline: effect.pipeline, to: input, auxTextures: effect.auxTextures,
-                                    fragmentUniforms: fragmentUniforms.isEmpty ? nil : fragmentUniforms,
-                                    width: width, height: height)
+        var result = input
+        for pass in effect.passes {
+            var inputs: [(index: Int, texture: MTLTexture)] = []
+            var resolutions: [Int: SIMD2<Int>] = [:]
+            for sampler in pass.samplers {
+                let texture: MTLTexture
+                switch sampler.input {
+                case .previous: texture = input
+                case .buffer(let name): texture = buffers[name] ?? whiteTexture
+                case .aux(let aux): texture = aux
+                }
+                inputs.append((index: sampler.slot, texture: texture))
+                resolutions[sampler.number] = SIMD2(texture.width, texture.height)
+            }
+            let overrides = Self.effectOverrides(time: time, resolutions: resolutions)
+            let fragmentUniforms = UniformPacker.pack(pass.scalars, values: pass.constants, overrides: overrides)
+            let vertexUniforms = pass.hasVertex ? UniformPacker.pack(pass.vertexScalars, values: pass.constants, overrides: overrides) : Data()
+
+            let output: MTLTexture
+            if let target = pass.target, let buffer = buffers[target] { output = buffer }
+            else if let made = effectRenderer.makeTarget(width: width, height: height) { output = made }
+            else { return nil }
+
+            guard effectRenderer.renderPass(pipeline: pass.pipeline, hasVertex: pass.hasVertex, inputs: inputs,
+                                            vertexUniforms: vertexUniforms.isEmpty ? nil : vertexUniforms,
+                                            fragmentUniforms: fragmentUniforms.isEmpty ? nil : fragmentUniforms,
+                                            into: output) else { return nil }
+            if pass.target == nil { result = output }   // a full-size output pass advances the effect result
+        }
+        return result
     }
 
-    /// Compile a layer's effects and keep only the ones that actually contribute. Each effect is paired
-    /// with its own transpiled vertex shader where it ships one (so rotation/shake/scroll/blur-tap effects
-    /// link and their vertex work runs), falling back to a fixed full-screen vertex for fragment-only
-    /// effects; effects that fail to build are dropped. Then the chain is dry-run at low resolution and any
-    /// pass that blanks the layer (an effect this renderer still can't do — multi-pass blur, mesh
-    /// displacement past the grid) is skipped, so it degrades gracefully instead of going transparent.
+    /// Compile a layer's effects and keep only the ones that actually contribute. Each pass is paired with
+    /// its own transpiled vertex shader where it ships one (so rotation/shake/scroll and the blur-tap
+    /// offsets link and run), falling back to a fixed full-screen vertex for fragment-only passes; an effect
+    /// whose graph can't be fully built is dropped. Then the chain is dry-run at low resolution and any
+    /// effect that blanks the layer is skipped, so it degrades gracefully instead of going transparent.
     private func prepareEffects(_ effects: [LayerEffect], package: ScenePackage, base: MTLTexture,
                                 center: SIMD2<Float>, halfExtent: SIMD2<Float>, uvScale: SIMD2<Float>,
                                 tint: SIMD3<Float>) -> [PreparedEffect] {
         guard let effectRenderer, !effects.isEmpty else { return [] }
         var compiled: [PreparedEffect] = []
         for effect in effects {
-            guard let entry = package.entry(named: effect.fragmentShaderPath) else { continue }
-            let source = String(decoding: entry.data, as: UTF8.self)
+            var preparedPasses: [PreparedPass] = []
+            var graphOK = true
+            for pass in effect.passes {
+                guard let fragmentEntry = package.entry(named: pass.fragmentShaderPath) else { graphOK = false; break }
+                let fragmentSource = String(decoding: fragmentEntry.data, as: UTF8.self)
+                // The pass renders into its target FBO (so the pipeline's colour format must match it), or
+                // the full-size rgba8 effect output for the final, target-less pass.
+                let outputFormat: MTLPixelFormat = pass.target
+                    .flatMap { name in effect.fbos.first { $0.name == name } }
+                    .map { EffectRenderer.pixelFormat(for: $0.format) } ?? .rgba8Unorm
 
-            // Prefer the effect's own vertex stage (its varyings/displacement); fall back to the fixed
-            // full-screen vertex for a fragment-only effect or one whose vertex won't pair.
-            var pipeline: MTLRenderPipelineState?
-            var hasVertex = false
-            var vertexScalars: [ShaderUniform] = []
-            if let vertexEntry = package.entry(named: effect.vertexShaderPath) {
-                let vertexSource = String(decoding: vertexEntry.data, as: UTF8.self)
-                if let made = effectRenderer.makeVertexPipeline(vertexShader: vertexSource, fragmentShader: source, combos: effect.combos) {
-                    pipeline = made
-                    hasVertex = true
-                    let vertexResolved = ShaderPreprocessor.resolve(vertexSource,
-                        combos: ShaderPreprocessor.comboDefaults(vertexSource).merging(effect.combos) { _, b in b })
-                    vertexScalars = ShaderUniforms.parse(vertexResolved).filter { !$0.type.hasPrefix("sampler") }
+                var pipeline: MTLRenderPipelineState?
+                var hasVertex = false
+                var vertexScalars: [ShaderUniform] = []
+                if let vertexEntry = package.entry(named: pass.vertexShaderPath) {
+                    let vertexSource = String(decoding: vertexEntry.data, as: UTF8.self)
+                    if let made = effectRenderer.makeVertexPipeline(vertexShader: vertexSource, fragmentShader: fragmentSource,
+                                                                    combos: pass.combos, pixelFormat: outputFormat) {
+                        pipeline = made
+                        hasVertex = true
+                        let vertexResolved = ShaderPreprocessor.resolve(vertexSource,
+                            combos: ShaderPreprocessor.comboDefaults(vertexSource).merging(pass.combos) { _, b in b })
+                        vertexScalars = ShaderUniforms.parse(vertexResolved).filter { !$0.type.hasPrefix("sampler") }
+                    }
                 }
-            }
-            if pipeline == nil { pipeline = effectRenderer.makePipeline(fragmentShader: source, combos: effect.combos) }
-            guard let pipeline else { continue }
+                if pipeline == nil { pipeline = effectRenderer.makePipeline(fragmentShader: fragmentSource, combos: pass.combos, pixelFormat: outputFormat) }
+                guard let pipeline else { graphOK = false; break }
 
-            let resolved = ShaderPreprocessor.resolve(source,
-                combos: ShaderPreprocessor.comboDefaults(source).merging(effect.combos) { _, b in b })
-            let uniforms = ShaderUniforms.parse(resolved)
-            // Resolve each aux sampler (everything after g_Texture0) to a real texture. The source index
-            // comes from the name (g_TextureN) so combo-excluded samplers don't shift the binding; the
-            // name is taken from the material's binding, else the sampler's annotated default.
-            let samplers = uniforms.filter { $0.type.hasPrefix("sampler") }
-            let auxTextures: [MTLTexture] = samplers.dropFirst().map { sampler in
-                let index = Int(sampler.name.dropFirst("g_Texture".count)) ?? -1
-                let bound = (index >= 0 && index < effect.textures.count) ? effect.textures[index] : nil
-                return resolveAuxTexture(bound ?? sampler.defaultValue, package: package)
+                let resolved = ShaderPreprocessor.resolve(fragmentSource,
+                    combos: ShaderPreprocessor.comboDefaults(fragmentSource).merging(pass.combos) { _, b in b })
+                let uniforms = ShaderUniforms.parse(resolved)
+                // Each declared sampler binds at its enumeration slot; its WE g_Texture<number> decides
+                // whether it reads `previous` (the effect input, the implicit default for number 0), a named
+                // buffer, or a resolved aux texture (noise/normal/mask) for the rest.
+                let samplerUniforms = uniforms.filter { $0.type.hasPrefix("sampler") }
+                var samplers: [(slot: Int, number: Int, input: EffectInput)] = []
+                for (slot, sampler) in samplerUniforms.enumerated() {
+                    let number = Int(sampler.name.dropFirst("g_Texture".count)) ?? slot
+                    let resolvedInput: EffectInput
+                    if let bind = pass.binds.first(where: { $0.index == number }) {
+                        resolvedInput = bind.name == "previous" ? .previous : .buffer(bind.name)
+                    } else if number == 0 {
+                        resolvedInput = .previous
+                    } else {
+                        let bound = (number >= 0 && number < pass.textures.count) ? pass.textures[number] : nil
+                        resolvedInput = .aux(resolveAuxTexture(bound ?? sampler.defaultValue, package: package))
+                    }
+                    samplers.append((slot: slot, number: number, input: resolvedInput))
+                }
+                preparedPasses.append(PreparedPass(
+                    pipeline: pipeline, hasVertex: hasVertex,
+                    scalars: uniforms.filter { !$0.type.hasPrefix("sampler") },
+                    vertexScalars: vertexScalars, constants: effect.constants,
+                    target: pass.target, samplers: samplers))
             }
-            compiled.append(PreparedEffect(
-                pipeline: pipeline,
-                hasVertex: hasVertex,
-                scalars: uniforms.filter { !$0.type.hasPrefix("sampler") },
-                vertexScalars: vertexScalars,
-                constants: effect.constants,
-                auxTextures: auxTextures))
+            guard graphOK, !preparedPasses.isEmpty else { continue }
+            compiled.append(PreparedEffect(passes: preparedPasses, fbos: effect.fbos))
         }
         guard !compiled.isEmpty else { return [] }
 
