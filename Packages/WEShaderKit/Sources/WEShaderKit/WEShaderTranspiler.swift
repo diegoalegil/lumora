@@ -641,7 +641,8 @@ public enum WEShaderTranspiler {
     /// parens so nested calls in the uv/lod arguments survive.
     private static func rewriteTexLod(_ source: String) -> String {
         var s = source
-        while let call = s.range(of: "texSample2DLod(") {
+        var searchFrom = s.startIndex   // resume past each rewrite; rescanning from the start is O(N²)
+        while let call = s.range(of: "texSample2DLod(", range: searchFrom ..< s.endIndex) {
             var depth = 1, i = call.upperBound, start = call.upperBound
             var args: [Substring] = []
             var close: String.Index?
@@ -657,7 +658,9 @@ public enum WEShaderTranspiler {
             }
             guard let closeIndex = close, args.count == 3 else { break }   // malformed — leave it
             let a = args.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            let resumeOffset = s.distance(from: s.startIndex, to: call.lowerBound)
             s.replaceSubrange(call.lowerBound...closeIndex, with: "\(a[0]).sample(\(a[0])_smp, \(a[1]), level(\(a[2])))")
+            searchFrom = s.index(s.startIndex, offsetBy: resumeOffset)   // a nested call in the args is still reached
         }
         return s
     }
@@ -690,8 +693,9 @@ public enum WEShaderTranspiler {
             guard let commaIndex = comma, let closeIndex = close else { break }   // malformed — leave it
             let a = s[call.upperBound..<commaIndex].trimmingCharacters(in: .whitespacesAndNewlines)
             let b = s[s.index(after: commaIndex)..<closeIndex].trimmingCharacters(in: .whitespacesAndNewlines)
+            let resumeOffset = s.distance(from: s.startIndex, to: call.lowerBound)
             s.replaceSubrange(call.lowerBound...closeIndex, with: "((\(a)) * (\(b)))")
-            searchFrom = s.startIndex   // the string shifted; rescan (skipping any leading premul again)
+            searchFrom = s.index(s.startIndex, offsetBy: resumeOffset)   // resume at the replacement; a nested mul inside it is still reached, without an O(N²) rescan
         }
         return s
     }

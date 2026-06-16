@@ -622,6 +622,30 @@ if let device = MTLCreateSystemDefaultDevice() {
     }
 }
 
+// rewriteMul and rewriteTexLod resume past each rewrite (linear time); a nested mul and a texSample2DLod
+// must still be fully rewritten (none left), and the result must compile.
+let nestedMulShader = """
+varying vec4 v_TexCoord;
+uniform sampler2D g_Texture0;
+uniform mat3 g_M;
+void main() {
+    vec3 p = mul(mul(g_M, vec3(v_TexCoord.xy, 1.0)), g_M);
+    gl_FragColor = texSample2DLod(g_Texture0, p.xy, 0.0);
+}
+"""
+let nestedMulMSL = WEShaderTranspiler.fragmentToMSL(nestedMulShader)
+Check.that("a nested mul is fully rewritten", !nestedMulMSL.contains("mul("))
+Check.that("texSample2DLod is rewritten to a sample call", !nestedMulMSL.contains("texSample2DLod("))
+if let device = MTLCreateSystemDefaultDevice() {
+    do {
+        _ = try device.makeLibrary(source: nestedMulMSL, options: nil)
+        Check.that("a shader with nested mul and texSample2DLod compiles", true)
+    } catch {
+        print("──── MSL ────\n\(nestedMulMSL)\n─────────────")
+        Check.that("a shader with nested mul and texSample2DLod compiles", false)
+    }
+}
+
 Check.section("ShaderPreprocessor")
 let conditional = "a\n#if MASK == 1\nb\n#else\nc\n#endif\nd"
 Check.that("keeps the active #if branch", ShaderPreprocessor.resolve(conditional, combos: ["MASK": 1]) == "a\nb\nd")
