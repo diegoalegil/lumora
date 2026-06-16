@@ -708,6 +708,13 @@ Check.that("a function macro drops a trailing comment from its body",
 // A reduplicating macro must not amplify memory without bound on crafted (untrusted) shader input.
 let macroBomb = ShaderPreprocessor.resolve("#define A(x) x x\n#define B(x) A(A(x))\n#define C(x) B(B(x))\n#define D(x) C(C(x))\nv = D(D(D(z)));", combos: [:])
 Check.that("a reduplicating macro expansion stays bounded", macroBomb.utf8.count < 5_000_000)
+// An object-like doubling macro amplifies WITHIN a single pass (the inner replace loop), so that loop must
+// be size-bounded too, not only the outer pass loop.
+let objectBomb = ShaderPreprocessor.resolve("#define X X X\nv = X;", combos: [:])
+Check.that("an object-macro reduplication stays bounded", objectBomb.utf8.count < 5_000_000)
+// An out-of-range numeric default in a uniform's JSON annotation must not trap String(Int(_:)).
+let bigDefault = ShaderUniforms.parse("uniform float g_X; // {\"default\":1e20}")
+Check.that("an out-of-range numeric default parses without trapping", bigDefault.first?.defaultValue != nil)
 let crlfShader = "varying vec4 v_TexCoord;\r\nuniform sampler2D g_Texture0;\r\nvoid main() {\r\n    gl_FragColor = texSample2D(g_Texture0, v_TexCoord.xy);\r\n}\r\n"
 Check.that("a CRLF shader transpiles to a non-empty body",
            WEShaderTranspiler.fragmentToMSL(crlfShader).contains("g_Texture0.sample("))

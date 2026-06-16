@@ -110,6 +110,11 @@ public enum ShaderPreprocessor {
         return (name, params, body)
     }
 
+    /// Past this expanded size a macro expansion is treated as a crafted reduplication bomb and stopped.
+    /// Checked at every level that can amplify text (the pass loop AND the inner replace loops), since a
+    /// single pass of a doubling macro (`#define X X X`) can blow past it on its own.
+    static let maxExpansionBytes = 1_000_000
+
     /// Expand macros in `text` to a fixed point: function-like calls first (so an injected name can itself
     /// be an object macro), then object-like substitution. Bounded so a self-referential macro can't loop.
     private static func expandMacros(_ text: String, _ macros: [(name: String, value: String)],
@@ -123,10 +128,7 @@ public enum ShaderPreprocessor {
             }
             let substituted = substitute(out, macros)
             if substituted != out { out = substituted; changed = true }
-            // The 8-iteration cap bounds passes, not per-pass text growth: a reduplicating macro
-            // (`#define D(x) x x`, nested) can amplify the text exponentially within those passes. A
-            // shader is untrusted, so stop once the expansion is implausibly large.
-            if !changed || out.utf8.count > 1_000_000 { break }
+            if !changed || out.utf8.count > maxExpansionBytes { break }
         }
         return out
     }
@@ -157,6 +159,7 @@ public enum ShaderPreprocessor {
                 let expansion = "(\(body))"
                 s.replaceSubrange(r.lowerBound...close, with: expansion)
                 from = s.index(r.lowerBound, offsetBy: expansion.count)
+                if s.utf8.count > maxExpansionBytes { return s }   // a reduplicating function macro bomb
             }
         }
         return s
@@ -208,6 +211,7 @@ public enum ShaderPreprocessor {
                                                           withTemplate: NSRegularExpression.escapedTemplate(for: replacement))
             if replaced == out { break }
             out = replaced
+            if out.utf8.count > maxExpansionBytes { break }   // a doubling macro (`#define X X X`) bomb
         }
         return out
     }

@@ -66,6 +66,9 @@ public enum ShaderUniforms {
     }
 
     private static func trimmed(_ value: Double) -> String {
-        value == value.rounded() ? String(Int(value)) : String(value)
+        // `Int(value)` traps on a value past Int.max or a non-finite one; an untrusted .pkg can put either
+        // in a uniform's JSON default (e.g. `"default":1e20`). Only take the integer spelling when it fits.
+        if value == value.rounded(), let exact = Int(exactly: value) { return String(exact) }
+        return String(value)
     }
 }
