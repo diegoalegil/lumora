@@ -312,20 +312,43 @@ public enum WEShaderTranspiler {
         text.contains("g_") || text.contains("u_") || text.contains("texSample") || text.contains("gl_")
     }
 
-    /// Names of file-scope `const`s whose initializer reads a uniform/global (e.g. a transition shader's
+    /// The declared name in a `const <type> <name>[…] = …` statement — the leading identifier of the
+    /// second token, dropping any `[N]` array suffix (so `const float arr[2] = …` yields `arr`, not
+    /// `arr[2]`). "" if it can't be parsed.
+    private static func constName(of trimmed: String) -> String {
+        let tokens = trimmed.dropFirst("const ".count).split(whereSeparator: { $0 == " " || $0 == "\t" || $0 == "=" })
+        guard let nameToken = tokens.dropFirst().first else { return "" }
+        return String(nameToken.prefix(while: { $0.isLetter || $0.isNumber || $0 == "_" }))
+    }
+
+    /// Names of file-scope `const`s that are uniform-derived (e.g. a transition shader's
     /// `const float FEATHER = u_Feather * 0.5;`). MSL's `constant` address space needs a compile-time
     /// constant and can't see the uniform buffer, so these are emitted as qualified main-locals by
-    /// `globalConstLocals` rather than at file scope.
+    /// `globalConstLocals` rather than at file scope. The set is closed transitively: a const whose
+    /// initializer reads a uniform/global is derived, and so is one that references an already-derived
+    /// const (`const AB = A * 3.0;` where `A` is itself a main-local) — emitting that at file scope would
+    /// reference a name that only exists inside main.
     private static func uniformDerivedConstNames(of source: String) -> Set<String> {
         let cleaned = stripDirectivesAndComments(source)
-        var names: Set<String> = []
+        var consts: [(name: String, text: String)] = []
         for statement in topLevelStatements(cleaned) {
             let trimmed = statement.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard trimmed.hasPrefix("const "), referencesGlobals(trimmed) else { continue }
-            let tokens = trimmed.dropFirst("const ".count).split(whereSeparator: { $0 == " " || $0 == "\t" || $0 == "=" })
-            if tokens.count >= 2 { names.insert(String(tokens[1])) }   // const <type> <name> = …
+            guard trimmed.hasPrefix("const ") else { continue }
+            let name = constName(of: trimmed)
+            if !name.isEmpty { consts.append((name, trimmed)) }
         }
-        return names
+        var derived = Set<String>()
+        var changed = true
+        while changed {
+            changed = false
+            for c in consts where !derived.contains(c.name) {
+                let refsDerived = derived.contains { d in
+                    c.text.range(of: "(?<![\\w.])\(NSRegularExpression.escapedPattern(for: d))(?![\\w])", options: .regularExpression) != nil
+                }
+                if referencesGlobals(c.text) || refsDerived { derived.insert(c.name); changed = true }
+            }
+        }
+        return derived
     }
 
     /// The shader source with `#` directives and comments stripped — the form the block/helper scanners
@@ -359,10 +382,11 @@ public enum WEShaderTranspiler {
     private static func globalConstants(of source: String) -> String {
         let cleaned = stripLineComments(stripBlockComments(source)).split(separator: "\n", omittingEmptySubsequences: false)
             .filter { !$0.trimmingCharacters(in: .whitespaces).hasPrefix("#") }.joined(separator: "\n")
+        let derived = uniformDerivedConstNames(of: source)
         var out = ""
         for statement in topLevelStatements(cleaned) {
             let trimmed = statement.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard trimmed.hasPrefix("const "), !referencesGlobals(trimmed) else { continue }
+            guard trimmed.hasPrefix("const "), !derived.contains(constName(of: trimmed)) else { continue }
             out += "constant " + rewriteTypes(rewriteIntrinsics(String(trimmed.dropFirst("const ".count)))) + ";\n"
         }
         return out
@@ -375,10 +399,11 @@ public enum WEShaderTranspiler {
     private static func globalConstLocals(of source: String, applying qualifiers: [(String, String)]) -> String {
         let cleaned = stripLineComments(stripBlockComments(source)).split(separator: "\n", omittingEmptySubsequences: false)
             .filter { !$0.trimmingCharacters(in: .whitespaces).hasPrefix("#") }.joined(separator: "\n")
+        let derived = uniformDerivedConstNames(of: source)
         var out = ""
         for statement in topLevelStatements(cleaned) {
             let trimmed = statement.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard trimmed.hasPrefix("const "), referencesGlobals(trimmed) else { continue }
+            guard trimmed.hasPrefix("const "), derived.contains(constName(of: trimmed)) else { continue }
             var decl = rewriteTypes(rewriteIntrinsics(String(trimmed.dropFirst("const ".count))))
             for (name, replacement) in qualifiers { decl = qualify(decl, name: name, with: replacement) }
             out += "    \(decl);\n"

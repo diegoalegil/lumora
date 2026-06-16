@@ -594,6 +594,34 @@ if let device = MTLCreateSystemDefaultDevice() {
     }
 }
 
+// A uniform-derived const can feed ANOTHER const (transitive) and can be an array; both must be hoisted
+// into main, not emitted in the `constant` address space where the uniform / main-local isn't visible.
+let chainedConstShader = """
+varying vec4 v_TexCoord;
+uniform sampler2D g_Texture0;
+uniform float u_Feather;
+const float A = u_Feather * 2.0;
+const float AB = A * 3.0;
+const float arr[2] = float[2](u_Feather, 2.0);
+float useArr(float t) { return arr[0] * t; }
+void main() {
+    gl_FragColor = texSample2D(g_Texture0, v_TexCoord.xy) * (A + AB + useArr(u_Feather));
+}
+"""
+let chainedConstMSL = WEShaderTranspiler.fragmentToMSL(chainedConstShader)
+Check.that("a transitively uniform-derived const is hoisted into main", chainedConstMSL.contains("float AB = A * 3.0;"))
+Check.that("a transitive uniform-derived const is not emitted at file scope", !chainedConstMSL.contains("constant float AB"))
+Check.that("a uniform-derived const array is hoisted, not left at file scope", !chainedConstMSL.contains("constant float arr"))
+if let device = MTLCreateSystemDefaultDevice() {
+    do {
+        _ = try device.makeLibrary(source: chainedConstMSL, options: nil)
+        Check.that("a shader with chained and array uniform-derived consts compiles", true)
+    } catch {
+        print("──── MSL ────\n\(chainedConstMSL)\n─────────────")
+        Check.that("a shader with chained and array uniform-derived consts compiles", false)
+    }
+}
+
 Check.section("ShaderPreprocessor")
 let conditional = "a\n#if MASK == 1\nb\n#else\nc\n#endif\nd"
 Check.that("keeps the active #if branch", ShaderPreprocessor.resolve(conditional, combos: ["MASK": 1]) == "a\nb\nd")
