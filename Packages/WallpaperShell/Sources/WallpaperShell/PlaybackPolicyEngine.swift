@@ -22,19 +22,28 @@ public struct PlaybackInputs: Sendable, Equatable {
     public var userPaused: Bool
     /// The display is asleep / screensaver active.
     public var displayAsleep: Bool
+    /// The screen is locked or the screensaver is running — visible to no one, so don't render at all.
+    public var screenLocked: Bool
+    /// The Mac is under serious/critical thermal pressure; throttle to shed sustained GPU/CPU load
+    /// (render slower, but keep animating — pausing would freeze the wallpaper whenever the Mac runs warm).
+    public var thermallyThrottled: Bool
 
     public init(isOccluded: Bool = false,
                 desktopCoveredByFullscreenApp: Bool = false,
                 onBattery: Bool = false,
                 lowPowerMode: Bool = false,
                 userPaused: Bool = false,
-                displayAsleep: Bool = false) {
+                displayAsleep: Bool = false,
+                screenLocked: Bool = false,
+                thermallyThrottled: Bool = false) {
         self.isOccluded = isOccluded
         self.desktopCoveredByFullscreenApp = desktopCoveredByFullscreenApp
         self.onBattery = onBattery
         self.lowPowerMode = lowPowerMode
         self.userPaused = userPaused
         self.displayAsleep = displayAsleep
+        self.screenLocked = screenLocked
+        self.thermallyThrottled = thermallyThrottled
     }
 }
 
@@ -61,12 +70,13 @@ public struct PlaybackPolicyEngine: Sendable {
         // Any "not visible" or explicit-pause signal stops rendering entirely.
         if inputs.userPaused
             || inputs.displayAsleep
+            || inputs.screenLocked
             || inputs.isOccluded
             || inputs.desktopCoveredByFullscreenApp {
             return .paused
         }
-        // Otherwise render, throttling on battery / low-power.
-        let fps = (inputs.onBattery || inputs.lowPowerMode) ? policy.batteryFPS : policy.activeFPS
+        // Otherwise render, throttling on battery / low-power / thermal pressure.
+        let fps = (inputs.onBattery || inputs.lowPowerMode || inputs.thermallyThrottled) ? policy.batteryFPS : policy.activeFPS
         return PlaybackDirective(renderingEnabled: true, targetFPS: fps)
     }
 }

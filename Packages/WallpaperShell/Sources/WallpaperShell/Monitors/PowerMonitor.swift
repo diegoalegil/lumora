@@ -11,6 +11,8 @@ public final class PowerMonitor {
     // Touched only on the main thread, but also read by `deinit` (which is nonisolated). The
     // CFRunLoop APIs used on it are thread-safe, so `nonisolated(unsafe)` is sound here.
     private nonisolated(unsafe) var runLoopSource: CFRunLoopSource?
+    // Thermal-change observer; removed by the nonisolated deinit (removeObserver is thread-safe).
+    private nonisolated(unsafe) var thermalToken: (any NSObjectProtocol)?
 
     public init() {}
 
@@ -22,6 +24,7 @@ public final class PowerMonitor {
         if let source = runLoopSource {
             CFRunLoopRemoveSource(CFRunLoopGetMain(), source, .defaultMode)
         }
+        if let token = thermalToken { NotificationCenter.default.removeObserver(token) }
     }
 
     /// True when the providing power source is the internal battery (i.e. not on AC).
@@ -36,7 +39,23 @@ public final class PowerMonitor {
         ProcessInfo.processInfo.isLowPowerModeEnabled
     }
 
+    /// True under serious/critical thermal pressure — the OS is already shedding performance, so a
+    /// background wallpaper should throttle to stop adding sustained load. `.fair` is left alone (it is
+    /// common and benign); only the two pressured states count.
+    public var isThermallyThrottled: Bool {
+        switch ProcessInfo.processInfo.thermalState {
+        case .serious, .critical: return true
+        default: return false
+        }
+    }
+
     public func start() {
+        // Thermal state changes (e.g. the Mac heating up under load) re-evaluate the policy.
+        thermalToken = NotificationCenter.default.addObserver(
+            forName: ProcessInfo.thermalStateDidChangeNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.onChange?() }
+        }
+
         let context = Unmanaged.passUnretained(self).toOpaque()
         let source = IOPSNotificationCreateRunLoopSource({ ctx in
             guard let ctx else { return }
@@ -55,6 +74,10 @@ public final class PowerMonitor {
         if let source = runLoopSource {
             CFRunLoopRemoveSource(CFRunLoopGetMain(), source, .defaultMode)
             runLoopSource = nil
+        }
+        if let token = thermalToken {
+            NotificationCenter.default.removeObserver(token)
+            thermalToken = nil
         }
     }
 }

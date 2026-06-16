@@ -41,7 +41,9 @@ public final class SystemSignalSource: PlaybackSignalSource {
             onBattery: power.isOnBattery,
             lowPowerMode: power.isLowPowerMode,
             userPaused: userPaused,
-            displayAsleep: workspace.isDisplayAsleep
+            displayAsleep: workspace.isDisplayAsleep,
+            screenLocked: workspace.isScreenLocked,
+            thermallyThrottled: power.isThermallyThrottled
         )
     }
 

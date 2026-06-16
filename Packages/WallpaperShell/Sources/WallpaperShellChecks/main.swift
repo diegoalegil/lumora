@@ -40,6 +40,20 @@ Check.that("user-paused paused", !userPaused.renderingEnabled)
 let asleep = engine.directive(for: PlaybackInputs(displayAsleep: true))
 Check.that("display-asleep paused", !asleep.renderingEnabled)
 
+// Screen locked / screensaver running -> paused (nothing is visible).
+let locked = engine.directive(for: PlaybackInputs(screenLocked: true))
+Check.that("screen-locked paused", !locked.renderingEnabled)
+Check.that("screen-locked fps 0", locked.targetFPS == 0)
+
+// Thermal pressure (serious/critical) -> throttled but still rendering (throttle, don't freeze).
+let thermal = engine.directive(for: PlaybackInputs(thermallyThrottled: true))
+Check.that("thermal still renders", thermal.renderingEnabled)
+Check.that("thermal throttled fps", thermal.targetFPS == 30)
+
+// Pause precedence: a "not visible" signal beats a throttle signal.
+let lockedAndThermal = engine.directive(for: PlaybackInputs(screenLocked: true, thermallyThrottled: true))
+Check.that("lock beats thermal -> paused", !lockedAndThermal.renderingEnabled)
+
 // Pause precedence: an occlusion + battery combo still pauses (no render at battery fps).
 let combo = engine.directive(for: PlaybackInputs(isOccluded: true, onBattery: true))
 Check.that("occlusion beats battery -> paused", !combo.renderingEnabled)
