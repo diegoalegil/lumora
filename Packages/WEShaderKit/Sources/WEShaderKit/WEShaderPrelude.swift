@@ -38,9 +38,13 @@ public enum WEShaderPrelude {
 
     /// File-scope MSL definitions inserted after the combo `#define`s, before the shader's structs.
     public static let msl = """
-    // math.h constants WE uses (Metal only predefines the *_F spellings).
+    // Math constants WE's dialect assumes (Metal only predefines the *_F spellings). NB: WE's M_PI_2 is
+    // "two pi" (tau), NOT math.h's π/2 — its shaders use it as a full turn, e.g. sin(frac(t / M_PI_2) *
+    // M_PI_2) is one sine period and (atan2(y, x) + M_PI) / M_PI_2 normalises an angle to [0,1]; godray
+    // fans spread by M_PI_2 * {0.2,0.4,…}. The genuine half-pi is M_PI_HALF.
     constant float M_PI = 3.14159265358979323846;
-    constant float M_PI_2 = 1.57079632679489661923;
+    constant float M_PI_2 = 6.28318530717958647692;     // tau, the value WE's shaders expect (not π/2)
+    constant float M_PI_HALF = 1.57079632679489661923;
     constant float M_PI_4 = 0.78539816339744830962;
     constant float M_1_PI = 0.31830988618379067154;
     constant float M_2_PI = 0.63661977236758134308;

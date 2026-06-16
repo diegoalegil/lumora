@@ -157,16 +157,17 @@ void main() {
 Check.that("a block comment doesn't fuse the tokens around it",
            !withInlineComment.contains("floatvalue") && withInlineComment.contains("value"))
 
-// WE shaders assume math.h constants and helpers from their unshipped common headers; the prelude
-// supplies them. A shader using M_PI_2 and rotateVec2 must transpile to MSL that Metal accepts.
+// WE shaders assume math constants and helpers from their unshipped common headers; the prelude supplies
+// them. WE's M_PI_2 is tau (a full turn), and M_PI_HALF is the genuine π/2 — a shader using both must
+// transpile to MSL that Metal accepts.
 let preludeShader = """
 varying vec4 v_TexCoord;
 uniform sampler2D g_Texture0;
-void main() { gl_FragColor = texSample2D(g_Texture0, rotateVec2(v_TexCoord.xy, M_PI_2)); }
+void main() { gl_FragColor = texSample2D(g_Texture0, rotateVec2(v_TexCoord.xy, M_PI_2 * 0.25 + M_PI_HALF)); }
 """
 if let device = MTLCreateSystemDefaultDevice() {
     let preludeMSL = WEShaderTranspiler.fragmentToMSL(preludeShader)
-    Check.that("prelude compiles a shader using M_PI_2 and rotateVec2",
+    Check.that("prelude compiles a shader using M_PI_2 (tau), M_PI_HALF and rotateVec2",
                (try? device.makeLibrary(source: preludeMSL, options: nil)) != nil)
 
     // A combo declared in a // [COMBO] header seeds its default; ApplyBlending(BLENDMODE, …) then
