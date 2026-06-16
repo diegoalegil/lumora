@@ -288,6 +288,27 @@ if let package = try? ScenePackage.read(degradePkg), let document = try? SceneGr
                near(r, 0) && near(g, 0) && near(b, 255))
 }
 
+// A layer's roll angle (angles.z) must be honoured — it was ignored, so rolled layers drew axis-aligned.
+// A full-frame texture that's red on top and blue on the bottom, rolled 180°, must swap: the top reads blue.
+var splitPixels = Data()
+for y in 0 ..< 8 { for _ in 0 ..< 8 { splitPixels.append(contentsOf: y < 4 ? [255, 0, 0, 255] : [0, 0, 255, 255]) } }
+let splitTex = buildTexRGBA(8, 8, splitPixels)
+@MainActor func renderRoll(_ angles: String) -> RenderedFrame? {
+    let sceneJSON = Data((#"{"general":{"orthogonalprojection":{"width":8,"height":8},"clearcolor":"0 0 0"},"objects":[{"name":"r","image":"models/m.json","origin":"4 4 0","angles":""# + angles + #"","alpha":1,"visible":true}]}"#).utf8)
+    let pkg = buildPKG([("scene.json", sceneJSON), ("models/m.json", modelJSON),
+                        ("materials/mat.json", materialJSON), ("materials/t.tex", splitTex)])
+    guard let package = try? ScenePackage.read(pkg), let document = try? SceneGraph.load(from: package) else { return nil }
+    return renderer.render(document, package: package, width: 8, height: 8)
+}
+let topPixel = (1 * 8 + 4) * 4   // a pixel near the top edge, centre column
+if let upright = renderRoll("0 0 0"), let rolled = renderRoll("0 0 3.14159") {
+    Check.that("upright: the top of the layer is red", near(Int(upright.rgba[topPixel]), 255) && near(Int(upright.rgba[topPixel + 2]), 0))
+    Check.that("rolled 180°: the top is now blue (the roll is applied)",
+               near(Int(rolled.rgba[topPixel]), 0) && near(Int(rolled.rgba[topPixel + 2]), 255))
+} else {
+    Check.that("rolled-layer scene rendered", false)
+}
+
 // Effect pass machinery: a tint effect (transpiled WE shaders) halves the input texture.
 if let effectRenderer = EffectRenderer(device: renderer.device) {
     Check.section("EffectRenderer")

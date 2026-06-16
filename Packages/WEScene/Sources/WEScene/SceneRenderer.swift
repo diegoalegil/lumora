@@ -29,6 +29,10 @@ private struct QuadUniform {
     /// Per-axis clip-space scale that makes the scene COVER a target of a different aspect (fill + crop the
     /// overflow) instead of stretching. Defaults to identity so every other call site is unchanged.
     var aspectScale: SIMD2<Float> = SIMD2(1, 1)
+    /// The two rows of a 2×2 rotation applied to the corner offset (for a layer with a roll angle). It's
+    /// pre-distorted by the scene's aspect on the CPU so a square layer stays square. Identity = no roll.
+    var rotA: SIMD2<Float> = SIMD2(1, 0)
+    var rotB: SIMD2<Float> = SIMD2(0, 1)
 }
 
 /// One particle sprite for the instanced draw: clip-space centre + half-extent, RGB tint and alpha.
@@ -102,6 +106,8 @@ private struct PreparedLayer {
     let parallaxDepth: SIMD2<Float>
     let originAnimation: Vec3Animation?
     let originScale: SIMD2<Float>   // scene units → NDC, for the position animation offset
+    let rotA: SIMD2<Float>          // 2×2 roll (rows), aspect-corrected; identity when the layer isn't rolled
+    let rotB: SIMD2<Float>
     let effects: [PreparedEffect]   // post-process passes applied to this layer before compositing
     let videoTrack: VideoFrameTrack?  // video-texture animation frames (nil = static `texture`)
 }
@@ -162,15 +168,18 @@ public final class SceneRenderer {
     private static let shaderSource = """
     #include <metal_stdlib>
     using namespace metal;
-    struct Quad { float2 center; float2 halfExtent; float2 uvScale; float2 aspectScale; };
+    struct Quad { float2 center; float2 halfExtent; float2 uvScale; float2 aspectScale; float2 rotA; float2 rotB; };
     struct VOut { float4 position [[position]]; float2 uv; };
     vertex VOut lumora_scene_vertex(uint vid [[vertex_id]], constant Quad &quad [[buffer(0)]]) {
         float2 corner[4] = { float2(-1, -1), float2(1, -1), float2(-1, 1), float2(1, 1) };
         float2 uvs[4]    = { float2(0, 1),  float2(1, 1),  float2(0, 0),  float2(1, 0) };
         VOut out;
-        // aspectScale (≥1 on one axis) scales the whole composition to cover a differently-shaped target,
-        // pushing the overflow past the clip bounds so it's cropped rather than stretching the content.
-        out.position = float4((quad.center + corner[vid] * quad.halfExtent) * quad.aspectScale, 0, 1);
+        // Roll the corner offset about the layer centre (aspect-corrected on the CPU), then aspectScale
+        // (≥1 on one axis) scales the whole composition to cover a differently-shaped target, pushing the
+        // overflow past the clip bounds so it's cropped rather than stretching the content.
+        float2 offset = corner[vid] * quad.halfExtent;
+        offset = float2(dot(quad.rotA, offset), dot(quad.rotB, offset));
+        out.position = float4((quad.center + offset) * quad.aspectScale, 0, 1);
         out.uv = uvs[vid] * quad.uvScale;   // sample only the content region of a padded texture
         return out;
     }
@@ -408,6 +417,15 @@ public final class SceneRenderer {
             let halfExtent = SIMD2(Float(sizeW * layer.scale.x / orthoW), Float(sizeH * layer.scale.y / orthoH))
             let tint = SIMD3(Float(layer.color.x), Float(layer.color.y), Float(layer.color.z))
 
+            // The layer's roll (angles.z, radians) about its centre. The corner offset is in NDC, which is
+            // anisotropic on a non-square target, so the rotation is conjugated by the ortho aspect (a) to
+            // rotate in square pixel space: M = diag(1,a)·R·diag(1,1/a) → rows (cos, -sin/a), (sin·a, cos).
+            let roll = Float(layer.angles.z)
+            let aspect = Float(orthoW / orthoH)
+            let cosR = cos(roll), sinR = sin(roll)
+            let rotA = SIMD2<Float>(cosR, -sinR / aspect)
+            let rotB = SIMD2<Float>(sinR * aspect, cosR)
+
             // A video-backed texture animates. Decoding its frames is slow (seeks + per-frame decode),
             // so it happens off the render thread: the static `texture` above (the first frame) shows
             // immediately, and the looping frames swap in once the background decode delivers them.
@@ -444,6 +462,8 @@ public final class SceneRenderer {
                 parallaxDepth: SIMD2(Float(layer.parallaxDepth.x), Float(layer.parallaxDepth.y)),
                 originAnimation: layer.originAnimation,
                 originScale: SIMD2(Float(2 / orthoW), Float(2 / orthoH)),
+                rotA: rotA,
+                rotB: rotB,
                 effects: prepareEffects(layer.effects, package: package, base: texture,
                                         center: center, halfExtent: halfExtent, uvScale: uvScale, tint: tint),
                 videoTrack: videoTrack))
@@ -745,7 +765,8 @@ public final class SceneRenderer {
                 let center = animatedCenter(layer, time: time, swayX: swayX, swayY: swayY)
                 guard var texture = renderQuadToTexture(currentTexture(layer, time: time), center: center,
                                                         halfExtent: layer.halfExtent, uvScale: layer.uvScale,
-                                                        tint: layer.tint, width: width, height: height) else { continue }
+                                                        tint: layer.tint, width: width, height: height,
+                                                        rotA: layer.rotA, rotB: layer.rotB) else { continue }
                 for effect in layer.effects {
                     guard let output = applyEffect(effect, to: texture, time: Float(time), width: width, height: height) else { break }
                     texture = output
@@ -771,7 +792,8 @@ public final class SceneRenderer {
                     texture = effected
                 } else {
                     quad = QuadUniform(center: animatedCenter(layer, time: time, swayX: swayX, swayY: swayY),
-                                       halfExtent: layer.halfExtent, uvScale: layer.uvScale, aspectScale: aspectScale)
+                                       halfExtent: layer.halfExtent, uvScale: layer.uvScale, aspectScale: aspectScale,
+                                       rotA: layer.rotA, rotB: layer.rotB)
                     tint = layer.tint
                     texture = currentTexture(layer, time: time)
                 }
@@ -829,7 +851,8 @@ public final class SceneRenderer {
     /// Render one quad (a layer's texture at its placement, tint baked in, full opacity) onto a
     /// transparent target, to feed an effect chain. Returns nil if the target can't be made.
     private func renderQuadToTexture(_ source: MTLTexture, center: SIMD2<Float>, halfExtent: SIMD2<Float>,
-                                     uvScale: SIMD2<Float>, tint: SIMD3<Float>, width: Int, height: Int) -> MTLTexture? {
+                                     uvScale: SIMD2<Float>, tint: SIMD3<Float>, width: Int, height: Int,
+                                     rotA: SIMD2<Float> = SIMD2(1, 0), rotB: SIMD2<Float> = SIMD2(0, 1)) -> MTLTexture? {
         let descriptor = MTLTextureDescriptor.texture2DDescriptor(
             pixelFormat: .rgba8Unorm, width: width, height: height, mipmapped: false)
         descriptor.usage = [.renderTarget, .shaderRead]
@@ -844,7 +867,7 @@ public final class SceneRenderer {
         pass.colorAttachments[0].clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 0)
         guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: pass) else { return nil }
 
-        var quad = QuadUniform(center: center, halfExtent: halfExtent, uvScale: uvScale)
+        var quad = QuadUniform(center: center, halfExtent: halfExtent, uvScale: uvScale, rotA: rotA, rotB: rotB)
         var alpha: Float = 1
         var tintCopy = tint
         encoder.setRenderPipelineState(pipelineOver)
