@@ -20,20 +20,29 @@ public enum WEShaderPrelude {
         return result
     }
 
-    /// Drop the single `inline <type> <name>(…) { … }` definition of `name` (brace-matched), if present.
+    /// Drop EVERY `inline <type> <name>(…) { … }` definition of `name` (brace-matched). A prelude name like
+    /// `mod` (7 overloads) or `atan` (3) is overloaded; removing only the first would leave the rest to
+    /// collide with the shader's own copy. Loops until no definition of the name remains.
     private static func removingFunction(named name: String, from text: String) -> String {
+        var result = text
         let pattern = "inline\\s+[\\w<>]+\\s+\(NSRegularExpression.escapedPattern(for: name))\\s*\\("
-        guard let sig = text.range(of: pattern, options: .regularExpression),
-              let brace = text.range(of: "{", range: sig.upperBound ..< text.endIndex) else { return text }
-        var depth = 0, i = brace.lowerBound
-        while i < text.endIndex {
-            if text[i] == "{" { depth += 1 } else if text[i] == "}" {
-                depth -= 1
-                if depth == 0 { return String(text[..<sig.lowerBound]) + String(text[text.index(after: i)...]) }
+        while let sig = result.range(of: pattern, options: .regularExpression),
+              let brace = result.range(of: "{", range: sig.upperBound ..< result.endIndex) {
+            var depth = 0, i = brace.lowerBound, removed = false
+            while i < result.endIndex {
+                if result[i] == "{" { depth += 1 } else if result[i] == "}" {
+                    depth -= 1
+                    if depth == 0 {
+                        result = String(result[..<sig.lowerBound]) + String(result[result.index(after: i)...])
+                        removed = true
+                        break
+                    }
+                }
+                i = result.index(after: i)
             }
-            i = text.index(after: i)
+            if !removed { break }   // malformed (no closing brace) — stop rather than loop
         }
-        return text
+        return result
     }
 
     /// File-scope MSL definitions inserted after the combo `#define`s, before the shader's structs.

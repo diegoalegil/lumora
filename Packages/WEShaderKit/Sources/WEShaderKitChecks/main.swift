@@ -404,6 +404,26 @@ if let device = MTLCreateSystemDefaultDevice() {
     }
 }
 
+// A shader redefining a MULTI-overload prelude function (mod has several) must have ALL the prelude's
+// overloads dropped — here it redefines the vec2 overload, which isn't the first, so removing only the
+// first would leave the prelude's vec2 mod to collide.
+let overloadShader = """
+varying vec4 v_TexCoord;
+uniform sampler2D g_Texture0;
+vec2 mod(vec2 x, vec2 y) { return x - y * floor(x / y) + 0.001; }
+void main() { gl_FragColor = vec4(mod(v_TexCoord.xy, vec2(2.0)), 0.0, 1.0); }
+"""
+let overloadMSL = WEShaderTranspiler.fragmentToMSL(overloadShader)
+if let device = MTLCreateSystemDefaultDevice() {
+    do {
+        _ = try device.makeLibrary(source: overloadMSL, options: nil)
+        Check.that("redefining a non-first overload of a prelude function compiles", true)
+    } catch {
+        print("──── MSL ────\n\(overloadMSL)\n─────────────")
+        Check.that("redefining a non-first overload of a prelude function compiles", false)
+    }
+}
+
 // An in-file helper that samples a texture or reads a uniform can't be a free MSL function (it can't see
 // the fragment's globals); it's hosted as a lambda inside main. A helper that only CALLS such a helper is
 // hosted too (transitively), so it can reach the lambda.
