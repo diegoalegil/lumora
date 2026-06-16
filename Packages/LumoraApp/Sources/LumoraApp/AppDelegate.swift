@@ -27,6 +27,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var playableWallpapers: [ResolvedWallpaper] = []
     private var selectedWallpaperID: String?
     private var wallpaperSubmenu: NSMenu?
+    private var testPicker: TestPickerWindowController?   // test-only quick switcher
     private static let selectedWallpaperKey = "LumoraSelectedWallpaperID"
 
     override init() {
@@ -154,6 +155,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         wallpaperItem.submenu = NSMenu()
         menu.addItem(wallpaperItem)
         wallpaperSubmenu = wallpaperItem.submenu
+
+        let testPickerItem = NSMenuItem(title: "Test Picker…", action: #selector(openTestPicker), keyEquivalent: "")
+        testPickerItem.target = self
+        menu.addItem(testPickerItem)
         menu.addItem(.separator())
 
         let pause = NSMenuItem(title: "Pause Wallpapers", action: #selector(togglePause), keyEquivalent: "")
@@ -212,11 +217,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func selectWallpaper(_ sender: NSMenuItem) {
         guard let id = sender.representedObject as? String else { return }
+        applyWallpaper(id: id)
+    }
+
+    /// Switch every display to the wallpaper with `id` and persist the choice. Shared by the menu and the
+    /// test picker.
+    private func applyWallpaper(id: String) {
         selectedWallpaperID = id
         UserDefaults.standard.set(id, forKey: Self.selectedWallpaperKey)
         activeWallpaper = PlayableWallpapers.active(in: playableWallpapers, selectedID: id)
         reloadRenderers()
         rebuildWallpaperMenu()
+    }
+
+    /// TEST-ONLY: open a plain window listing every wallpaper, switching live as the selection moves.
+    @objc private func openTestPicker() {
+        if testPicker == nil {
+            let rows = playableWallpapers.map { "\(WallpaperLibrary.displayTitle($0)) — \($0.type.rawValue)" }
+            let current = playableWallpapers.firstIndex { $0.ref.id == activeWallpaper?.ref.id } ?? 0
+            testPicker = TestPickerWindowController(rows: rows, current: current) { [weak self] index in
+                guard let self, self.playableWallpapers.indices.contains(index) else { return }
+                let id = self.playableWallpapers[index].ref.id
+                guard id != self.activeWallpaper?.ref.id else { return }   // selecting the active one: no reload
+                self.applyWallpaper(id: id)
+            }
+        }
+        NSApp.activate(ignoringOtherApps: true)
+        testPicker?.showWindow(nil)
+        testPicker?.window?.makeKeyAndOrderFront(nil)
     }
 
     @objc private func togglePause() {
