@@ -396,6 +396,32 @@ if let device = MTLCreateSystemDefaultDevice() {
     }
 }
 
+// An in-file helper that samples a texture or reads a uniform can't be a free MSL function (it can't see
+// the fragment's globals); it's hosted as a lambda inside main. A helper that only CALLS such a helper is
+// hosted too (transitively), so it can reach the lambda.
+let lambdaShader = """
+varying vec4 v_TexCoord;
+uniform sampler2D g_Texture0;
+uniform float g_Amount;
+vec3 sampleAt(vec2 uv) { return texSample2D(g_Texture0, uv).rgb * g_Amount; }
+vec3 doubleSample(vec2 uv) { return sampleAt(uv) + sampleAt(uv + vec2(0.1)); }
+void main() {
+    gl_FragColor = vec4(doubleSample(v_TexCoord.xy), 1.0);
+}
+"""
+let lambdaMSL = WEShaderTranspiler.fragmentToMSL(lambdaShader)
+Check.that("a global-touching helper is hosted as a lambda in main", lambdaMSL.contains("auto sampleAt = [&]"))
+Check.that("a helper that only calls a global-touching one is hosted too (transitive)", lambdaMSL.contains("auto doubleSample = [&]"))
+if let device = MTLCreateSystemDefaultDevice() {
+    do {
+        _ = try device.makeLibrary(source: lambdaMSL, options: nil)
+        Check.that("a shader with global-touching in-file helpers compiles", true)
+    } catch {
+        print("──── MSL ────\n\(lambdaMSL)\n─────────────")
+        Check.that("a shader with global-touching in-file helpers compiles", false)
+    }
+}
+
 Check.section("ShaderPreprocessor")
 let conditional = "a\n#if MASK == 1\nb\n#else\nc\n#endif\nd"
 Check.that("keeps the active #if branch", ShaderPreprocessor.resolve(conditional, combos: ["MASK": 1]) == "a\nb\nd")

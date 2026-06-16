@@ -21,15 +21,16 @@ public enum WEShaderTranspiler {
         let scalars = uniforms.filter { !$0.type.hasPrefix("sampler") }
         let varyings = parseDeclarations(resolved, keyword: "varying")
 
-        var body = mainBody(of: resolved)
-        body = rewriteIntrinsics(body)
-        body = rewriteTypes(body)
         // Qualify references: scalar varyings come from stage_in, scalar uniforms from the uniform
-        // buffer. Array varyings stay bare — they resolve to a local array rebuilt below.
-        for varying in varyings where varying.count == nil { body = qualify(body, name: varying.name, with: "in.\(varying.name)") }
-        for uniform in scalars { body = qualify(body, name: uniform.name, with: "u.\(uniform.name)") }
-        // gl_FragColor → a local we collect and return.
-        body = qualify(body, name: "gl_FragColor", with: "_fragColor")
+        // buffer, gl_FragColor → the local we return. Array varyings stay bare — they resolve to a local
+        // array rebuilt below. The same map qualifies the global-touching helpers emitted as lambdas.
+        var qualifiers: [(String, String)] = []
+        for varying in varyings where varying.count == nil { qualifiers.append((varying.name, "in.\(varying.name)")) }
+        for uniform in scalars { qualifiers.append((uniform.name, "u.\(uniform.name)")) }
+        qualifiers.append(("gl_FragColor", "_fragColor"))
+
+        var body = rewriteTypes(rewriteIntrinsics(mainBody(of: resolved)))
+        for (name, replacement) in qualifiers { body = qualify(body, name: name, with: replacement) }
 
         var msl = "#include <metal_stdlib>\nusing namespace metal;\n\n" + comboConstants(combos)
             + WEShaderPrelude.msl(omitting: preludeShadowedNames(of: resolved))
@@ -52,6 +53,7 @@ public enum WEShaderTranspiler {
         }
         msl += ") {\n    float4 _fragColor = float4(0.0);\n"
         msl += arrayVaryingLocals(varyings, from: "in")
+        msl += globalHelperLambdas(of: resolved, applying: qualifiers)
         msl += body
         msl += "\n    return _fragColor;\n}\n"
         return msl
@@ -71,14 +73,17 @@ public enum WEShaderTranspiler {
         let attributes = parseDeclarations(resolved, keyword: "attribute")
         let varyings = parseDeclarations(resolved, keyword: "varying")
 
-        var body = mainBody(of: resolved)
-        body = rewriteIntrinsics(body)
-        body = rewriteTypes(body)
-        for attribute in attributes { body = qualify(body, name: attribute.name, with: "in.\(attribute.name)") }
-        // Array varyings stay bare: the body writes a local array that's copied to the output below.
-        for varying in varyings where varying.count == nil { body = qualify(body, name: varying.name, with: "out.\(varying.name)") }
-        for uniform in scalars { body = qualify(body, name: uniform.name, with: "u.\(uniform.name)") }
-        body = qualify(body, name: "gl_Position", with: "out.position")
+        // Attributes come from stage_in, scalar varyings/gl_Position go to the output struct, scalar
+        // uniforms from the buffer. Array varyings stay bare (the body writes a local copied out below).
+        // The same map qualifies the global-touching helpers emitted as lambdas.
+        var qualifiers: [(String, String)] = []
+        for attribute in attributes { qualifiers.append((attribute.name, "in.\(attribute.name)")) }
+        for varying in varyings where varying.count == nil { qualifiers.append((varying.name, "out.\(varying.name)")) }
+        for uniform in scalars { qualifiers.append((uniform.name, "u.\(uniform.name)")) }
+        qualifiers.append(("gl_Position", "out.position"))
+
+        var body = rewriteTypes(rewriteIntrinsics(mainBody(of: resolved)))
+        for (name, replacement) in qualifiers { body = qualify(body, name: name, with: replacement) }
 
         var msl = "#include <metal_stdlib>\nusing namespace metal;\n\n" + comboConstants(combos)
             + WEShaderPrelude.msl(omitting: preludeShadowedNames(of: resolved))
@@ -102,6 +107,7 @@ public enum WEShaderTranspiler {
         }
         msl += ") {\n    VertexOut out;\n"
         msl += arrayVaryingDeclarations(varyings)
+        msl += globalHelperLambdas(of: resolved, applying: qualifiers)
         msl += body
         msl += arrayVaryingWriteback(varyings)
         msl += "\n    return out;\n}\n"
@@ -216,13 +222,14 @@ public enum WEShaderTranspiler {
     }()
 
     /// Emit the shader's own top-level helper functions and structs (everything but `main`) so code that
-    /// calls them compiles. MSL free functions can't reach the fragment's globals, so a helper that
-    /// references a uniform/sampler (g_*, u_*, texSample, gl_*) is skipped. A helper whose name the prelude
-    /// also defines IS emitted — it's the shader's authoritative version, and `preludeShadowedNames` has
-    /// the prelude drop its own copy so there's no redefinition.
+    /// calls them compiles. A helper that touches the fragment's globals (g_*/u_* uniforms, samplers,
+    /// gl_*) — directly or by calling one that does — is skipped here: a free MSL function can't reach them,
+    /// so `globalHelperLambdas` emits it as a lambda inside main instead. A helper whose name the prelude
+    /// also defines IS emitted (the shader's version is authoritative; `preludeShadowedNames` drops the
+    /// prelude's copy so there's no redefinition).
     private static func helperFunctions(of source: String) -> String {
-        let cleaned = stripLineComments(stripBlockComments(source)).split(separator: "\n", omittingEmptySubsequences: false)
-            .filter { !$0.trimmingCharacters(in: .whitespaces).hasPrefix("#") }.joined(separator: "\n")
+        let cleaned = stripDirectivesAndComments(source)
+        let hosted = globalsTouchingFunctions(of: source)
         var out = ""
         for (signature, body) in topLevelBlocks(cleaned) {
             guard signature.contains("(") else {   // a struct or non-function block
@@ -232,27 +239,79 @@ public enum WEShaderTranspiler {
                 continue
             }
             let name = functionName(of: signature)
-            if name.isEmpty || name == "main" { continue }
-            let text = signature + body
-            if text.contains("g_") || text.contains("u_") || text.contains("texSample") || text.contains("gl_") { continue }
+            if name.isEmpty || name == "main" || hosted.contains(name) { continue }
             out += rewriteTypes(rewriteIntrinsics(signature)) + " {" + rewriteTypes(rewriteIntrinsics(body)) + "}\n"
         }
         return out
     }
 
-    /// The names of prelude functions the shader redefines in-file (and that `helperFunctions` will emit —
-    /// i.e. not the globals-touching ones it has to drop). The prelude omits these so the shader's own copy
-    /// wins instead of being silently shadowed by the generic version.
-    private static func preludeShadowedNames(of source: String) -> Set<String> {
-        let cleaned = stripLineComments(stripBlockComments(source)).split(separator: "\n", omittingEmptySubsequences: false)
-            .filter { !$0.trimmingCharacters(in: .whitespaces).hasPrefix("#") }.joined(separator: "\n")
-        var names: Set<String> = []
+    /// In-file helpers that touch the fragment's globals, emitted as `[&]`-capturing lambdas at the top of
+    /// main where the textures/samplers/uniform buffer and stage-in/out are in scope (an MSL lambda can
+    /// capture all of them and call an earlier lambda). Bodies are rewritten and qualified exactly like
+    /// main's, so a uniform reads `u.x`, a varying `in.x`/`out.x`, etc. Source order is preserved so a
+    /// helper that calls another is defined after it.
+    private static func globalHelperLambdas(of source: String, applying qualifiers: [(String, String)]) -> String {
+        let cleaned = stripDirectivesAndComments(source)
+        let hosted = globalsTouchingFunctions(of: source)
+        var out = ""
         for (signature, body) in topLevelBlocks(cleaned) where signature.contains("(") {
             let name = functionName(of: signature)
-            guard !name.isEmpty, name != "main", preludeFunctionNames.contains(name) else { continue }
-            let text = signature + body
-            if text.contains("g_") || text.contains("u_") || text.contains("texSample") || text.contains("gl_") { continue }
-            names.insert(name)
+            guard hosted.contains(name), let paren = signature.firstIndex(of: "("),
+                  let close = signature.range(of: ")", options: .backwards) else { continue }
+            let head = signature[..<paren].trimmingCharacters(in: .whitespaces)   // "<return type> <name>"
+            guard let nameRange = head.range(of: name, options: .backwards) else { continue }
+            let returnType = head[..<nameRange.lowerBound].trimmingCharacters(in: .whitespaces)
+            let params = rewriteTypes(rewriteIntrinsics(String(signature[signature.index(after: paren)..<close.lowerBound])))
+            var lambdaBody = rewriteTypes(rewriteIntrinsics(body))
+            for (n, r) in qualifiers { lambdaBody = qualify(lambdaBody, name: n, with: r) }
+            out += "    auto \(name) = [&] (\(params)) -> \(returnType.isEmpty ? "auto" : rewriteTypes(returnType)) {\(lambdaBody)};\n"
+        }
+        return out
+    }
+
+    /// The names of in-file functions that reference the fragment's globals, transitively: directly using
+    /// a g_*/u_* name, a sampler or gl_*, or calling a function that does. These can't be free MSL
+    /// functions; `globalHelperLambdas` hosts them inside main instead.
+    private static func globalsTouchingFunctions(of source: String) -> Set<String> {
+        let cleaned = stripDirectivesAndComments(source)
+        var functions: [(name: String, text: String)] = []
+        for (signature, body) in topLevelBlocks(cleaned) where signature.contains("(") {
+            let name = functionName(of: signature)
+            if !name.isEmpty, name != "main" { functions.append((name, signature + body)) }
+        }
+        var touching = Set(functions.filter { f in
+            f.text.contains("g_") || f.text.contains("u_") || f.text.contains("texSample") || f.text.contains("gl_")
+        }.map(\.name))
+        var changed = true
+        while changed {
+            changed = false
+            for f in functions where !touching.contains(f.name) {
+                if touching.contains(where: { callee in
+                    f.text.range(of: "(?<![\\w.])\(NSRegularExpression.escapedPattern(for: callee))\\s*\\(", options: .regularExpression) != nil
+                }) { touching.insert(f.name); changed = true }
+            }
+        }
+        return touching
+    }
+
+    /// The shader source with `#` directives and comments stripped — the form the block/helper scanners
+    /// walk.
+    private static func stripDirectivesAndComments(_ source: String) -> String {
+        stripLineComments(stripBlockComments(source)).split(separator: "\n", omittingEmptySubsequences: false)
+            .filter { !$0.trimmingCharacters(in: .whitespaces).hasPrefix("#") }.joined(separator: "\n")
+    }
+
+    /// The names of prelude functions the shader redefines in-file as plain (non-global-touching) helpers.
+    /// The prelude omits these so the shader's own copy wins instead of being silently shadowed.
+    private static func preludeShadowedNames(of source: String) -> Set<String> {
+        let cleaned = stripDirectivesAndComments(source)
+        let hosted = globalsTouchingFunctions(of: source)
+        var names: Set<String> = []
+        for (signature, _) in topLevelBlocks(cleaned) where signature.contains("(") {
+            let name = functionName(of: signature)
+            if !name.isEmpty, name != "main", !hosted.contains(name), preludeFunctionNames.contains(name) {
+                names.insert(name)
+            }
         }
         return names
     }
