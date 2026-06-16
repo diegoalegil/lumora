@@ -773,6 +773,11 @@ public final class SceneRenderer {
         var probeCoverage = coverage(probeRGBA)
         var probeDetail = detail(probeRGBA)
         var kept: [PreparedEffect] = []
+        var probeLuma = lumaStats(probeRGBA).mean
+        // A real WE glow/bloom/godray lifts the layer's mean luma only modestly (measured ≤ ~9 across the
+        // library); an effect that screen-blends against a white placeholder aux texture we don't have washes
+        // the layer toward white (+22…+255). Reject that wash so the layer keeps its faithful, un-blown look.
+        let washThreshold = 18.0
         for effect in compiled {
             var stableOutput: MTLTexture?
             var stableRGBA: Data?
@@ -780,17 +785,19 @@ public final class SceneRenderer {
             for time in times {
                 guard let output = applyEffect(effect, to: probe, time: time, width: probeW, height: probeH) else { stable = false; break }
                 let rgba = effectRenderer.readback(output)
-                // Drop a pass that erases the layer's coverage OR flattens it to near-uniform colour — the
-                // latter catches effects that blend against the placeholder aux texture and blow out (e.g.
-                // a screen blend against white), which a coverage-only check misses.
-                guard coverage(rgba) >= probeCoverage / 2, detail(rgba) >= probeDetail / 5 else { stable = false; break }
+                // Drop a pass that erases the layer's coverage, flattens it to near-uniform colour, OR washes
+                // it toward white (a screen blend against the missing aux placeholder) — all three otherwise
+                // pass a coverage-only check while looking nothing like the wallpaper does in WE.
+                guard coverage(rgba) >= probeCoverage / 2, detail(rgba) >= probeDetail / 5,
+                      lumaStats(rgba).mean - probeLuma <= washThreshold else { stable = false; break }
                 if time == 0 { stableOutput = output; stableRGBA = rgba }
             }
-            guard stable, let stableOutput, let stableRGBA else { continue }   // unstable / erasing / flattening
+            guard stable, let stableOutput, let stableRGBA else { continue }   // unstable / erasing / flattening / washing
             kept.append(effect)
             probe = stableOutput
             probeCoverage = coverage(stableRGBA)
             probeDetail = detail(stableRGBA)
+            probeLuma = lumaStats(stableRGBA).mean
         }
         return kept
     }
@@ -801,6 +808,18 @@ public final class SceneRenderer {
         var count = 0
         for i in stride(from: 3, to: rgba.count, by: 4) where rgba[i] > 100 { count += 1 }
         return count
+    }
+
+    /// Mean luma (0–255) and the fraction of near-black pixels (luma < 40) in an RGBA readback. A bloom or
+    /// glow that washes the layer out raises the mean and collapses the dark fraction (lifted blacks).
+    private func lumaStats(_ rgba: Data) -> (mean: Double, darkFraction: Double) {
+        var sum = 0.0, dark = 0.0, n = 0.0
+        for i in stride(from: 0, to: rgba.count - 3, by: 4) {
+            let l = 0.299 * Double(rgba[i]) + 0.587 * Double(rgba[i + 1]) + 0.114 * Double(rgba[i + 2])
+            sum += l; if l < 40 { dark += 1 }; n += 1
+        }
+        guard n > 0 else { return (0, 0) }
+        return (sum / n, dark / n)
     }
 
     /// Variance of the green channel — a proxy for how much image detail survives. Collapses toward 0
