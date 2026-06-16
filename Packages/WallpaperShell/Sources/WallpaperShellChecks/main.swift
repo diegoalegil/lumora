@@ -61,6 +61,27 @@ Check.that("occlusion beats battery -> paused", !combo.renderingEnabled)
 // PlaybackDirective clamps negative fps to 0.
 Check.that("directive clamps negative fps", PlaybackDirective(renderingEnabled: true, targetFPS: -5).targetFPS == 0)
 
+// MARK: DesktopCoverDetector (fullscreen-app / maximized-window cover -> treated as occluded -> paused)
+Check.section("DesktopCoverDetector")
+let display = CGRect(x: 0, y: 0, width: 2000, height: 1000)
+typealias WinRect = DesktopCoverDetector.WindowRect
+Check.that("a fullscreen window covers the display",
+           DesktopCoverDetector.isCovered(displayFrame: display, windows: [WinRect(layer: 0, bounds: display)]))
+Check.that("a maximized window (menu-bar margin) still counts as covered",
+           DesktopCoverDetector.isCovered(displayFrame: display,
+                                          windows: [WinRect(layer: 0, bounds: CGRect(x: 0, y: 20, width: 2000, height: 980))]))
+Check.that("a half-screen window does not cover",
+           !DesktopCoverDetector.isCovered(displayFrame: display,
+                                           windows: [WinRect(layer: 0, bounds: CGRect(x: 0, y: 0, width: 1000, height: 1000))]))
+Check.that("a fullscreen rect on a non-normal layer is ignored (e.g. the wallpaper window itself)",
+           !DesktopCoverDetector.isCovered(displayFrame: display, windows: [WinRect(layer: -1, bounds: display)]))
+Check.that("no windows means not covered",
+           !DesktopCoverDetector.isCovered(displayFrame: display, windows: []))
+Check.that("two partial windows do not add up to covered",
+           !DesktopCoverDetector.isCovered(displayFrame: display,
+                                           windows: [WinRect(layer: 0, bounds: CGRect(x: 0, y: 0, width: 2000, height: 400)),
+                                                     WinRect(layer: 0, bounds: CGRect(x: 0, y: 600, width: 2000, height: 400))]))
+
 // MARK: PlaybackCoordinator (per-display aggregation, via a mock signal source)
 Check.section("PlaybackCoordinator")
 let mock = MockSignalSource()

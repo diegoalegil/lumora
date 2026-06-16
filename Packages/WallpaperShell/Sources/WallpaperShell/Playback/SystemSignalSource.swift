@@ -11,6 +11,7 @@ public final class SystemSignalSource: PlaybackSignalSource {
     public var userPaused = false
 
     private let occlusion = OcclusionMonitor()
+    private let cover = DesktopCoverDetector()
     private let power = PowerMonitor()
     private let workspace = WorkspaceMonitor()
     private let windowForDisplay: (CGDirectDisplayID) -> NSWindow?
@@ -49,6 +50,10 @@ public final class SystemSignalSource: PlaybackSignalSource {
 
     public func isOccluded(displayID: CGDirectDisplayID) -> Bool {
         guard let window = windowForDisplay(displayID) else { return false }
-        return !occlusion.isVisible(window)
+        // A fullscreen app sits on its own Space and `occlusionState` doesn't reliably flip for an
+        // all-Spaces desktop window, so treat "a normal window fully covers this display" as occluded too.
+        // Pausing here only stops the render loop (state is retained), so returning to the desktop resumes
+        // the live wallpaper instantly without reloading.
+        return !occlusion.isVisible(window) || cover.isCovered(displayID: displayID)
     }
 }
