@@ -191,6 +191,28 @@ Check.that("scanning a folder with no project.json is a failure", {
     return false
 }())
 
+// A packaged scene declares file:scene.json (its unpacked source) but ships only scene.pkg — it must
+// resolve to the package ScenePlayer reads, not be rejected as a missing asset.
+let packagedScene = tmpRoot.appendingPathComponent("packaged_scene", isDirectory: true)
+makeDir(packagedScene)
+write(#"{"type":"scene","file":"scene.json","title":"Packaged"}"#, to: packagedScene.appendingPathComponent("project.json"))
+write("PKG", to: packagedScene.appendingPathComponent("scene.pkg"))
+Check.that("a packaged scene with only scene.pkg resolves to the package", {
+    if case .success(let w) = scanner.scan(folderURL: packagedScene) {
+        return w.type == .scene && w.mainFileURL.lastPathComponent == "scene.pkg"
+    }
+    return false
+}())
+
+// A scene with neither the named source nor a package is still a missing asset.
+let emptyScene = tmpRoot.appendingPathComponent("empty_scene", isDirectory: true)
+makeDir(emptyScene)
+write(#"{"type":"scene","file":"scene.json","title":"Empty"}"#, to: emptyScene.appendingPathComponent("project.json"))
+Check.that("a scene with no source and no package is rejected", {
+    if case .failure(let d) = scanner.scan(folderURL: emptyScene), d.reason == .missingMainAsset("scene.json") { return true }
+    return false
+}())
+
 // MARK: - LibrarySummary
 
 Check.section("LibrarySummary")
