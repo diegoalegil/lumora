@@ -134,9 +134,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return SolidColorRenderer(color: NSColor(srgbRed: 0.16, green: 0.13, blue: 0.28, alpha: 1))
     }
 
-    /// Scan the installed Steam Workshop library (resolved wallpapers plus skip diagnostics).
+    /// Scan the installed Steam Workshop library (resolved wallpapers plus skip diagnostics). For local
+    /// testing, `LUMORA_LIBRARY_DIR` overrides the source with a folder of `<id>/` wallpaper folders (e.g.
+    /// an extracted `431960/`), so a dev machine without a Steam install can still drive a live pass.
     private static func scanLibrary() -> LibraryScanResult {
-        WallpaperLibraryScanner().scanLibrary(using: SteamLibraryLocator())
+        let scanner = WallpaperLibraryScanner()
+        if let override = ProcessInfo.processInfo.environment["LUMORA_LIBRARY_DIR"], !override.isEmpty {
+            let dir = URL(fileURLWithPath: override, isDirectory: true)
+            let folders = ((try? FileManager.default.contentsOfDirectory(
+                at: dir, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles])) ?? [])
+                .filter { (try? $0.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true }
+                .sorted { $0.lastPathComponent < $1.lastPathComponent }
+            return scanner.scan(folders: folders)
+        }
+        return scanner.scanLibrary(using: SteamLibraryLocator())
     }
 
     // MARK: Menu bar
