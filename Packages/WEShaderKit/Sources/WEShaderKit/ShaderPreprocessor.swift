@@ -19,12 +19,14 @@ public enum ShaderPreprocessor {
         var stack: [Frame] = []
         func emitting() -> Bool { stack.last.map { $0.parentEmitting && $0.active } ?? true }
 
-        // Object-like `#define NAME value` macros collected as they appear, substituted into the lines
-        // that follow (C semantics: a macro takes effect from its definition downward). An integer-valued
-        // macro also seeds the combo set so a later `#if NAME == …` sees it. Function-like macros
-        // (`CAST3(x)`, `texSample2D(s,uv)`) are left for the transpiler's intrinsic rewriting.
+        // Macros collected as they appear and substituted into the lines that follow (C semantics: a
+        // macro takes effect from its definition downward). Object-like `#define NAME value` ones also
+        // seed the combo set when their value is an integer (so a later `#if NAME == …` sees it).
+        // Function-like `#define NAME(args) body` ones are expanded at each call site — WE's blur headers
+        // inject the framebuffer this way, e.g. `#define blur13a(uv, step) _blur13a(g_Texture0, …)`.
         var combos = combos
         var macros: [(name: String, value: String)] = []
+        var funcMacros: [(name: String, params: [String], body: String)] = []
 
         var output: [String] = []
         for line in source.split(separator: "\n", omittingEmptySubsequences: false).map(String.init) {
@@ -46,12 +48,14 @@ public enum ShaderPreprocessor {
             } else if trimmed.hasPrefix("#endif") {
                 _ = stack.popLast()
             } else if emitting() {
-                if let (name, value) = objectMacro(trimmed) {
-                    let expanded = substitute(value, macros)
+                if let fn = funcMacro(trimmed) {
+                    funcMacros.append(fn)
+                } else if let (name, value) = objectMacro(trimmed) {
+                    let expanded = expandMacros(value, macros, funcMacros)
                     macros.append((name: name, value: expanded))
                     if let int = Int(expanded) { combos[name] = int }   // visible to a later #if NAME
                 } else {
-                    output.append(macros.isEmpty ? line : substitute(line, macros))
+                    output.append(macros.isEmpty && funcMacros.isEmpty ? line : expandMacros(line, macros, funcMacros))
                 }
             }
         }
@@ -74,22 +78,119 @@ public enum ShaderPreprocessor {
         return (name, String(rest[nameEnd...]).trimmingCharacters(in: .whitespaces))
     }
 
-    /// Replace whole-word occurrences of each macro name with its value, in definition order, repeating to
-    /// a fixed point (bounded) so a value built from an earlier macro fully expands. The whole-word guard
-    /// matches the transpiler's: not preceded by a word char or `.`, not followed by a word char.
-    private static func substitute(_ text: String, _ macros: [(name: String, value: String)]) -> String {
+    /// A function-like `#define NAME(p1, p2) body` (the `(` abuts the name), as `(name, params, body)`;
+    /// nil for an object-like or non-`#define` line.
+    private static func funcMacro(_ line: String) -> (name: String, params: [String], body: String)? {
+        guard line.hasPrefix("#define ") else { return nil }
+        let rest = String(Substring(line.dropFirst("#define".count)).drop { $0 == " " || $0 == "\t" })
+        var nameEnd = rest.startIndex
+        while nameEnd < rest.endIndex, rest[nameEnd].isLetter || rest[nameEnd].isNumber || rest[nameEnd] == "_" {
+            nameEnd = rest.index(after: nameEnd)
+        }
+        let name = String(rest[rest.startIndex..<nameEnd])
+        guard !name.isEmpty, nameEnd < rest.endIndex, rest[nameEnd] == "(",
+              let close = matchingParen(rest, nameEnd) else { return nil }
+        let params = rest[rest.index(after: nameEnd)..<close]
+            .split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+        let body = String(rest[rest.index(after: close)...]).trimmingCharacters(in: .whitespaces)
+        return (name, params, body)
+    }
+
+    /// Expand macros in `text` to a fixed point: function-like calls first (so an injected name can itself
+    /// be an object macro), then object-like substitution. Bounded so a self-referential macro can't loop.
+    private static func expandMacros(_ text: String, _ macros: [(name: String, value: String)],
+                                     _ funcMacros: [(name: String, params: [String], body: String)]) -> String {
         var out = text
         for _ in 0..<8 {
             var changed = false
-            for macro in macros {
-                let pattern = "(?<![\\w.])\(NSRegularExpression.escapedPattern(for: macro.name))(?![\\w])"
-                guard out.range(of: pattern, options: .regularExpression) != nil else { continue }
-                let regex = try! NSRegularExpression(pattern: pattern)
-                let replaced = regex.stringByReplacingMatches(in: out, range: NSRange(out.startIndex..., in: out),
-                                                              withTemplate: NSRegularExpression.escapedTemplate(for: macro.value))
-                if replaced != out { out = replaced; changed = true }
+            if !funcMacros.isEmpty {
+                let expanded = expandFunctionMacros(out, funcMacros)
+                if expanded != out { out = expanded; changed = true }
             }
+            let substituted = substitute(out, macros)
+            if substituted != out { out = substituted; changed = true }
             if !changed { break }
+        }
+        return out
+    }
+
+    /// Whole-word substitution of each object-like macro name with its value, in definition order.
+    private static func substitute(_ text: String, _ macros: [(name: String, value: String)]) -> String {
+        var out = text
+        for macro in macros { out = wholeWordReplace(out, macro.name, macro.value) }
+        return out
+    }
+
+    /// Expand every call `NAME(args)` of a function-like macro by substituting the parenthesised arguments
+    /// for the parameters in its (parenthesised) body. Arguments split on top-level commas so nested calls
+    /// survive; a call whose arity doesn't match is left alone rather than mangled.
+    private static func expandFunctionMacros(_ text: String, _ macros: [(name: String, params: [String], body: String)]) -> String {
+        var s = text
+        for macro in macros {
+            var from = s.startIndex
+            while let r = s.range(of: macro.name, range: from ..< s.endIndex) {
+                let precededByWord = r.lowerBound > s.startIndex && {
+                    let c = s[s.index(before: r.lowerBound)]; return c.isLetter || c.isNumber || c == "_" || c == "."
+                }()
+                guard !precededByWord, r.upperBound < s.endIndex, s[r.upperBound] == "(",
+                      let (args, close) = callArguments(s, r.upperBound) else { from = r.upperBound; continue }
+                guard args.count == macro.params.count else { from = r.upperBound; continue }
+                var body = macro.body
+                for (param, arg) in zip(macro.params, args) { body = wholeWordReplace(body, param, "(\(arg))") }
+                let expansion = "(\(body))"
+                s.replaceSubrange(r.lowerBound...close, with: expansion)
+                from = s.index(r.lowerBound, offsetBy: expansion.count)
+            }
+        }
+        return s
+    }
+
+    /// The top-level (balanced-paren) comma-separated arguments of a call whose `(` is at `open`, plus the
+    /// index of the matching `)`. A bare `()` yields no arguments.
+    private static func callArguments(_ s: String, _ open: String.Index) -> (args: [String], close: String.Index)? {
+        var depth = 0, i = open, argStart = s.index(after: open)
+        var args: [String] = []
+        while i < s.endIndex {
+            switch s[i] {
+            case "(": depth += 1
+            case ")":
+                depth -= 1
+                if depth == 0 {
+                    let last = s[argStart..<i].trimmingCharacters(in: .whitespaces)
+                    if !(args.isEmpty && last.isEmpty) { args.append(last) }   // () → no args
+                    return (args, i)
+                }
+            case "," where depth == 1:
+                args.append(s[argStart..<i].trimmingCharacters(in: .whitespaces)); argStart = s.index(after: i)
+            default: break
+            }
+            i = s.index(after: i)
+        }
+        return nil
+    }
+
+    /// The index of the `)` matching the `(` at `open`, or nil if unbalanced.
+    private static func matchingParen(_ s: String, _ open: String.Index) -> String.Index? {
+        var depth = 0, i = open
+        while i < s.endIndex {
+            if s[i] == "(" { depth += 1 } else if s[i] == ")" { depth -= 1; if depth == 0 { return i } }
+            i = s.index(after: i)
+        }
+        return nil
+    }
+
+    /// Replace whole-word occurrences of `word` with `replacement` (not part of a larger identifier, not
+    /// after a `.`), repeated to a fixed point so a chain of object macros fully resolves.
+    private static func wholeWordReplace(_ text: String, _ word: String, _ replacement: String) -> String {
+        let pattern = "(?<![\\w.])\(NSRegularExpression.escapedPattern(for: word))(?![\\w])"
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return text }
+        var out = text
+        for _ in 0..<8 {
+            guard out.range(of: pattern, options: .regularExpression) != nil else { break }
+            let replaced = regex.stringByReplacingMatches(in: out, range: NSRange(out.startIndex..., in: out),
+                                                          withTemplate: NSRegularExpression.escapedTemplate(for: replacement))
+            if replaced == out { break }
+            out = replaced
         }
         return out
     }

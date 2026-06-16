@@ -16,7 +16,42 @@ public enum WEStandardHeaders {
     public static let all: [String: String] = [
         "common.h": common,
         "common_blending.h": commonBlending,
+        "common_blur.h": commonBlur,
     ]
+
+    /// Separable gaussian blur. WE's `blur{13,7,3}a(uv, step)` sample the framebuffer `g_Texture0` along a
+    /// precomputed step direction (the paired vertex shader puts the centre uv in `.xy` and the per-tap
+    /// offset in `.zw`, zeroed on the off-axis so the pass is one-dimensional). The framebuffer is implicit
+    /// at the call site, so each name is a macro that injects it into a free function taking the texture as
+    /// a parameter. The tap weights are WE's own 13/7/3-tap gaussian kernels (read from a packaged blur
+    /// shader that lists them inline), so the result matches WE, not just a textbook approximation.
+    private static let commonBlur = """
+    #define blur13a(uv, step) _weBlur13(g_Texture0, g_Texture0_smp, (uv), (step))
+    #define blur7a(uv, step) _weBlur7(g_Texture0, g_Texture0_smp, (uv), (step))
+    #define blur3a(uv, step) _weBlur3(g_Texture0, g_Texture0_smp, (uv), (step))
+    float4 _weBlur13(texture2d<float> t, sampler s, float2 uv, float2 d) {
+        float4 c = t.sample(s, uv) * 0.171834;
+        c += (t.sample(s, uv + d) + t.sample(s, uv - d)) * 0.156756;
+        c += (t.sample(s, uv + d * 2.0) + t.sample(s, uv - d * 2.0)) * 0.119007;
+        c += (t.sample(s, uv + d * 3.0) + t.sample(s, uv - d * 3.0)) * 0.075189;
+        c += (t.sample(s, uv + d * 4.0) + t.sample(s, uv - d * 4.0)) * 0.039533;
+        c += (t.sample(s, uv + d * 5.0) + t.sample(s, uv - d * 5.0)) * 0.017298;
+        c += (t.sample(s, uv + d * 6.0) + t.sample(s, uv - d * 6.0)) * 0.006299;
+        return c;
+    }
+    float4 _weBlur7(texture2d<float> t, sampler s, float2 uv, float2 d) {
+        float4 c = t.sample(s, uv) * 0.214607;
+        c += (t.sample(s, uv + d) + t.sample(s, uv - d)) * 0.189879;
+        c += (t.sample(s, uv + d * 2.0) + t.sample(s, uv - d * 2.0)) * 0.131514;
+        c += (t.sample(s, uv + d * 3.0) + t.sample(s, uv - d * 3.0)) * 0.071303;
+        return c;
+    }
+    float4 _weBlur3(texture2d<float> t, sampler s, float2 uv, float2 d) {
+        float4 c = t.sample(s, uv) * 0.5;
+        c += (t.sample(s, uv + d) + t.sample(s, uv - d)) * 0.25;
+        return c;
+    }
+    """
 
     /// Colour-space helpers WE shaders call from `common.h`. The HSV⇄RGB pair is the standard branchless
     /// conversion (hue as a piecewise-linear ramp); it carries no engine state, so it is safe to provide

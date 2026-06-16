@@ -291,6 +291,28 @@ if let device = MTLCreateSystemDefaultDevice() {
     }
 }
 
+// common_blur.h: the blur macro injects the framebuffer (g_Texture0) into a free function, so a separable
+// gaussian-blur shader (which calls blur13a(centre, step)) transpiles and compiles.
+let blurShader = """
+#include "common_blur.h"
+varying vec4 v_TexCoord;
+uniform sampler2D g_Texture0;
+void main() {
+    gl_FragColor = blur13a(v_TexCoord.xy, v_TexCoord.zw);
+}
+"""
+let blurMSL = WEShaderTranspiler.fragmentToMSL(blurShader)
+Check.that("the blur macro injects the framebuffer into a free function", blurMSL.contains("_weBlur13(g_Texture0"))
+if let device = MTLCreateSystemDefaultDevice() {
+    do {
+        _ = try device.makeLibrary(source: blurMSL, options: nil)
+        Check.that("a gaussian-blur shader compiles via common_blur.h", true)
+    } catch {
+        print("──── MSL ────\n\(blurMSL)\n─────────────")
+        Check.that("a gaussian-blur shader compiles via common_blur.h", false)
+    }
+}
+
 Check.section("ShaderPreprocessor")
 let conditional = "a\n#if MASK == 1\nb\n#else\nc\n#endif\nd"
 Check.that("keeps the active #if branch", ShaderPreprocessor.resolve(conditional, combos: ["MASK": 1]) == "a\nb\nd")
@@ -320,8 +342,16 @@ Check.that("an integer #define is visible to a later #if",
            ShaderPreprocessor.resolve("#define R 3\n#if R == 3\nx\n#endif", combos: [:]) == "x")
 Check.that("a #define substitutes whole words only",
            ShaderPreprocessor.resolve("#define A 1\nApple AB A", combos: [:]) == "Apple AB 1")
-Check.that("a function-like macro is left untouched",
-           ShaderPreprocessor.resolve("#define CAST3(x) vec3(x)\ng = CAST3(1.0);", combos: [:]).contains("CAST3(1.0)"))
+// Function-like macros expand at their call sites, parenthesising arguments so precedence is preserved
+// — WE's blur headers inject the framebuffer this way (`#define blur13a(uv,s) _blur13a(g_Texture0,uv,s)`).
+let funcMacroExpanded = ShaderPreprocessor.resolve("#define SQR(x) x * x\ng = SQR(a + b);", combos: [:])
+Check.that("expands a function-like macro and parenthesises its argument",
+           funcMacroExpanded.contains("(a + b) * (a + b)") && !funcMacroExpanded.contains("SQR"))
+let twoArg = ShaderPreprocessor.resolve("#define MIX(a, b) a + b\nv = MIX(p, q);", combos: [:])
+Check.that("a two-argument function-like macro substitutes both parameters",
+           twoArg.contains("(p)") && twoArg.contains("(q)") && !twoArg.contains("MIX"))
+Check.that("a function-like macro call with nested parens parses its arguments",
+           ShaderPreprocessor.resolve("#define F(x) x\nv = F(g(1, 2));", combos: [:]).contains("(g(1, 2))"))
 // #include resolution — the helpers WE shaders call live in engine headers that aren't packed in the
 // wallpaper, so the preprocessor splices them from a header map (recursively, cycle-safe).
 Check.that("splices an included header's source",
