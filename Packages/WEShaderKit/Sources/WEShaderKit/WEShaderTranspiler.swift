@@ -421,11 +421,48 @@ public enum WEShaderTranspiler {
         out = texCall.stringByReplacingMatches(in: out, range: NSRange(out.startIndex..., in: out),
                                                withTemplate: "$1.sample($1_smp,")
         out = rewriteMul(out)   // HLSL-style mul(a, b) → (a * b)
+        out = rewriteArrayConstructors(out)   // GLSL T[N](a, b, …) → MSL brace-init {a, b, …}
+        out = rewriteReservedWords(out)
         // (mod and two-arg atan are defined in the prelude — GLSL semantics differ from Metal's.)
         for (glsl, msl) in [("frac", "fract"), ("inversesqrt", "rsqrt"), ("lerp", "mix")] {
             out = replaceWord(out, glsl, msl)
         }
         return out
+    }
+
+    /// Rename shader identifiers that collide with MSL reserved words — a variable called `kernel` (Metal's
+    /// compute-function keyword) or `fragment` (a WE waterwaves shader names a coordinate that) makes Metal
+    /// read the keyword and report "expected expression". This only runs over shader-derived code, never
+    /// the wrapper we generate, so our own `fragment`/`constant` keywords are untouched.
+    private static func rewriteReservedWords(_ source: String) -> String {
+        var out = source
+        for word in ["kernel", "fragment", "vertex", "device", "constant", "threadgroup", "thread"] {
+            out = replaceWord(out, word, "we_id_\(word)")
+        }
+        return out
+    }
+
+    /// Rewrite a GLSL array constructor `Type[N]( a, b, … )` (e.g. a bokeh kernel `vec2[9](KERNEL22)`) to
+    /// MSL's brace initializer `{ a, b, … }`. Only known scalar/vector/matrix type names lead a match, so
+    /// an ordinary subscript like `arr[i]` followed by a call is never mistaken for a constructor.
+    private static func rewriteArrayConstructors(_ source: String) -> String {
+        var s = source
+        let types = "vec2|vec3|vec4|mat2|mat3|mat4|ivec2|ivec3|ivec4|float2|float3|float4|float|int"
+        let regex = try! NSRegularExpression(pattern: "\\b(?:\(types))\\s*\\[\\s*\\w+\\s*\\]\\s*\\(")
+        while let m = regex.firstMatch(in: s, range: NSRange(s.startIndex..., in: s)),
+              let head = Range(m.range, in: s) {
+            let openParen = s.index(before: head.upperBound)   // the "(" the match ends on
+            var depth = 0, i = openParen
+            var close: String.Index?
+            while i < s.endIndex {
+                if s[i] == "(" { depth += 1 } else if s[i] == ")" { depth -= 1; if depth == 0 { close = i; break } }
+                i = s.index(after: i)
+            }
+            guard let closeIndex = close else { break }   // unbalanced — leave it
+            let elements = s[s.index(after: openParen)..<closeIndex]
+            s.replaceSubrange(head.lowerBound...closeIndex, with: "{\(elements)}")
+        }
+        return s
     }
 
     /// `texSample2DLod(g_Tex, uv, lod)` → `g_Tex.sample(g_Tex_smp, uv, level(lod))`, matching balanced

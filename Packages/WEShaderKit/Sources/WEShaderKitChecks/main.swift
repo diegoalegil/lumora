@@ -422,6 +422,32 @@ if let device = MTLCreateSystemDefaultDevice() {
     }
 }
 
+// A GLSL array constructor T[N](…) becomes an MSL brace initializer, and a variable colliding with an MSL
+// keyword (a bokeh kernel named `kernel`) is renamed so Metal doesn't read it as the compute keyword.
+let kernelShader = """
+const vec2 kernel[3] = vec2[3](vec2(0.0, 0.0), vec2(1.0, 0.0), vec2(0.0, 1.0));
+varying vec4 v_TexCoord;
+uniform sampler2D g_Texture0;
+vec3 gather(vec2 uv) {
+    vec3 c = vec3(0.0);
+    for (int i = 0; i < 3; i++) { c += texSample2D(g_Texture0, uv + kernel[i]).rgb; }
+    return c;
+}
+void main() { gl_FragColor = vec4(gather(v_TexCoord.xy), 1.0); }
+"""
+let kernelMSL = WEShaderTranspiler.fragmentToMSL(kernelShader)
+Check.that("a GLSL array constructor becomes an MSL brace initializer", kernelMSL.contains("= {float2"))
+Check.that("a variable colliding with an MSL keyword is renamed", kernelMSL.contains("we_id_kernel"))
+if let device = MTLCreateSystemDefaultDevice() {
+    do {
+        _ = try device.makeLibrary(source: kernelMSL, options: nil)
+        Check.that("a shader with a 'kernel' array and array constructor compiles", true)
+    } catch {
+        print("──── MSL ────\n\(kernelMSL)\n─────────────")
+        Check.that("a shader with a 'kernel' array and array constructor compiles", false)
+    }
+}
+
 Check.section("ShaderPreprocessor")
 let conditional = "a\n#if MASK == 1\nb\n#else\nc\n#endif\nd"
 Check.that("keeps the active #if branch", ShaderPreprocessor.resolve(conditional, combos: ["MASK": 1]) == "a\nb\nd")
