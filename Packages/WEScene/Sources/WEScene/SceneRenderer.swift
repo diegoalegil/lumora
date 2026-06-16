@@ -42,6 +42,7 @@ private struct PreparedParticles {
     let texture: MTLTexture
     let count: Int
     let isAdditive: Bool
+    let instanceBuffer: MTLBuffer   // sized for `count` instances, refilled each frame (not reallocated)
 }
 
 /// A layer's effect compiled once: the full-screen pass plus the data to re-pack its uniforms each
@@ -431,8 +432,13 @@ public final class SceneRenderer {
             guard let sprite = particleSprite(system, package: package) else { continue }
             // Steady-state live count ≈ spawn rate × longest lifetime, capped to the system's maxcount.
             let count = min(system.maxCount, max(1, Int((system.rate * system.lifetime.upperBound).rounded(.up))))
+            // One instance buffer per system, allocated once and refilled each frame, instead of a fresh
+            // allocation every frame for the life of the wallpaper.
+            guard let instanceBuffer = device.makeBuffer(length: MemoryLayout<ParticleInstance>.stride * count,
+                                                         options: .storageModeShared) else { continue }
             preparedParticles.append(PreparedParticles(system: system, texture: sprite.texture,
-                                                       count: count, isAdditive: sprite.isAdditive))
+                                                       count: count, isAdditive: sprite.isAdditive,
+                                                       instanceBuffer: instanceBuffer))
         }
         return PreparedScene(layers: prepared, clearColor: document.clearColor,
                              particles: preparedParticles, orthoWidth: orthoW, orthoHeight: orthoH)
@@ -692,15 +698,19 @@ public final class SceneRenderer {
             for prepared in scene.particles {
                 let instances = simulateParticles(prepared, time: time,
                                                   orthoW: scene.orthoWidth, orthoH: scene.orthoHeight)
-                guard !instances.isEmpty,
-                      let buffer = device.makeBuffer(bytes: instances,
-                                                     length: MemoryLayout<ParticleInstance>.stride * instances.count,
-                                                     options: .storageModeShared) else { continue }
+                guard !instances.isEmpty else { continue }
+                // simulateParticles never exceeds `count`, the size the buffer was allocated for; refill it
+                // in place rather than allocating a new one each frame.
+                let n = min(instances.count, prepared.count)
+                instances.withUnsafeBytes { src in
+                    prepared.instanceBuffer.contents().copyMemory(from: src.baseAddress!,
+                                                                  byteCount: MemoryLayout<ParticleInstance>.stride * n)
+                }
                 encoder.setRenderPipelineState(prepared.isAdditive ? particleAdditive : particleAlpha)
-                encoder.setVertexBuffer(buffer, offset: 0, index: 0)
+                encoder.setVertexBuffer(prepared.instanceBuffer, offset: 0, index: 0)
                 encoder.setFragmentTexture(prepared.texture, index: 0)
                 encoder.setFragmentSamplerState(sampler, index: 0)
-                encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4, instanceCount: instances.count)
+                encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4, instanceCount: n)
             }
         }
     }
