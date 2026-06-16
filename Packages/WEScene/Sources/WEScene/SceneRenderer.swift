@@ -592,10 +592,13 @@ public final class SceneRenderer {
     /// alpha, and the movement operator integrates position (p = p₀ + v·t + ½g·t²). Stateless, so any
     /// frame is reproducible without simulating the ones before it.
     private func simulateParticles(_ prepared: PreparedParticles, time: Double,
-                                   orthoW: Double, orthoH: Double) -> [ParticleInstance] {
+                                   orthoW: Double, orthoH: Double) -> Int {
         let s = prepared.system
-        var instances: [ParticleInstance] = []
-        instances.reserveCapacity(prepared.count)
+        // Write straight into the system's reused (shared-storage) instance buffer, which is sized for
+        // `count`, and return how many live sprites were written — no per-frame staging array is allocated
+        // or copied. `n` never exceeds `count` (one write per slot at most), so the buffer can't overflow.
+        let dst = prepared.instanceBuffer.contents().assumingMemoryBound(to: ParticleInstance.self)
+        var n = 0
         for i in 0 ..< prepared.count {
             let slot = UInt32(truncatingIfNeeded: i)
             let life = lerp(s.lifetime.lowerBound, s.lifetime.upperBound, rand(slot, 101))
@@ -630,12 +633,13 @@ public final class SceneRenderer {
             let posY = spawnY + velY * age + 0.5 * s.gravity.y * age * age
             let lifeFrac = age / life
             let fade = Float(smoothstep(0, 0.15, lifeFrac) * (1 - smoothstep(0.85, 1, lifeFrac)))
-            instances.append(ParticleInstance(
+            dst[n] = ParticleInstance(
                 center: SIMD2(Float(posX / orthoW * 2 - 1), Float(posY / orthoH * 2 - 1)),
                 halfExtent: SIMD2(Float(size / orthoW), Float(size / orthoH)),
-                color: SIMD4(color, Float(alpha0) * fade)))
+                color: SIMD4(color, Float(alpha0) * fade))
+            n += 1
         }
-        return instances
+        return n
     }
 
     private func hash(_ a: UInt32, _ b: UInt32) -> UInt32 {
@@ -709,16 +713,11 @@ public final class SceneRenderer {
 
             // Particles draw on top of the composited layers, additively, as instanced sprite quads.
             for prepared in scene.particles {
-                let instances = simulateParticles(prepared, time: time,
-                                                  orthoW: scene.orthoWidth, orthoH: scene.orthoHeight)
-                guard !instances.isEmpty else { continue }
-                // simulateParticles never exceeds `count`, the size the buffer was allocated for; refill it
-                // in place rather than allocating a new one each frame.
-                let n = min(instances.count, prepared.count)
-                instances.withUnsafeBytes { src in
-                    prepared.instanceBuffer.contents().copyMemory(from: src.baseAddress!,
-                                                                  byteCount: MemoryLayout<ParticleInstance>.stride * n)
-                }
+                // simulateParticles writes the live sprites directly into prepared.instanceBuffer and
+                // returns how many — no staging array, no per-frame copy.
+                let n = simulateParticles(prepared, time: time,
+                                          orthoW: scene.orthoWidth, orthoH: scene.orthoHeight)
+                guard n > 0 else { continue }
                 encoder.setRenderPipelineState(prepared.isAdditive ? particleAdditive : particleAlpha)
                 encoder.setVertexBuffer(prepared.instanceBuffer, offset: 0, index: 0)
                 encoder.setFragmentTexture(prepared.texture, index: 0)
