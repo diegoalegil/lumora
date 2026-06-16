@@ -8,6 +8,34 @@
 import Foundation
 
 public enum WEShaderPrelude {
+    /// The prelude with the named functions removed. WE shaders sometimes ship their own copy of a helper
+    /// — most importantly a `BlendTransparency` that switches over a transparency-mode combo rather than
+    /// the plain lerp here — and the shader's version is the authoritative one. Dropping the prelude's
+    /// definition lets the in-file copy provide the behaviour instead of being shadowed by (or colliding
+    /// with) the generic one.
+    public static func msl(omitting names: Set<String>) -> String {
+        guard !names.isEmpty else { return msl }
+        var result = msl
+        for name in names { result = removingFunction(named: name, from: result) }
+        return result
+    }
+
+    /// Drop the single `inline <type> <name>(…) { … }` definition of `name` (brace-matched), if present.
+    private static func removingFunction(named name: String, from text: String) -> String {
+        let pattern = "inline\\s+[\\w<>]+\\s+\(NSRegularExpression.escapedPattern(for: name))\\s*\\("
+        guard let sig = text.range(of: pattern, options: .regularExpression),
+              let brace = text.range(of: "{", range: sig.upperBound ..< text.endIndex) else { return text }
+        var depth = 0, i = brace.lowerBound
+        while i < text.endIndex {
+            if text[i] == "{" { depth += 1 } else if text[i] == "}" {
+                depth -= 1
+                if depth == 0 { return String(text[..<sig.lowerBound]) + String(text[text.index(after: i)...]) }
+            }
+            i = text.index(after: i)
+        }
+        return text
+    }
+
     /// File-scope MSL definitions inserted after the combo `#define`s, before the shader's structs.
     public static let msl = """
     // math.h constants WE uses (Metal only predefines the *_F spellings).

@@ -369,6 +369,32 @@ if let device = MTLCreateSystemDefaultDevice() {
     }
 }
 
+// A shader's own definition of a prelude helper (e.g. its BlendTransparency transparency-mode switch) is
+// authoritative: it must be emitted and the prelude's generic version dropped, or the shader's blend is
+// silently replaced by the wrong one — and emitting both would be a redefinition error.
+let shadowShader = """
+varying vec4 v_TexCoord;
+uniform sampler2D g_Texture0;
+float BlendTransparency(float base, float blend, float opacity) {
+    return base * blend * opacity * 0.5;
+}
+void main() {
+    vec4 a = texSample2D(g_Texture0, v_TexCoord.xy);
+    gl_FragColor = vec4(a.rgb, BlendTransparency(a.a, 1.0, 0.5));
+}
+"""
+let shadowMSL = WEShaderTranspiler.fragmentToMSL(shadowShader)
+Check.that("a shader's own helper shadows the prelude's version", shadowMSL.contains("base * blend * opacity * 0.5"))
+if let device = MTLCreateSystemDefaultDevice() {
+    do {
+        _ = try device.makeLibrary(source: shadowMSL, options: nil)
+        Check.that("the shadowing shader compiles (prelude copy dropped, no redefinition)", true)
+    } catch {
+        print("──── MSL ────\n\(shadowMSL)\n─────────────")
+        Check.that("the shadowing shader compiles (prelude copy dropped, no redefinition)", false)
+    }
+}
+
 Check.section("ShaderPreprocessor")
 let conditional = "a\n#if MASK == 1\nb\n#else\nc\n#endif\nd"
 Check.that("keeps the active #if branch", ShaderPreprocessor.resolve(conditional, combos: ["MASK": 1]) == "a\nb\nd")

@@ -32,7 +32,8 @@ public enum WEShaderTranspiler {
         body = qualify(body, name: "gl_FragColor", with: "_fragColor")
 
         var msl = "#include <metal_stdlib>\nusing namespace metal;\n\n" + comboConstants(combos)
-            + WEShaderPrelude.msl + globalConstants(of: resolved) + helperFunctions(of: resolved)
+            + WEShaderPrelude.msl(omitting: preludeShadowedNames(of: resolved))
+            + globalConstants(of: resolved) + helperFunctions(of: resolved)
 
         msl += "struct VaryingIn {\n" + varyingMembers(varyings) + "};\n\n"
 
@@ -80,7 +81,8 @@ public enum WEShaderTranspiler {
         body = qualify(body, name: "gl_Position", with: "out.position")
 
         var msl = "#include <metal_stdlib>\nusing namespace metal;\n\n" + comboConstants(combos)
-            + WEShaderPrelude.msl + globalConstants(of: resolved) + helperFunctions(of: resolved)
+            + WEShaderPrelude.msl(omitting: preludeShadowedNames(of: resolved))
+            + globalConstants(of: resolved) + helperFunctions(of: resolved)
         msl += "struct VertexIn {\n"
         for (index, attribute) in attributes.enumerated() {
             msl += "    \(mslType(attribute.type)) \(attribute.name) [[attribute(\(index))]];\n"
@@ -215,8 +217,9 @@ public enum WEShaderTranspiler {
 
     /// Emit the shader's own top-level helper functions and structs (everything but `main`) so code that
     /// calls them compiles. MSL free functions can't reach the fragment's globals, so a helper that
-    /// references a uniform/sampler (g_*, u_*, texSample, gl_*) is skipped, as is one whose name the
-    /// prelude already provides — both would otherwise fail to compile or redefine.
+    /// references a uniform/sampler (g_*, u_*, texSample, gl_*) is skipped. A helper whose name the prelude
+    /// also defines IS emitted — it's the shader's authoritative version, and `preludeShadowedNames` has
+    /// the prelude drop its own copy so there's no redefinition.
     private static func helperFunctions(of source: String) -> String {
         let cleaned = stripLineComments(stripBlockComments(source)).split(separator: "\n", omittingEmptySubsequences: false)
             .filter { !$0.trimmingCharacters(in: .whitespaces).hasPrefix("#") }.joined(separator: "\n")
@@ -229,12 +232,29 @@ public enum WEShaderTranspiler {
                 continue
             }
             let name = functionName(of: signature)
-            if name.isEmpty || name == "main" || preludeFunctionNames.contains(name) { continue }
+            if name.isEmpty || name == "main" { continue }
             let text = signature + body
             if text.contains("g_") || text.contains("u_") || text.contains("texSample") || text.contains("gl_") { continue }
             out += rewriteTypes(rewriteIntrinsics(signature)) + " {" + rewriteTypes(rewriteIntrinsics(body)) + "}\n"
         }
         return out
+    }
+
+    /// The names of prelude functions the shader redefines in-file (and that `helperFunctions` will emit —
+    /// i.e. not the globals-touching ones it has to drop). The prelude omits these so the shader's own copy
+    /// wins instead of being silently shadowed by the generic version.
+    private static func preludeShadowedNames(of source: String) -> Set<String> {
+        let cleaned = stripLineComments(stripBlockComments(source)).split(separator: "\n", omittingEmptySubsequences: false)
+            .filter { !$0.trimmingCharacters(in: .whitespaces).hasPrefix("#") }.joined(separator: "\n")
+        var names: Set<String> = []
+        for (signature, body) in topLevelBlocks(cleaned) where signature.contains("(") {
+            let name = functionName(of: signature)
+            guard !name.isEmpty, name != "main", preludeFunctionNames.contains(name) else { continue }
+            let text = signature + body
+            if text.contains("g_") || text.contains("u_") || text.contains("texSample") || text.contains("gl_") { continue }
+            names.insert(name)
+        }
+        return names
     }
 
     /// Emit the shader's file-scope `const` declarations (e.g. WE's ACES tone-map matrices
