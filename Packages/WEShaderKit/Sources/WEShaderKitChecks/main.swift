@@ -504,6 +504,42 @@ if let device = MTLCreateSystemDefaultDevice() {
     }
 }
 
+// GLSL parameter direction qualifiers have no MSL spelling: `out`/`inout T x` becomes a `thread T&`
+// reference (the caller's lvalue receives the write), and an explicit `in T x` drops to MSL's default.
+// Exercised by a pure helper (emitted as a free function, like the lens shaders' computeUV) and a
+// global-touching one (hosted as a lambda inside main).
+let inoutShader = """
+varying vec4 v_TexCoord;
+uniform sampler2D g_Texture0;
+uniform float g_Amount;
+void computeUV(in vec2 coord, in float scale, out vec2 uv, out vec2 uv2) {
+    uv = coord * scale;
+    uv2 = coord * (scale + 0.1);
+}
+void accumulate(in vec2 uv, inout vec3 acc) { acc += texSample2D(g_Texture0, uv).rgb * g_Amount; }
+void main() {
+    vec2 uv; vec2 uv2;
+    computeUV(v_TexCoord.xy, 1.2, uv, uv2);
+    vec3 acc = vec3(0.0);
+    accumulate(uv, acc);
+    accumulate(uv2, acc);
+    gl_FragColor = vec4(acc, 1.0);
+}
+"""
+let inoutMSL = WEShaderTranspiler.fragmentToMSL(inoutShader)
+Check.that("an out parameter on a free helper becomes a thread reference", inoutMSL.contains("thread float2& uv"))
+Check.that("an in parameter drops to MSL's default", inoutMSL.contains("computeUV(float2 coord"))
+Check.that("an inout parameter on a hosted lambda becomes a thread reference", inoutMSL.contains("thread float3& acc"))
+if let device = MTLCreateSystemDefaultDevice() {
+    do {
+        _ = try device.makeLibrary(source: inoutMSL, options: nil)
+        Check.that("a shader using in/out/inout parameter qualifiers compiles", true)
+    } catch {
+        print("──── MSL ────\n\(inoutMSL)\n─────────────")
+        Check.that("a shader using in/out/inout parameter qualifiers compiles", false)
+    }
+}
+
 Check.section("ShaderPreprocessor")
 let conditional = "a\n#if MASK == 1\nb\n#else\nc\n#endif\nd"
 Check.that("keeps the active #if branch", ShaderPreprocessor.resolve(conditional, combos: ["MASK": 1]) == "a\nb\nd")

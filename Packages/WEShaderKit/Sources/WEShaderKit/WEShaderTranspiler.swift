@@ -243,7 +243,7 @@ public enum WEShaderTranspiler {
             }
             let name = functionName(of: signature)
             if name.isEmpty || name == "main" || hosted.contains(name) { continue }
-            out += rewriteTypes(rewriteIntrinsics(signature)) + " {" + rewriteTypes(rewriteIntrinsics(body)) + "}\n"
+            out += rewriteParamQualifiers(rewriteTypes(rewriteIntrinsics(signature))) + " {" + rewriteTypes(rewriteIntrinsics(body)) + "}\n"
         }
         return out
     }
@@ -264,7 +264,7 @@ public enum WEShaderTranspiler {
             let head = signature[..<paren].trimmingCharacters(in: .whitespaces)   // "<return type> <name>"
             guard let nameRange = head.range(of: name, options: .backwards) else { continue }
             let returnType = head[..<nameRange.lowerBound].trimmingCharacters(in: .whitespaces)
-            let params = rewriteTypes(rewriteIntrinsics(String(signature[signature.index(after: paren)..<close.lowerBound])))
+            let params = rewriteParamQualifiers(rewriteTypes(rewriteIntrinsics(String(signature[signature.index(after: paren)..<close.lowerBound]))))
             var lambdaBody = rewriteTypes(rewriteIntrinsics(body))
             for (n, r) in qualifiers { lambdaBody = qualify(lambdaBody, name: n, with: r) }
             out += "    auto \(name) = [&] (\(params)) -> \(returnType.isEmpty ? "auto" : rewriteTypes(returnType)) {\(lambdaBody)};\n"
@@ -497,6 +497,23 @@ public enum WEShaderTranspiler {
             }
         }
         return s
+    }
+
+    /// Translate GLSL parameter direction qualifiers, which MSL has no spelling for, into MSL parameter
+    /// forms. GLSL's `out`/`inout T x` — a written-back argument, used by auto_sway's `calNode`/`preCalcNode`
+    /// and the lens shaders' `computeUV(in vec2 coord, …, out vec2 uv)` — becomes a `thread T&` reference: the
+    /// caller already passes an lvalue, which binds to the reference and receives the write, so call sites
+    /// need no change. GLSL's explicit `in T x` is MSL's default, so the qualifier is dropped. Runs after the
+    /// type/intrinsic rewrites, so it sees MSL type names and the `thread` keyword it introduces isn't itself
+    /// renamed by `rewriteReservedWords`.
+    private static func rewriteParamQualifiers(_ params: String) -> String {
+        let mslType = #"(?:void|bool|uint|int[234]?|float[234]?(?:x[234])?)"#
+        var out = params
+        out = out.replacingOccurrences(of: #"\b(?:out|inout)\s+(\#(mslType))\b"#,
+                                       with: "thread $1&", options: .regularExpression)
+        out = out.replacingOccurrences(of: #"\bin\s+(\#(mslType))\b"#,
+                                       with: "$1", options: .regularExpression)
+        return out
     }
 
     /// Rename shader identifiers that collide with MSL reserved words — a variable called `kernel` (Metal's
