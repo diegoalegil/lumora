@@ -531,6 +531,14 @@ Check.that("nested includes resolve",
            ShaderPreprocessor.resolve("#include \"a\"", combos: [:], includes: ["a": "#include \"b\"", "b": "deep"]) == "deep")
 Check.that("a cyclic include terminates",
            ShaderPreprocessor.resolve("#include \"a\"\ntail", combos: [:], includes: ["a": "#include \"a\"\nx"]).contains("tail"))
+// A trailing comment on a #define must not be captured into the macro value/body — it would be
+// substituted mid-statement, and the later comment-stripper would then eat the following tokens.
+Check.that("an object macro drops a trailing line comment from its value",
+           ShaderPreprocessor.resolve("#define DEG2RAD 0.01745 // 2*PI/360\na = x * DEG2RAD;", combos: [:]) == "a = x * 0.01745;")
+Check.that("an object macro drops a trailing block comment so an int value still seeds a #if",
+           ShaderPreprocessor.resolve("#define LEVELS 3 /* count */\n#if LEVELS == 3\nx\n#endif", combos: [:]) == "x")
+Check.that("a function macro drops a trailing comment from its body",
+           ShaderPreprocessor.resolve("#define SQR(x) (x)*(x) // square\nv = SQR(a);", combos: [:]).contains("((a))*((a))"))
 let crlfShader = "varying vec4 v_TexCoord;\r\nuniform sampler2D g_Texture0;\r\nvoid main() {\r\n    gl_FragColor = texSample2D(g_Texture0, v_TexCoord.xy);\r\n}\r\n"
 Check.that("a CRLF shader transpiles to a non-empty body",
            WEShaderTranspiler.fragmentToMSL(crlfShader).contains("g_Texture0.sample("))

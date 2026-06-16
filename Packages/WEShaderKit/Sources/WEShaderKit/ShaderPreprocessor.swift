@@ -75,7 +75,21 @@ public enum ShaderPreprocessor {
         let name = String(rest[rest.startIndex..<nameEnd])
         guard !name.isEmpty else { return nil }
         if nameEnd < rest.endIndex, rest[nameEnd] == "(" { return nil }   // function-like — leave it
-        return (name, String(rest[nameEnd...]).trimmingCharacters(in: .whitespaces))
+        return (name, stripTrailingComment(String(rest[nameEnd...])).trimmingCharacters(in: .whitespaces))
+    }
+
+    /// Truncate a macro value/body at a trailing `//` or `/*` comment. A `#define` is parsed before the
+    /// line comment-stripper runs, so the comment text would otherwise be substituted into live code (and
+    /// the later strip would then eat the following `;`/tokens). GLSL has no string literals, so the first
+    /// `//`/`/*` is unambiguously a comment.
+    private static func stripTrailingComment(_ text: String) -> String {
+        var i = text.startIndex
+        while i < text.endIndex {
+            let next = text.index(after: i)
+            if text[i] == "/", next < text.endIndex, text[next] == "/" || text[next] == "*" { return String(text[..<i]) }
+            i = next
+        }
+        return text
     }
 
     /// A function-like `#define NAME(p1, p2) body` (the `(` abuts the name), as `(name, params, body)`;
@@ -92,7 +106,7 @@ public enum ShaderPreprocessor {
               let close = matchingParen(rest, nameEnd) else { return nil }
         let params = rest[rest.index(after: nameEnd)..<close]
             .split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
-        let body = String(rest[rest.index(after: close)...]).trimmingCharacters(in: .whitespaces)
+        let body = stripTrailingComment(String(rest[rest.index(after: close)...])).trimmingCharacters(in: .whitespaces)
         return (name, params, body)
     }
 
