@@ -435,15 +435,26 @@ public enum WEShaderTranspiler {
     }
 
     /// Promote a bare integer-literal argument of `min`/`max`/`clamp` to a float when a sibling argument is
-    /// not an integer literal. WE/HLSL treat these as float, but MSL has no `min(int, float)` overload, so
+    /// a presumed-float value. WE/HLSL treat these as float, but MSL has no `min(int, float)` overload, so
     /// `min(x, 1)` with a float `x` is "call ambiguous". A call whose arguments are ALL integer literals
-    /// (`min(2, 3)`) is left untouched, so a genuine integer min/max keeps its type.
+    /// (`min(2, 3)`) — or where any argument is an `int`/`uint`-declared identifier (`clamp(i, 0, n-1)`) —
+    /// is left untouched, so genuine integer arithmetic keeps its type. Nested same-named calls are reached
+    /// because the search resumes inside the call, not past it.
     private static func promoteNumericLiterals(_ source: String) -> String {
         let intLiteral = try! NSRegularExpression(pattern: #"^-?\d+$"#)
         func isIntLiteral(_ s: Substring) -> Bool {
             let t = s.trimmingCharacters(in: .whitespacesAndNewlines)
             return intLiteral.firstMatch(in: t, range: NSRange(t.startIndex..., in: t)) != nil
         }
+        // Identifiers declared `int`/`uint` (including a `for (int i …)` counter) — a literal beside one of
+        // these is integer arithmetic, not a float call, so it must not be promoted.
+        var intIdentifiers = Set<String>()
+        let intDecl = try! NSRegularExpression(pattern: #"\b(?:int|uint)\s+(\w+)"#)
+        for match in intDecl.matches(in: source, range: NSRange(source.startIndex..., in: source)) {
+            if let r = Range(match.range(at: 1), in: source) { intIdentifiers.insert(String(source[r])) }
+        }
+        func isKnownInt(_ s: Substring) -> Bool { intIdentifiers.contains(s.trimmingCharacters(in: .whitespacesAndNewlines)) }
+
         var s = source
         for fn in ["min", "max", "clamp"] {
             var searchFrom = s.startIndex
@@ -468,6 +479,7 @@ public enum WEShaderTranspiler {
                 }
                 guard let closeIndex = close else { break }
                 let mixed = args.contains { isIntLiteral(s[$0]) } && args.contains { !isIntLiteral(s[$0]) }
+                    && !args.contains { isKnownInt(s[$0]) }
                 if mixed {
                     // Rebuild the call, promoting each integer-literal argument to a float literal.
                     var rebuilt = ""
@@ -477,9 +489,10 @@ public enum WEShaderTranspiler {
                         rebuilt += isIntLiteral(text) ? text.trimmingCharacters(in: .whitespacesAndNewlines) + ".0" : String(text)
                     }
                     s.replaceSubrange(call.upperBound...closeIndex, with: rebuilt + ")")
-                    searchFrom = s.startIndex   // string shifted; rescan
+                    searchFrom = s.startIndex   // the mutation invalidated the indices; rescan (a promoted
+                                                // call is no longer "mixed", so this terminates)
                 } else {
-                    searchFrom = closeIndex
+                    searchFrom = call.upperBound   // resume inside the call so a nested same-named call is reached
                 }
             }
         }

@@ -457,22 +457,26 @@ if let device = MTLCreateSystemDefaultDevice() {
 }
 
 // MSL has no min(int, float) overload, so WE's `min(x, 1)` with a float x is ambiguous — promote the
-// integer literal when a sibling argument is a non-literal; a genuine all-integer min(2, 3) is left alone.
+// integer literal when a sibling is a presumed-float value. An all-integer min(2, 3), an int-variable
+// call clamp(n, 0, n), and a nested min(min(v, 1), 5) must all behave correctly.
 let promoteShader = """
 varying vec4 v_TexCoord;
 uniform sampler2D g_Texture0;
 void main() {
     float v = texSample2D(g_Texture0, v_TexCoord.xy).r;
-    int n = min(2, 3);
-    gl_FragColor = vec4(min(v, 1), max(0, v), clamp(v, 0, 1), float(n));
+    int n = 3;
+    int idx = clamp(n, 0, n);
+    float w = min(min(v, 1), 5);
+    gl_FragColor = vec4(w, max(0, v), v * float(min(2, 3) + idx), v);
 }
 """
 let promoteMSL = WEShaderTranspiler.fragmentToMSL(promoteShader)
 Check.that("an integer literal beside a float is promoted in max", promoteMSL.contains("max(0.0, v)"))
 Check.that("an all-integer min keeps its integer type", promoteMSL.contains("min(2, 3)"))
+Check.that("a clamp on int-declared variables is not promoted", promoteMSL.contains("clamp(n, 0, n)"))
 if let device = MTLCreateSystemDefaultDevice() {
     do {
-        _ = try device.makeLibrary(source: promoteMSL, options: nil)
+        _ = try device.makeLibrary(source: promoteMSL, options: nil)   // nested min + the int-var clamp must both type-check
         Check.that("a shader mixing int literals and floats in min/max/clamp compiles", true)
     } catch {
         print("──── MSL ────\n\(promoteMSL)\n─────────────")
