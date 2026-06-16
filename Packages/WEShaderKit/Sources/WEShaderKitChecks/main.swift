@@ -283,6 +283,19 @@ Check.that("evaluates ||", ShaderPreprocessor.resolve("#if A || B\nx\n#endif", c
 Check.that("evaluates a > comparison", ShaderPreprocessor.resolve("#if QUALITY > 2\nx\n#endif", combos: ["QUALITY": 3]) == "x")
 Check.that("evaluates unary ! and parentheses", ShaderPreprocessor.resolve("#if !(MASK)\nx\n#endif", combos: ["MASK": 0]) == "x")
 Check.that("evaluates C-style defined(NAME)", ShaderPreprocessor.resolve("#if defined(X)\ny\n#endif", combos: ["X": 0]) == "y")
+// Object-like `#define NAME value` is substituted into the lines after it (the WE headers lean on this:
+// `#define endGamma 2.2`). It only takes effect from its definition downward, matches whole words, and
+// an integer value also feeds a later `#if`. Function-like macros are left for the transpiler.
+Check.that("substitutes an object-like #define into the body",
+           ShaderPreprocessor.resolve("#define endGamma 2.2\ny = endGamma;", combos: [:]) == "y = 2.2;")
+Check.that("a #define only applies below its definition",
+           ShaderPreprocessor.resolve("a = K;\n#define K 9\nb = K;", combos: [:]) == "a = K;\nb = 9;")
+Check.that("an integer #define is visible to a later #if",
+           ShaderPreprocessor.resolve("#define R 3\n#if R == 3\nx\n#endif", combos: [:]) == "x")
+Check.that("a #define substitutes whole words only",
+           ShaderPreprocessor.resolve("#define A 1\nApple AB A", combos: [:]) == "Apple AB 1")
+Check.that("a function-like macro is left untouched",
+           ShaderPreprocessor.resolve("#define CAST3(x) vec3(x)\ng = CAST3(1.0);", combos: [:]).contains("CAST3(1.0)"))
 let crlfShader = "varying vec4 v_TexCoord;\r\nuniform sampler2D g_Texture0;\r\nvoid main() {\r\n    gl_FragColor = texSample2D(g_Texture0, v_TexCoord.xy);\r\n}\r\n"
 Check.that("a CRLF shader transpiles to a non-empty body",
            WEShaderTranspiler.fragmentToMSL(crlfShader).contains("g_Texture0.sample("))

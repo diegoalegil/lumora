@@ -15,6 +15,13 @@ public enum ShaderPreprocessor {
         var stack: [Frame] = []
         func emitting() -> Bool { stack.last.map { $0.parentEmitting && $0.active } ?? true }
 
+        // Object-like `#define NAME value` macros collected as they appear, substituted into the lines
+        // that follow (C semantics: a macro takes effect from its definition downward). An integer-valued
+        // macro also seeds the combo set so a later `#if NAME == …` sees it. Function-like macros
+        // (`CAST3(x)`, `texSample2D(s,uv)`) are left for the transpiler's intrinsic rewriting.
+        var combos = combos
+        var macros: [(name: String, value: String)] = []
+
         var output: [String] = []
         for line in source.split(separator: "\n", omittingEmptySubsequences: false).map(String.init) {
             let trimmed = line.trimmingCharacters(in: .whitespaces)
@@ -35,10 +42,52 @@ public enum ShaderPreprocessor {
             } else if trimmed.hasPrefix("#endif") {
                 _ = stack.popLast()
             } else if emitting() {
-                output.append(line)
+                if let (name, value) = objectMacro(trimmed) {
+                    let expanded = substitute(value, macros)
+                    macros.append((name: name, value: expanded))
+                    if let int = Int(expanded) { combos[name] = int }   // visible to a later #if NAME
+                } else {
+                    output.append(macros.isEmpty ? line : substitute(line, macros))
+                }
             }
         }
         return output.joined(separator: "\n")
+    }
+
+    /// An object-like `#define NAME value` (NAME a bare identifier), as `(name, value)`. Returns nil for a
+    /// function-like macro `#define NAME(args) …` (the `(` abuts the name) — those are rewritten by the
+    /// transpiler — and for any non-`#define` line. A valueless `#define NAME` yields an empty value.
+    private static func objectMacro(_ line: String) -> (String, String)? {
+        guard line.hasPrefix("#define ") else { return nil }
+        let rest = Substring(line.dropFirst("#define".count)).drop { $0 == " " || $0 == "\t" }
+        var nameEnd = rest.startIndex
+        while nameEnd < rest.endIndex, rest[nameEnd].isLetter || rest[nameEnd].isNumber || rest[nameEnd] == "_" {
+            nameEnd = rest.index(after: nameEnd)
+        }
+        let name = String(rest[rest.startIndex..<nameEnd])
+        guard !name.isEmpty else { return nil }
+        if nameEnd < rest.endIndex, rest[nameEnd] == "(" { return nil }   // function-like — leave it
+        return (name, String(rest[nameEnd...]).trimmingCharacters(in: .whitespaces))
+    }
+
+    /// Replace whole-word occurrences of each macro name with its value, in definition order, repeating to
+    /// a fixed point (bounded) so a value built from an earlier macro fully expands. The whole-word guard
+    /// matches the transpiler's: not preceded by a word char or `.`, not followed by a word char.
+    private static func substitute(_ text: String, _ macros: [(name: String, value: String)]) -> String {
+        var out = text
+        for _ in 0..<8 {
+            var changed = false
+            for macro in macros {
+                let pattern = "(?<![\\w.])\(NSRegularExpression.escapedPattern(for: macro.name))(?![\\w])"
+                guard out.range(of: pattern, options: .regularExpression) != nil else { continue }
+                let regex = try! NSRegularExpression(pattern: pattern)
+                let replaced = regex.stringByReplacingMatches(in: out, range: NSRange(out.startIndex..., in: out),
+                                                              withTemplate: NSRegularExpression.escapedTemplate(for: macro.value))
+                if replaced != out { out = replaced; changed = true }
+            }
+            if !changed { break }
+        }
+        return out
     }
 
     /// Default combo values a shader declares in its `// [COMBO] {…"combo":NAME,"default":N}` header
