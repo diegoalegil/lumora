@@ -501,7 +501,10 @@ let alphaAnim = AlphaAnimation(keyframes: [AlphaKeyframe(frame: 0, value: 0),
 Check.that("alpha at t=0 is the first keyframe", alphaAnim.value(at: 0) == 0)
 Check.that("alpha reaches 1 at frame 30 (0.5s)", alphaAnim.value(at: 0.5) == 1)
 Check.that("alpha interpolates between keyframes", abs(alphaAnim.value(at: 0.25) - 0.5) < 0.0001)
-Check.that("alpha loops past the length", alphaAnim.value(at: 2.0) == 0)
+// t=2.5 is 0.5s into the second loop (length is 2.0s), where the value is the frame-30 peak of 1.
+// Clamping at the end — or any bug that just returns the first keyframe past the length — gives 0,
+// so this point actually exercises that the loop maps back into the middle of the timeline.
+Check.that("alpha loops into the timeline rather than clamping", alphaAnim.value(at: 2.5) == 1)
 let parsedAlpha = try? SceneGraph.load(from: ScenePackage.read(buildPKG(version: "PKGV0009", files: [
     ("scene.json", Data(#"{"objects":[{"image":"models/m.json","alpha":{"value":1,"animation":{"c0":[{"frame":0,"value":0},{"frame":30,"value":1}],"options":{"fps":60,"length":60}}}}]}"#.utf8)),
     ("models/m.json", Data(#"{"material":"materials/mat.json"}"#.utf8)),
