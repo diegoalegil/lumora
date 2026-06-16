@@ -144,6 +144,24 @@ if CommandLine.arguments.count > 1 {
     guard let data = try? Data(contentsOf: URL(fileURLWithPath: arg)),
           let package = try? ScenePackage.read(data),
           let document = try? SceneGraph.load(from: package) else { print("failed to load \(arg)"); exit(1) }
+    if CommandLine.arguments.count > 3, CommandLine.arguments[2] == "dumptex" {
+        if let e = package.entry(named: CommandLine.arguments[3]), let d = try? SceneTexture.decodeFirstMip(e.data),
+           let f = renderer.render(decoded: d, alpha: 1, clearColor: SceneVec3(x: 0, y: 0, z: 0),
+                                   width: min(d.imageWidth, 1024), height: min(d.imageHeight, 1024)) {
+            print("\(d.imageWidth)x\(d.imageHeight) -> \(writePNG(f, to: "/tmp/lumora_tex.png"))")
+        } else { print("decode failed") }
+        exit(0)
+    }
+    if CommandLine.arguments.count > 2, CommandLine.arguments[2] == "puppetonly" {
+        let pups = document.layers.filter { $0.puppetPath != nil }
+        let only = RenderableScene(orthoWidth: document.orthoWidth, orthoHeight: document.orthoHeight,
+                                   clearColor: SceneVec3(x: 0.12, y: 0.12, z: 0.14), layers: pups, particleSystems: [])
+        let w = min(document.orthoWidth, 1280), h = min(document.orthoHeight, 720)
+        if let f = renderer.render(only, package: package, width: w, height: h) {
+            print("puppet layers \(pups.count) -> \(writePNG(f, to: "/tmp/lumora_puppet.png"))")
+        }
+        exit(0)
+    }
     if CommandLine.arguments.count > 2, CommandLine.arguments[2] == "layers" {   // dev: dump layer placement
         print("ortho \(Int(document.orthoWidth))x\(Int(document.orthoHeight)), \(document.layers.count) layers, usesPuppet=\(document.usesPuppet):")
         for (i, l) in document.layers.enumerated() {
