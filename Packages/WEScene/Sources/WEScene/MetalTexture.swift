@@ -58,6 +58,13 @@ enum MetalTexture {
             pixelFormat: decoded.format.metalPixelFormat,
             width: decoded.width, height: decoded.height, mipmapped: false)
         descriptor.usage = .shaderRead
+        // A single-channel mask sampled as RGBA otherwise reads (r, 0, 0, 1) — an opaque red square when
+        // the shader expects the value in .a or replicated across .rgb. Broadcast r to every channel so
+        // it reads as a proper grayscale/coverage mask. (rg88 is left alone: whether its two channels are
+        // luminance+alpha or a normal's x/y is ambiguous, and either swizzle would break the other use.)
+        if decoded.format == .r8 {
+            descriptor.swizzle = MTLTextureSwizzleChannels(red: .red, green: .red, blue: .red, alpha: .red)
+        }
         guard let texture = device.makeTexture(descriptor: descriptor) else { return nil }
 
         let region = MTLRegionMake2D(0, 0, decoded.width, decoded.height)
