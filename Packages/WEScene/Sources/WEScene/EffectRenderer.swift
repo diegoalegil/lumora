@@ -108,7 +108,7 @@ public final class EffectRenderer {
               attributes.allSatisfy({ $0.name == "a_Position" || $0.name == "a_TexCoord" }) else { return nil }
         guard let vertexLibrary = try? device.makeLibrary(source: WEShaderTranspiler.vertexToMSL(vertexShader, combos: combos), options: nil),
               let vertex = vertexLibrary.makeFunction(name: "we_vertex"),
-              let fragmentLibrary = try? device.makeLibrary(source: WEShaderTranspiler.fragmentToMSL(fragmentShader, combos: combos), options: nil),
+              let fragmentLibrary = try? device.makeLibrary(source: WEShaderTranspiler.fragmentToMSL(fragmentShader, combos: combos, pairedVertex: vertexShader), options: nil),
               let fragment = fragmentLibrary.makeFunction(name: "we_fragment") else { return nil }
 
         let vertexDescriptor = MTLVertexDescriptor()

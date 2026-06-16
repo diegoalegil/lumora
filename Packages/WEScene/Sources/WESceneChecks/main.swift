@@ -431,6 +431,32 @@ if let effectRenderer = EffectRenderer(device: renderer.device) {
     } else {
         Check.that("the effect's own vertex links the pipeline", false)
     }
+
+    // A vertex that writes a varying the fragment ignores — sitting between two the fragment does use —
+    // must still link: the fragment's stage_in mirrors the vertex's varyings so the locations don't drift
+    // (the vhs regression, where v_TexCoordGlitchBase shifted v_TexCoordGlitch).
+    let extraVertex = """
+    attribute vec3 a_Position;
+    attribute vec2 a_TexCoord;
+    uniform mat4 g_ModelViewProjectionMatrix;
+    varying vec4 v_TexCoord;
+    varying vec2 v_Ignored;
+    varying vec3 v_Used;
+    void main() {
+        gl_Position = mul(vec4(a_Position, 1.0), g_ModelViewProjectionMatrix);
+        v_TexCoord = vec4(a_TexCoord, a_TexCoord);
+        v_Ignored = vec2(9.0);
+        v_Used = vec3(0.5);
+    }
+    """
+    let usingFragment = """
+    varying vec4 v_TexCoord;
+    varying vec3 v_Used;
+    uniform sampler2D g_Texture0;
+    void main() { gl_FragColor = texSample2D(g_Texture0, v_TexCoord.xy) * vec4(v_Used, 1.0); }
+    """
+    Check.that("a vertex varying the fragment ignores doesn't drift the locations or break the link",
+               effectRenderer.makeVertexPipeline(vertexShader: extraVertex, fragmentShader: usingFragment) != nil)
 }
 
 Check.summarize()

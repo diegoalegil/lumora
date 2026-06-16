@@ -10,21 +10,31 @@ import Foundation
 
 public enum WEShaderTranspiler {
     /// Transpile a WE-dialect fragment shader to an MSL source string with a fragment function named
-    /// `functionName`. Reuses `ShaderUniforms` to bind textures and a uniform buffer.
+    /// `functionName`. Reuses `ShaderUniforms` to bind textures and a uniform buffer. When `pairedVertex`
+    /// is given (the effect's own vertex), the stage_in struct mirrors THAT shader's varyings, so the two
+    /// stages agree on every `[[user(locN)]]` slot and the pipeline links — the fragment body just reads
+    /// whichever subset it uses. Standalone, it derives the struct from its own varyings, dropping any it
+    /// never reads (a dead varying would otherwise shift the locations).
     public static func fragmentToMSL(_ source: String, functionName: String = "we_fragment",
                                      combos: [String: Int] = [:],
-                                     includes: [String: String] = WEStandardHeaders.all) -> String {
+                                     includes: [String: String] = WEStandardHeaders.all,
+                                     pairedVertex: String? = nil) -> String {
         let combos = ShaderPreprocessor.comboDefaults(source).merging(combos) { _, explicit in explicit }
         let resolved = ShaderPreprocessor.resolve(source, combos: combos, includes: includes)
         let uniforms = ShaderUniforms.parse(resolved)
         let samplers = uniforms.filter { $0.type.hasPrefix("sampler") }
         let scalars = uniforms.filter { !$0.type.hasPrefix("sampler") }
-        // Drop varyings the fragment never reads. Some shaders declare a varying (e.g. waterripple's
-        // v_Scroll) the paired vertex never writes; left in the stage_in struct it shifts every later
-        // varying's location and the pipeline fails to link against the vertex. A varying only the vertex
-        // produces is harmless; one the fragment doesn't use is dead, so omitting it is safe and realigns
-        // the locations with the vertex's outputs.
-        let varyings = parseDeclarations(resolved, keyword: "varying").filter { isReferenced($0.name, in: resolved) }
+        // The stage_in varyings (which fix the [[user(locN)]] layout). With a paired vertex, use ITS
+        // varyings verbatim — the fragment's must line up slot-for-slot with what the vertex writes, even
+        // ones the fragment ignores. Standalone, use the fragment's own, dropping any it never reads (a
+        // dead varying, e.g. waterripple's v_Scroll, would otherwise take a slot and shift the rest).
+        let varyings: [(type: String, name: String, count: Int?)]
+        if let pairedVertex {
+            let vertexResolved = ShaderPreprocessor.resolve(pairedVertex, combos: combos, includes: includes)
+            varyings = parseDeclarations(vertexResolved, keyword: "varying")
+        } else {
+            varyings = parseDeclarations(resolved, keyword: "varying").filter { isReferenced($0.name, in: resolved) }
+        }
 
         // Qualify references: scalar varyings come from stage_in, scalar uniforms from the uniform
         // buffer, gl_FragColor → the local we return. Array varyings stay bare — they resolve to a local
