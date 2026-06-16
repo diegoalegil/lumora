@@ -563,6 +563,9 @@ Check.that("an object macro drops a trailing block comment so an int value still
            ShaderPreprocessor.resolve("#define LEVELS 3 /* count */\n#if LEVELS == 3\nx\n#endif", combos: [:]) == "x")
 Check.that("a function macro drops a trailing comment from its body",
            ShaderPreprocessor.resolve("#define SQR(x) (x)*(x) // square\nv = SQR(a);", combos: [:]).contains("((a))*((a))"))
+// A reduplicating macro must not amplify memory without bound on crafted (untrusted) shader input.
+let macroBomb = ShaderPreprocessor.resolve("#define A(x) x x\n#define B(x) A(A(x))\n#define C(x) B(B(x))\n#define D(x) C(C(x))\nv = D(D(D(z)));", combos: [:])
+Check.that("a reduplicating macro expansion stays bounded", macroBomb.utf8.count < 5_000_000)
 let crlfShader = "varying vec4 v_TexCoord;\r\nuniform sampler2D g_Texture0;\r\nvoid main() {\r\n    gl_FragColor = texSample2D(g_Texture0, v_TexCoord.xy);\r\n}\r\n"
 Check.that("a CRLF shader transpiles to a non-empty body",
            WEShaderTranspiler.fragmentToMSL(crlfShader).contains("g_Texture0.sample("))

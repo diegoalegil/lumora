@@ -123,7 +123,10 @@ public enum ShaderPreprocessor {
             }
             let substituted = substitute(out, macros)
             if substituted != out { out = substituted; changed = true }
-            if !changed { break }
+            // The 8-iteration cap bounds passes, not per-pass text growth: a reduplicating macro
+            // (`#define D(x) x x`, nested) can amplify the text exponentially within those passes. A
+            // shader is untrusted, so stop once the expansion is implausibly large.
+            if !changed || out.utf8.count > 1_000_000 { break }
         }
         return out
     }
