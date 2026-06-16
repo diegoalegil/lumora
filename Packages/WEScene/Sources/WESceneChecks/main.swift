@@ -182,6 +182,21 @@ print("WEScene: Metal device '\(renderer.device.name)', BC support: \(renderer.d
 Check.section("SceneRenderer")
 let red = SceneVec3(x: 1, y: 0, z: 0)
 
+// A crafted particle system can declare an unbounded rate/lifetime; the steady-state slot count must
+// clamp into [1, maxcount] without trapping the Int conversion (rate × lifetime can overflow to inf).
+Check.that("a normal rate × lifetime gives the expected slot count",
+           SceneRenderer.particleInstanceCount(rate: 50, lifetimeUpper: 3, maxCount: 4000) == 150)
+Check.that("the slot count is capped at maxcount",
+           SceneRenderer.particleInstanceCount(rate: 1000, lifetimeUpper: 10, maxCount: 4000) == 4000)
+Check.that("an overflowing rate × lifetime clamps to the cap instead of trapping",
+           SceneRenderer.particleInstanceCount(rate: 1e300, lifetimeUpper: 1e300, maxCount: 4000) == 4000)
+Check.that("a huge finite rate clamps to the cap",
+           SceneRenderer.particleInstanceCount(rate: 1e200, lifetimeUpper: 1, maxCount: 4000) == 4000)
+Check.that("a non-finite lifetime clamps to the cap",
+           SceneRenderer.particleInstanceCount(rate: 1, lifetimeUpper: .infinity, maxCount: 4000) == 4000)
+Check.that("at least one slot is always allocated",
+           SceneRenderer.particleInstanceCount(rate: 0.0001, lifetimeUpper: 0.0001, maxCount: 4000) == 1)
+
 // 1) Clear-only: no texture -> the frame is the clear colour.
 if let frame = renderer.render(texture: nil, alpha: 1, clearColor: red, width: 8, height: 8) {
     let (r, g, b) = centerRGB(frame)

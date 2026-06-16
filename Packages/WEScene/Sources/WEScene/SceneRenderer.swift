@@ -340,6 +340,18 @@ public final class SceneRenderer {
         return try? device.makeRenderPipelineState(descriptor: descriptor)
     }
 
+    /// The number of particle-instance slots to allocate ≈ spawn rate × longest lifetime, capped to the
+    /// system's maxcount. `rate` and `lifetime` come from untrusted scene JSON with no upper bound, so the
+    /// product is clamped into [1, maxCount] in Double space — and a non-finite product (an overflow to
+    /// infinity from a crafted rate × lifetime) is treated as the cap — before the `Int(_:)` conversion,
+    /// which would otherwise trap on a value past Int.max or on infinity and crash the scene load.
+    public static func particleInstanceCount(rate: Double, lifetimeUpper: Double, maxCount: Int) -> Int {
+        let cap = max(1, maxCount)
+        let steady = (rate * lifetimeUpper).rounded(.up)
+        guard steady.isFinite else { return cap }
+        return min(cap, max(1, Int(min(steady, Double(cap)))))
+    }
+
     /// Decode and upload every visible layer's texture once into a `PreparedScene`, so the render loop
     /// can redraw every frame without touching the disk. Placement is resolution-independent (NDC).
     public func prepare(_ document: RenderableScene, package: ScenePackage) -> PreparedScene {
@@ -431,7 +443,8 @@ public final class SceneRenderer {
         for system in document.particleSystems {
             guard let sprite = particleSprite(system, package: package) else { continue }
             // Steady-state live count ≈ spawn rate × longest lifetime, capped to the system's maxcount.
-            let count = min(system.maxCount, max(1, Int((system.rate * system.lifetime.upperBound).rounded(.up))))
+            let count = SceneRenderer.particleInstanceCount(rate: system.rate, lifetimeUpper: system.lifetime.upperBound,
+                                                            maxCount: system.maxCount)
             // One instance buffer per system, allocated once and refilled each frame, instead of a fresh
             // allocation every frame for the life of the wallpaper.
             guard let instanceBuffer = device.makeBuffer(length: MemoryLayout<ParticleInstance>.stride * count,
