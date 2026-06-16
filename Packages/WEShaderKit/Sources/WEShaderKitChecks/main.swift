@@ -540,6 +540,35 @@ if let device = MTLCreateSystemDefaultDevice() {
     }
 }
 
+// A file-scope const whose initializer reads a uniform can't be an MSL `constant` (that address space
+// can't see the uniform buffer); it's hoisted into main as a qualified local, ahead of any lambda that
+// captures it. A const with a compile-time initializer still emits at file scope.
+let uniformConstShader = """
+varying vec4 v_TexCoord;
+uniform sampler2D g_Texture0;
+uniform float u_Feather;
+const float FEATHER = u_Feather * 0.5;
+const float GAMMA = 2.2;
+void main() {
+    float edge = smoothstep(0.5 - FEATHER, 0.5 + FEATHER, v_TexCoord.x);
+    vec3 c = pow(texSample2D(g_Texture0, v_TexCoord.xy).rgb, vec3(GAMMA));
+    gl_FragColor = vec4(c * edge, 1.0);
+}
+"""
+let uniformConstMSL = WEShaderTranspiler.fragmentToMSL(uniformConstShader)
+Check.that("a uniform-derived const is hoisted into main as a qualified local", uniformConstMSL.contains("float FEATHER = u.u_Feather * 0.5;"))
+Check.that("a uniform-derived const is not emitted at file scope", !uniformConstMSL.contains("constant float FEATHER"))
+Check.that("a compile-time const still emits at file scope", uniformConstMSL.contains("constant float GAMMA = 2.2;"))
+if let device = MTLCreateSystemDefaultDevice() {
+    do {
+        _ = try device.makeLibrary(source: uniformConstMSL, options: nil)
+        Check.that("a shader with a uniform-derived file-scope const compiles", true)
+    } catch {
+        print("──── MSL ────\n\(uniformConstMSL)\n─────────────")
+        Check.that("a shader with a uniform-derived file-scope const compiles", false)
+    }
+}
+
 Check.section("ShaderPreprocessor")
 let conditional = "a\n#if MASK == 1\nb\n#else\nc\n#endif\nd"
 Check.that("keeps the active #if branch", ShaderPreprocessor.resolve(conditional, combos: ["MASK": 1]) == "a\nb\nd")

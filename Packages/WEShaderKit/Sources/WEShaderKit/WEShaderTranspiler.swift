@@ -53,6 +53,7 @@ public enum WEShaderTranspiler {
         }
         msl += ") {\n    float4 _fragColor = float4(0.0);\n"
         msl += arrayVaryingLocals(varyings, from: "in")
+        msl += globalConstLocals(of: resolved, applying: qualifiers)
         msl += globalHelperLambdas(of: resolved, applying: qualifiers)
         msl += body
         msl += "\n    return _fragColor;\n}\n"
@@ -107,6 +108,7 @@ public enum WEShaderTranspiler {
         }
         msl += ") {\n    VertexOut out;\n"
         msl += arrayVaryingDeclarations(varyings)
+        msl += globalConstLocals(of: resolved, applying: qualifiers)
         msl += globalHelperLambdas(of: resolved, applying: qualifiers)
         msl += body
         msl += arrayVaryingWriteback(varyings)
@@ -277,14 +279,20 @@ public enum WEShaderTranspiler {
     /// functions; `globalHelperLambdas` hosts them inside main instead.
     private static func globalsTouchingFunctions(of source: String) -> Set<String> {
         let cleaned = stripDirectivesAndComments(source)
+        let uniformConsts = uniformDerivedConstNames(of: source)
         var functions: [(name: String, text: String)] = []
         for (signature, body) in topLevelBlocks(cleaned) where signature.contains("(") {
             let name = functionName(of: signature)
             if !name.isEmpty, name != "main" { functions.append((name, signature + body)) }
         }
-        var touching = Set(functions.filter { f in
-            f.text.contains("g_") || f.text.contains("u_") || f.text.contains("texSample") || f.text.contains("gl_")
-        }.map(\.name))
+        // A helper "touches globals" if it reads a g_*/u_*/sampler/gl_* directly, OR reads a file-scope
+        // const that is itself uniform-derived (and so lives as a main-local, not at file scope).
+        func touchesGlobals(_ text: String) -> Bool {
+            referencesGlobals(text) || uniformConsts.contains { name in
+                text.range(of: "(?<![\\w.])\(NSRegularExpression.escapedPattern(for: name))(?![\\w])", options: .regularExpression) != nil
+            }
+        }
+        var touching = Set(functions.filter { touchesGlobals($0.text) }.map(\.name))
         var changed = true
         while changed {
             changed = false
@@ -295,6 +303,29 @@ public enum WEShaderTranspiler {
             }
         }
         return touching
+    }
+
+    /// Whether `text` references one of the fragment's globals — a g_*/u_* uniform, a sampler (via
+    /// texSample) or a gl_* builtin. These aren't reachable from a free MSL function or a file-scope
+    /// `constant`, so anything referencing one is hosted inside main instead.
+    private static func referencesGlobals(_ text: String) -> Bool {
+        text.contains("g_") || text.contains("u_") || text.contains("texSample") || text.contains("gl_")
+    }
+
+    /// Names of file-scope `const`s whose initializer reads a uniform/global (e.g. a transition shader's
+    /// `const float FEATHER = u_Feather * 0.5;`). MSL's `constant` address space needs a compile-time
+    /// constant and can't see the uniform buffer, so these are emitted as qualified main-locals by
+    /// `globalConstLocals` rather than at file scope.
+    private static func uniformDerivedConstNames(of source: String) -> Set<String> {
+        let cleaned = stripDirectivesAndComments(source)
+        var names: Set<String> = []
+        for statement in topLevelStatements(cleaned) {
+            let trimmed = statement.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard trimmed.hasPrefix("const "), referencesGlobals(trimmed) else { continue }
+            let tokens = trimmed.dropFirst("const ".count).split(whereSeparator: { $0 == " " || $0 == "\t" || $0 == "=" })
+            if tokens.count >= 2 { names.insert(String(tokens[1])) }   // const <type> <name> = …
+        }
+        return names
     }
 
     /// The shader source with `#` directives and comments stripped — the form the block/helper scanners
@@ -323,15 +354,34 @@ public enum WEShaderTranspiler {
     /// `const mat3 aces_input_matrix = mat3(…)`) in MSL's `constant` address space, so the helper
     /// functions and main that reference them resolve. Only `const`-qualified top-level statements are
     /// taken — uniforms, varyings and attributes are bound elsewhere — and they're emitted before the
-    /// helpers, which may read them.
+    /// helpers, which may read them. A const whose initializer reads a uniform/global is skipped here and
+    /// hoisted into main by `globalConstLocals` (the `constant` address space can't see the uniform buffer).
     private static func globalConstants(of source: String) -> String {
         let cleaned = stripLineComments(stripBlockComments(source)).split(separator: "\n", omittingEmptySubsequences: false)
             .filter { !$0.trimmingCharacters(in: .whitespaces).hasPrefix("#") }.joined(separator: "\n")
         var out = ""
         for statement in topLevelStatements(cleaned) {
             let trimmed = statement.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard trimmed.hasPrefix("const ") else { continue }
+            guard trimmed.hasPrefix("const "), !referencesGlobals(trimmed) else { continue }
             out += "constant " + rewriteTypes(rewriteIntrinsics(String(trimmed.dropFirst("const ".count)))) + ";\n"
+        }
+        return out
+    }
+
+    /// Hoist file-scope `const`s whose initializer reads a uniform/global into main as qualified locals, in
+    /// declaration order, ahead of the helper lambdas that may capture them. The uniform reference is
+    /// qualified (`u_Feather` → `u.u_Feather`) exactly like main's body, which a file-scope `constant`
+    /// can't be.
+    private static func globalConstLocals(of source: String, applying qualifiers: [(String, String)]) -> String {
+        let cleaned = stripLineComments(stripBlockComments(source)).split(separator: "\n", omittingEmptySubsequences: false)
+            .filter { !$0.trimmingCharacters(in: .whitespaces).hasPrefix("#") }.joined(separator: "\n")
+        var out = ""
+        for statement in topLevelStatements(cleaned) {
+            let trimmed = statement.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard trimmed.hasPrefix("const "), referencesGlobals(trimmed) else { continue }
+            var decl = rewriteTypes(rewriteIntrinsics(String(trimmed.dropFirst("const ".count))))
+            for (name, replacement) in qualifiers { decl = qualify(decl, name: name, with: replacement) }
+            out += "    \(decl);\n"
         }
         return out
     }
