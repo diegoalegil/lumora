@@ -135,7 +135,10 @@ public enum WEShaderTranspiler {
             guard let m = pattern.firstMatch(in: line, range: whole),
                   let t = Range(m.range(at: 1), in: line), let n = Range(m.range(at: 2), in: line) else { return }
             let name = String(line[n])
-            let count = Range(m.range(at: 3), in: line).flatMap { Int(line[$0]) }
+            // Clamp the array length: a shader is untrusted third-party input, and an absurd `[N]` would
+            // otherwise expand to N members in a 0..<N loop (OOM/hang). Metal's interpolant budget is far
+            // below this; an over-long array is treated as non-array, degrading to a no-op shader.
+            let count = Range(m.range(at: 3), in: line).flatMap { Int(line[$0]) }.flatMap { (1...64).contains($0) ? $0 : nil }
             if seen.insert(name).inserted { result.append((type: String(line[t]), name: name, count: count)) }   // dedup repeats
         }
         return result

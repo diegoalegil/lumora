@@ -265,6 +265,14 @@ if let device = MTLCreateSystemDefaultDevice() {
         Check.that("an array-varying vertex and fragment both compile", false)
     }
 }
+// A wallpaper's shader bytes are untrusted, so an absurd array-varying length must not expand to millions
+// of stage-in members (OOM); it is treated as non-array and the shader degrades to a no-op.
+let hugeArrayMSL = WEShaderTranspiler.fragmentToMSL("""
+varying vec2 v_TexCoord[999999999];
+uniform sampler2D g_Texture0;
+void main() { gl_FragColor = texSample2D(g_Texture0, v_TexCoord[0]); }
+""")
+Check.that("an over-long array varying is not expanded to millions of members", hugeArrayMSL.count < 100_000)
 
 // The bundled clean-room headers declare the blend/colour helpers WE shaders pull in with #include.
 // A shader calling BlendOpacity (common_blending.h) and hsv2rgb/rgb2hsv (common.h) must transpile to
