@@ -35,6 +35,15 @@ private struct QuadUniform {
     var rotB: SIMD2<Float> = SIMD2(0, 1)
 }
 
+/// Placement uniform for a puppet mesh draw — matches the MSL `PuppetU` (origin/scale in scene units, the
+/// ortho size, and the cover aspect scale).
+private struct PuppetU {
+    var origin: SIMD2<Float>
+    var scale: SIMD2<Float>
+    var ortho: SIMD2<Float>
+    var aspectScale: SIMD2<Float>
+}
+
 /// One particle sprite for the instanced draw: clip-space centre + half-extent, RGB tint and alpha.
 private struct ParticleInstance {
     var center: SIMD2<Float>
@@ -108,6 +117,17 @@ final class VideoFrameTrack: @unchecked Sendable {
     }
 }
 
+/// A puppet layer's mesh, uploaded once: the (position, uv) vertex stream, the triangle indices, and the
+/// scene placement (origin/scale in scene units + the ortho size) that maps model space into the frame.
+private struct PreparedPuppet {
+    let vertexBuffer: MTLBuffer
+    let indexBuffer: MTLBuffer
+    let indexCount: Int
+    let origin: SIMD2<Float>
+    let scale: SIMD2<Float>
+    let ortho: SIMD2<Float>
+}
+
 private struct PreparedLayer {
     let texture: MTLTexture
     let center: SIMD2<Float>
@@ -124,6 +144,7 @@ private struct PreparedLayer {
     let rotB: SIMD2<Float>
     let effects: [PreparedEffect]   // post-process passes applied to this layer before compositing
     let videoTrack: VideoFrameTrack?  // video-texture animation frames (nil = static `texture`)
+    let puppet: PreparedPuppet?     // skeletal mesh to draw instead of the quad (nil = ordinary layer)
 }
 
 /// A scene whose layer textures are decoded and uploaded once, ready to re-render every frame (so an
@@ -170,6 +191,7 @@ public final class SceneRenderer {
     private let pipelineAdditive: MTLRenderPipelineState
     private let particleAdditive: MTLRenderPipelineState   // instanced sprite draw, additive (glow)
     private let particleAlpha: MTLRenderPipelineState      // instanced sprite draw, alpha (solid sprites)
+    private let pipelinePuppet: MTLRenderPipelineState     // skeletal puppet mesh (over-blend), atlas-textured
     private let sampler: MTLSamplerState
     private let whiteTexture: MTLTexture
     private let blackTexture: MTLTexture           // util/black aux default
@@ -204,6 +226,18 @@ public final class SceneRenderer {
                                           constant float3 &tint [[buffer(1)]]) {
         float4 c = tex.sample(samp, in.uv);
         return float4(c.rgb * tint, c.a * layerAlpha);
+    }
+    // A puppet layer draws a real mesh (assembled from its sprite atlas) instead of a quad: each vertex is a
+    // model-space position + atlas UV, placed into the scene by the object's origin/scale and the ortho.
+    struct PuppetU { float2 origin; float2 scale; float2 ortho; float2 aspectScale; };
+    struct PuppetVtx { float2 pos [[attribute(0)]]; float2 uv [[attribute(1)]]; };
+    vertex VOut lumora_puppet_vertex(PuppetVtx in [[stage_in]], constant PuppetU &u [[buffer(1)]]) {
+        float2 world = u.origin + in.pos * u.scale;
+        float2 ndc = (world / u.ortho) * 2.0 - 1.0;
+        VOut out;
+        out.position = float4(ndc * u.aspectScale, 0, 1);
+        out.uv = in.uv;
+        return out;
     }
     struct PInst { float2 center; float2 halfExtent; float4 color; };
     struct POut { float4 position [[position]]; float2 uv; float4 color; };
@@ -243,11 +277,14 @@ public final class SceneRenderer {
                   let particleAdd = Self.makeParticlePipeline(device: device, vertex: particleVertex,
                                                               fragment: particleFragment, additive: true),
                   let particleOver = Self.makeParticlePipeline(device: device, vertex: particleVertex,
-                                                               fragment: particleFragment, additive: false) else { return nil }
+                                                               fragment: particleFragment, additive: false),
+                  let puppetVertex = library.makeFunction(name: "lumora_puppet_vertex"),
+                  let puppet = Self.makePuppetPipeline(device: device, vertex: puppetVertex, fragment: fragmentFunction) else { return nil }
             self.pipelineOver = over
             self.pipelineAdditive = additive
             self.particleAdditive = particleAdd
             self.particleAlpha = particleOver
+            self.pipelinePuppet = puppet
         } catch {
             return nil
         }
@@ -354,6 +391,30 @@ public final class SceneRenderer {
         color.sourceAlphaBlendFactor = .one   // straight-alpha: don't square the source alpha
         color.destinationRGBBlendFactor = additive ? .one : .oneMinusSourceAlpha
         color.destinationAlphaBlendFactor = additive ? .one : .oneMinusSourceAlpha
+        return try? device.makeRenderPipelineState(descriptor: descriptor)
+    }
+
+    /// The puppet-mesh pipeline: a per-vertex (position, uv) stream (stride 16, buffer 0) drawn alpha-over,
+    /// atlas-textured. The placement uniform binds at vertex buffer 1.
+    private static func makePuppetPipeline(device: MTLDevice, vertex: MTLFunction, fragment: MTLFunction) -> MTLRenderPipelineState? {
+        let vertexDescriptor = MTLVertexDescriptor()
+        vertexDescriptor.attributes[0].format = .float2; vertexDescriptor.attributes[0].offset = 0;  vertexDescriptor.attributes[0].bufferIndex = 0
+        vertexDescriptor.attributes[1].format = .float2; vertexDescriptor.attributes[1].offset = 8;  vertexDescriptor.attributes[1].bufferIndex = 0
+        vertexDescriptor.layouts[0].stride = 16
+        vertexDescriptor.layouts[0].stepFunction = .perVertex
+        let descriptor = MTLRenderPipelineDescriptor()
+        descriptor.vertexFunction = vertex
+        descriptor.fragmentFunction = fragment
+        descriptor.vertexDescriptor = vertexDescriptor
+        let color = descriptor.colorAttachments[0]!
+        color.pixelFormat = .rgba8Unorm
+        color.isBlendingEnabled = true
+        color.rgbBlendOperation = .add
+        color.alphaBlendOperation = .add
+        color.sourceRGBBlendFactor = .sourceAlpha
+        color.sourceAlphaBlendFactor = .one
+        color.destinationRGBBlendFactor = .oneMinusSourceAlpha
+        color.destinationAlphaBlendFactor = .oneMinusSourceAlpha
         return try? device.makeRenderPipelineState(descriptor: descriptor)
     }
 
@@ -466,6 +527,29 @@ public final class SceneRenderer {
                     NSLog("Lumora: video texture kept static — scene VRAM budget reached")
                 }
             }
+            // A puppet layer draws its assembled skeletal mesh (sprite-atlas parts) instead of a quad. The
+            // model-space positions are placed by the object's origin/scale; the mesh UVs are scaled by the
+            // texture's content ratio so a padded (POT) atlas samples the right region, like the quad path.
+            // GATED behind LUMORA_PUPPET while skeletal assembly is being finished: off by default so puppet
+            // layers fall back to the existing path and the player shows the static-preview stopgap (no
+            // regression); set it to develop/verify the mesh path.
+            var puppet: PreparedPuppet?
+            if ProcessInfo.processInfo.environment["LUMORA_PUPPET"] != nil,
+               let puppetPath = layer.puppetPath, let entry = package.entry(named: puppetPath),
+               let mesh = PuppetModel.parseMesh(entry.data), mesh.indices.count >= 3 {
+                var verts = [Float](); verts.reserveCapacity(mesh.positions.count * 4)
+                for i in 0 ..< mesh.positions.count {
+                    let p = mesh.positions[i], uv = mesh.uvs[i]
+                    verts.append(contentsOf: [p.x, p.y, uv.x * uvScale.x, uv.y * uvScale.y])
+                }
+                if let vbuf = device.makeBuffer(bytes: verts, length: verts.count * 4, options: .storageModeShared),
+                   let ibuf = device.makeBuffer(bytes: mesh.indices, length: mesh.indices.count * 4, options: .storageModeShared) {
+                    puppet = PreparedPuppet(vertexBuffer: vbuf, indexBuffer: ibuf, indexCount: mesh.indices.count,
+                                            origin: SIMD2(Float(layer.origin.x), Float(layer.origin.y)),
+                                            scale: SIMD2(Float(layer.scale.x), Float(layer.scale.y)),
+                                            ortho: SIMD2(Float(orthoW), Float(orthoH)))
+                }
+            }
             prepared.append(PreparedLayer(
                 texture: texture,
                 center: center,
@@ -480,9 +564,10 @@ public final class SceneRenderer {
                 originScale: SIMD2(Float(2 / orthoW), Float(2 / orthoH)),
                 rotA: rotA,
                 rotB: rotB,
-                effects: prepareEffects(layer.effects, package: package, base: texture,
+                effects: puppet != nil ? [] : prepareEffects(layer.effects, package: package, base: texture,
                                         center: center, halfExtent: halfExtent, uvScale: uvScale, tint: tint),
-                videoTrack: videoTrack))
+                videoTrack: videoTrack,
+                puppet: puppet))
         }
 
         var preparedParticles: [PreparedParticles] = []
@@ -840,6 +925,23 @@ public final class SceneRenderer {
         return withRenderPass(clearColor: scene.clearColor, width: width, height: height) { encoder in
             for (index, layer) in scene.layers.enumerated() {
                 var alpha = layer.alphaAnimation.map { Float($0.value(at: time)) } ?? layer.alpha
+
+                // A puppet layer draws its assembled mesh (indexed triangles) textured with the atlas,
+                // instead of a flat quad.
+                if let pup = layer.puppet {
+                    var pu = PuppetU(origin: pup.origin, scale: pup.scale, ortho: pup.ortho, aspectScale: aspectScale)
+                    var tint = layer.tint
+                    encoder.setRenderPipelineState(pipelinePuppet)
+                    encoder.setVertexBuffer(pup.vertexBuffer, offset: 0, index: 0)
+                    encoder.setVertexBytes(&pu, length: MemoryLayout<PuppetU>.stride, index: 1)
+                    encoder.setFragmentTexture(layer.texture, index: 0)
+                    encoder.setFragmentSamplerState(sampler, index: 0)
+                    encoder.setFragmentBytes(&alpha, length: MemoryLayout<Float>.size, index: 0)
+                    encoder.setFragmentBytes(&tint, length: MemoryLayout<SIMD3<Float>>.stride, index: 1)
+                    encoder.drawIndexedPrimitives(type: .triangle, indexCount: pup.indexCount,
+                                                  indexType: .uint32, indexBuffer: pup.indexBuffer, indexBufferOffset: 0)
+                    continue
+                }
                 encoder.setRenderPipelineState(layer.isAdditive ? pipelineAdditive : pipelineOver)
                 var quad: QuadUniform
                 var tint: SIMD3<Float>

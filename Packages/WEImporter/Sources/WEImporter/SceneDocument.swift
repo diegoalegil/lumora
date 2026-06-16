@@ -169,6 +169,32 @@ public struct SceneLayer: Sendable, Equatable {
     public let shader: String?
     /// Post-process effects applied to the layer, in order.
     public let effects: [LayerEffect]
+    /// In-package path of the layer's puppet mesh (`…_puppet.mdl`), if the object is puppet-rigged. The
+    /// renderer draws this skeletal mesh (assembled from the sprite atlas) instead of a flat quad.
+    public let puppetPath: String?
+
+    public init(name: String, texturePath: String?, isSolidLayer: Bool, origin: SceneVec3, scale: SceneVec3,
+                size: SceneVec3?, angles: SceneVec3, alpha: Double, color: SceneVec3,
+                alphaAnimation: AlphaAnimation?, originAnimation: Vec3Animation?, parallaxDepth: SceneVec3,
+                visible: Bool, blending: String?, shader: String?, effects: [LayerEffect], puppetPath: String? = nil) {
+        self.name = name
+        self.texturePath = texturePath
+        self.isSolidLayer = isSolidLayer
+        self.origin = origin
+        self.scale = scale
+        self.size = size
+        self.angles = angles
+        self.alpha = alpha
+        self.color = color
+        self.alphaAnimation = alphaAnimation
+        self.originAnimation = originAnimation
+        self.parallaxDepth = parallaxDepth
+        self.visible = visible
+        self.blending = blending
+        self.shader = shader
+        self.effects = effects
+        self.puppetPath = puppetPath
+    }
 }
 
 /// A parsed scene: its orthographic size, clear colour and ordered image layers (painter's order).
@@ -237,11 +263,12 @@ public enum SceneGraph {
             }
             guard let imagePath = object["image"] as? String, !imagePath.isEmpty else { continue }
             let material = resolveMaterial(imagePath: imagePath, in: package)
-            // A puppet object references a bone/mesh model — flag the scene so the player can fall back to
-            // the static preview rather than drawing the unassembled atlas.
-            if object["puppet"] != nil || (json(package.entry(named: imagePath)).map { $0["puppet"] != nil } ?? false) {
-                usesPuppet = true
-            }
+            // A puppet object references a bone/mesh model (on the object, or inside its model JSON). Capture
+            // the `.mdl` path so the renderer can draw the assembled mesh; flag the scene either way so the
+            // player still falls back to the static preview for puppets the renderer can't yet assemble.
+            let puppetPath = (object["puppet"] as? String)
+                ?? (json(package.entry(named: imagePath))?["puppet"] as? String)
+            if puppetPath != nil { usesPuppet = true }
             layers.append(SceneLayer(
                 name: object["name"] as? String ?? "",
                 texturePath: material.texture,
@@ -258,7 +285,8 @@ public enum SceneGraph {
                 visible: isVisible(object["visible"]),
                 blending: material.blending,
                 shader: material.shader,
-                effects: effects(of: object, in: package)
+                effects: effects(of: object, in: package),
+                puppetPath: puppetPath
             ))
         }
         return RenderableScene(
