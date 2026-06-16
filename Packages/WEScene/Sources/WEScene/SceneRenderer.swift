@@ -54,6 +54,34 @@ private struct PreparedEffect {
 }
 
 /// One layer of a `PreparedScene`: an uploaded texture plus its resolution-independent placement.
+/// A video-backed layer's animation frames. Decoding a couple dozen exact frames with seeks is slow,
+/// so it runs off the render thread; the decoded CPU pixels are handed back under a lock and uploaded
+/// to the GPU lazily, the first time the render thread asks for them. `@unchecked Sendable`: `pending`
+/// is lock-guarded; `uploaded`/`frameDuration` are only ever touched on the render thread.
+final class VideoFrameTrack: @unchecked Sendable {
+    private let lock = NSLock()
+    private var pending: (frames: [DecodedTexture], duration: Double)?
+    private var uploaded: [MTLTexture] = []
+    private(set) var frameDuration = 0.0
+
+    /// Called once from the background decode queue.
+    func deliver(_ frames: [DecodedTexture], duration: Double) {
+        lock.lock(); pending = (frames, duration); lock.unlock()
+    }
+
+    /// The uploaded frames, uploading the delivered batch on first use. Render-thread only.
+    func frames(device: MTLDevice) -> [MTLTexture] {
+        guard uploaded.isEmpty else { return uploaded }
+        lock.lock(); let batch = pending; pending = nil; lock.unlock()
+        guard let batch else { return [] }
+        let textures = batch.frames.compactMap { MetalTexture.make($0, device: device) }
+        guard textures.count >= 2 else { return [] }
+        uploaded = textures
+        frameDuration = batch.duration / Double(textures.count)
+        return uploaded
+    }
+}
+
 private struct PreparedLayer {
     let texture: MTLTexture
     let center: SIMD2<Float>
@@ -67,8 +95,7 @@ private struct PreparedLayer {
     let originAnimation: Vec3Animation?
     let originScale: SIMD2<Float>   // scene units → NDC, for the position animation offset
     let effects: [PreparedEffect]   // post-process passes applied to this layer before compositing
-    let frames: [MTLTexture]        // video-texture animation frames (empty = static `texture`)
-    let frameDuration: Double       // seconds per frame for looping the video texture
+    let videoTrack: VideoFrameTrack?  // video-texture animation frames (nil = static `texture`)
 }
 
 /// A scene whose layer textures are decoded and uploaded once, ready to re-render every frame (so an
@@ -101,7 +128,7 @@ public final class PreparedScene {
     public var hasAnimation: Bool {
         !particles.isEmpty || layers.contains {
             $0.parallaxDepth != SIMD2<Float>(0, 0) || $0.alphaAnimation != nil
-                || $0.originAnimation != nil || !$0.effects.isEmpty || !$0.frames.isEmpty
+                || $0.originAnimation != nil || !$0.effects.isEmpty || $0.videoTrack != nil
         }
     }
 }
@@ -321,6 +348,12 @@ public final class SceneRenderer {
         // Solid fills are kept only while still behind every textured layer (a background) — a solid
         // layer above the artwork is usually an animated flash that a still frame would over-paint.
         var drewTexturedLayer = false
+        // Video-texture frames are held for the scene's lifetime; cap their total so a scene with
+        // several video layers can't grow GPU memory without bound. Beyond it, layers stay on their
+        // (already-uploaded) first frame.
+        let videoFrameCount = 24
+        let videoVRAMBudget = 384 * 1024 * 1024
+        var videoVRAMUsed = 0
         for layer in document.layers where layer.visible {
             var texture: MTLTexture?
             var textureW = 0.0, textureH = 0.0
@@ -352,14 +385,29 @@ public final class SceneRenderer {
             let halfExtent = SIMD2(Float(sizeW * layer.scale.x / orthoW), Float(sizeH * layer.scale.y / orthoH))
             let tint = SIMD3(Float(layer.color.x), Float(layer.color.y), Float(layer.color.z))
 
-            // A video-backed texture animates: upload its sampled frames to loop over (the static
-            // `texture` above is the first frame, the fallback if extraction yields nothing usable).
-            var frames: [MTLTexture] = []
-            var frameDuration = 0.0
+            // A video-backed texture animates. Decoding its frames is slow (seeks + per-frame decode),
+            // so it happens off the render thread: the static `texture` above (the first frame) shows
+            // immediately, and the looping frames swap in once the background decode delivers them.
+            var videoTrack: VideoFrameTrack?
             if !isSolidFill, let path = layer.texturePath, let entry = package.entry(named: path),
-               let video = SceneTexture.videoFrames(entry.data) {
-                frames = video.frames.compactMap { MetalTexture.make($0, device: device) }
-                if frames.count >= 2 { frameDuration = video.duration / Double(frames.count) } else { frames = [] }
+               SceneTexture.isVideoTexture(entry.data) {
+                // Frames are capped to a 1280 bounding box (aspect-preserving) when decoded; estimate
+                // that size to charge the VRAM budget before committing to load this one.
+                let scale = min(1.0, 1280.0 / max(textureW, textureH, 1))
+                let estBytes = Int(textureW * scale) * Int(textureH * scale) * 4 * videoFrameCount
+                if videoVRAMUsed + estBytes <= videoVRAMBudget {
+                    videoVRAMUsed += estBytes
+                    let track = VideoFrameTrack()
+                    let data = entry.data
+                    DispatchQueue.global(qos: .utility).async {
+                        if let video = SceneTexture.videoFrames(data, count: videoFrameCount) {
+                            track.deliver(video.frames, duration: video.duration)
+                        }
+                    }
+                    videoTrack = track
+                } else {
+                    NSLog("Lumora: video texture kept static — scene VRAM budget reached")
+                }
             }
             prepared.append(PreparedLayer(
                 texture: texture,
@@ -375,7 +423,7 @@ public final class SceneRenderer {
                 originScale: SIMD2(Float(2 / orthoW), Float(2 / orthoH)),
                 effects: prepareEffects(layer.effects, package: package, base: texture,
                                         center: center, halfExtent: halfExtent, uvScale: uvScale, tint: tint),
-                frames: frames, frameDuration: frameDuration))
+                videoTrack: videoTrack))
         }
 
         var preparedParticles: [PreparedParticles] = []
@@ -660,11 +708,13 @@ public final class SceneRenderer {
     /// The layer's texture at `time`: the looping video frame for a video-backed layer, else its static
     /// texture.
     private func currentTexture(_ layer: PreparedLayer, time: Double) -> MTLTexture {
-        guard layer.frames.count >= 2, layer.frameDuration > 0 else { return layer.texture }
-        let total = layer.frameDuration * Double(layer.frames.count)
+        guard let track = layer.videoTrack else { return layer.texture }
+        let frames = track.frames(device: device)   // uploads the decoded batch on first use (this thread)
+        guard frames.count >= 2, track.frameDuration > 0 else { return layer.texture }
+        let total = track.frameDuration * Double(frames.count)
         let loopTime = time.truncatingRemainder(dividingBy: total)
-        let index = min(layer.frames.count - 1, max(0, Int(loopTime / layer.frameDuration)))
-        return layer.frames[index]
+        let index = min(frames.count - 1, max(0, Int(loopTime / track.frameDuration)))
+        return frames[index]
     }
 
     /// The layer's clip-space centre at `time`: its placement nudged by the automatic parallax sway and
