@@ -290,17 +290,19 @@ public final class SceneRenderer {
     }
 
     /// A soft white radial glow (alpha falls off from centre) standing in for WE's unshipped built-in
-    /// particle sprites (halo, glow, drop) — additive blend turns it into a luminous orb.
+    /// particle sprites (halo, glow, drop). WE's atmospheric glows are faint: a scene can keep a hundred of
+    /// them alive and additively overlapping, so a fully-opaque centre would stack into a blown-out wash.
+    /// A gaussian profile with a low peak reads as a soft glow on its own and accumulates gently in a crowd.
     private static func haloPixels(side: Int) -> [UInt8] {
         var pixels = [UInt8](repeating: 0, count: side * side * 4)
         let center = Double(side - 1) / 2
         for y in 0 ..< side {
             for x in 0 ..< side {
                 let dx = (Double(x) - center) / center, dy = (Double(y) - center) / center
-                let falloff = max(0, 1 - (dx * dx + dy * dy).squareRoot())
+                let glow = exp(-(dx * dx + dy * dy) * 4.0)   // gaussian: 1 at centre, soft tail to the edge
                 let i = (y * side + x) * 4
                 pixels[i] = 255; pixels[i + 1] = 255; pixels[i + 2] = 255
-                pixels[i + 3] = UInt8(max(0, min(255, falloff * falloff * 255)))
+                pixels[i + 3] = UInt8(max(0, min(255, glow * 90)))   // low peak so additive overlap stays soft
             }
         }
         return pixels
