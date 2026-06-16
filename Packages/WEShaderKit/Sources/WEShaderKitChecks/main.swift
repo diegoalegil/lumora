@@ -345,6 +345,30 @@ if let device = MTLCreateSystemDefaultDevice() {
     }
 }
 
+// File-scope const declarations (e.g. WE's ACES tone-map matrices) must be emitted in the constant
+// address space so helpers and main that read them resolve — they're neither functions nor structs.
+let constShader = """
+const mat3 m = mat3(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0);
+varying vec4 v_TexCoord;
+uniform sampler2D g_Texture0;
+vec3 apply(vec3 c) { return mul(m, c); }
+void main() {
+    vec4 albedo = texSample2D(g_Texture0, v_TexCoord.xy);
+    gl_FragColor = vec4(apply(albedo.rgb), albedo.a);
+}
+"""
+let constMSL = WEShaderTranspiler.fragmentToMSL(constShader)
+Check.that("emits a file-scope const in the constant address space", constMSL.contains("constant float3x3 m"))
+if let device = MTLCreateSystemDefaultDevice() {
+    do {
+        _ = try device.makeLibrary(source: constMSL, options: nil)
+        Check.that("a shader with a file-scope const matrix compiles", true)
+    } catch {
+        print("──── MSL ────\n\(constMSL)\n─────────────")
+        Check.that("a shader with a file-scope const matrix compiles", false)
+    }
+}
+
 Check.section("ShaderPreprocessor")
 let conditional = "a\n#if MASK == 1\nb\n#else\nc\n#endif\nd"
 Check.that("keeps the active #if branch", ShaderPreprocessor.resolve(conditional, combos: ["MASK": 1]) == "a\nb\nd")

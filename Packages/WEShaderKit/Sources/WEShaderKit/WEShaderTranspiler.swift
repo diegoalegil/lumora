@@ -32,7 +32,7 @@ public enum WEShaderTranspiler {
         body = qualify(body, name: "gl_FragColor", with: "_fragColor")
 
         var msl = "#include <metal_stdlib>\nusing namespace metal;\n\n" + comboConstants(combos)
-            + WEShaderPrelude.msl + helperFunctions(of: resolved)
+            + WEShaderPrelude.msl + globalConstants(of: resolved) + helperFunctions(of: resolved)
 
         msl += "struct VaryingIn {\n" + varyingMembers(varyings) + "};\n\n"
 
@@ -80,7 +80,7 @@ public enum WEShaderTranspiler {
         body = qualify(body, name: "gl_Position", with: "out.position")
 
         var msl = "#include <metal_stdlib>\nusing namespace metal;\n\n" + comboConstants(combos)
-            + WEShaderPrelude.msl + helperFunctions(of: resolved)
+            + WEShaderPrelude.msl + globalConstants(of: resolved) + helperFunctions(of: resolved)
         msl += "struct VertexIn {\n"
         for (index, attribute) in attributes.enumerated() {
             msl += "    \(mslType(attribute.type)) \(attribute.name) [[attribute(\(index))]];\n"
@@ -235,6 +235,44 @@ public enum WEShaderTranspiler {
             out += rewriteTypes(rewriteIntrinsics(signature)) + " {" + rewriteTypes(rewriteIntrinsics(body)) + "}\n"
         }
         return out
+    }
+
+    /// Emit the shader's file-scope `const` declarations (e.g. WE's ACES tone-map matrices
+    /// `const mat3 aces_input_matrix = mat3(…)`) in MSL's `constant` address space, so the helper
+    /// functions and main that reference them resolve. Only `const`-qualified top-level statements are
+    /// taken — uniforms, varyings and attributes are bound elsewhere — and they're emitted before the
+    /// helpers, which may read them.
+    private static func globalConstants(of source: String) -> String {
+        let cleaned = stripLineComments(stripBlockComments(source)).split(separator: "\n", omittingEmptySubsequences: false)
+            .filter { !$0.trimmingCharacters(in: .whitespaces).hasPrefix("#") }.joined(separator: "\n")
+        var out = ""
+        for statement in topLevelStatements(cleaned) {
+            let trimmed = statement.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard trimmed.hasPrefix("const ") else { continue }
+            out += "constant " + rewriteTypes(rewriteIntrinsics(String(trimmed.dropFirst("const ".count)))) + ";\n"
+        }
+        return out
+    }
+
+    /// The top-level statements terminated by `;` at brace-depth 0 (declarations), skipping `{ … }`
+    /// blocks (functions and structs, handled by `topLevelBlocks`/`mainBody`).
+    private static func topLevelStatements(_ source: String) -> [String] {
+        var statements: [String] = []
+        var depth = 0
+        var start = source.startIndex
+        var i = source.startIndex
+        while i < source.endIndex {
+            switch source[i] {
+            case "{": depth += 1
+            case "}": depth -= 1; if depth == 0 { start = source.index(after: i) }   // end of a block
+            case ";" where depth == 0:
+                statements.append(String(source[start..<i]))
+                start = source.index(after: i)
+            default: break
+            }
+            i = source.index(after: i)
+        }
+        return statements
     }
 
     /// Split a shader's top level into `(signature, body)` pairs — each `…{ … }` block (function or
