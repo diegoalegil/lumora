@@ -538,9 +538,14 @@ public enum WEShaderTranspiler {
                         rebuilt += index == 0 ? "" : ","
                         rebuilt += isIntLiteral(text) ? text.trimmingCharacters(in: .whitespacesAndNewlines) + ".0" : String(text)
                     }
+                    // Resume just inside this call (like the non-mixed branch) so a nested same-named call is
+                    // still reached, but WITHOUT re-scanning from the start: a from-start rescan after every
+                    // promotion is O(N²) and a crafted shader with thousands of calls would stall the build.
+                    // The mutation only touches text after `call.upperBound`, so its offset from the start is
+                    // stable; recover the index from it once the replace has invalidated the old one.
+                    let resumeOffset = s.distance(from: s.startIndex, to: call.upperBound)
                     s.replaceSubrange(call.upperBound...closeIndex, with: rebuilt + ")")
-                    searchFrom = s.startIndex   // the mutation invalidated the indices; rescan (a promoted
-                                                // call is no longer "mixed", so this terminates)
+                    searchFrom = s.index(s.startIndex, offsetBy: resumeOffset)
                 } else {
                     searchFrom = call.upperBound   // resume inside the call so a nested same-named call is reached
                 }
@@ -585,7 +590,11 @@ public enum WEShaderTranspiler {
         var s = source
         let types = "vec2|vec3|vec4|mat2|mat3|mat4|ivec2|ivec3|ivec4|float2|float3|float4|float|int"
         let regex = try! NSRegularExpression(pattern: "\\b(?:\(types))\\s*\\[\\s*\\w+\\s*\\]\\s*\\(")
-        while let m = regex.firstMatch(in: s, range: NSRange(s.startIndex..., in: s)),
+        // Search forward from the last rewrite rather than from the start each time: a from-start scan after
+        // every replacement is O(N²) and a crafted shader with many constructors would stall the build.
+        // Resuming at the replacement's `{` still lets a nested constructor inside it be found next pass.
+        var searchStart = s.startIndex
+        while let m = regex.firstMatch(in: s, range: NSRange(searchStart..<s.endIndex, in: s)),
               let head = Range(m.range, in: s) {
             let openParen = s.index(before: head.upperBound)   // the "(" the match ends on
             var depth = 0, i = openParen
@@ -596,7 +605,9 @@ public enum WEShaderTranspiler {
             }
             guard let closeIndex = close else { break }   // unbalanced — leave it
             let elements = s[s.index(after: openParen)..<closeIndex]
+            let resumeOffset = s.distance(from: s.startIndex, to: head.lowerBound)
             s.replaceSubrange(head.lowerBound...closeIndex, with: "{\(elements)}")
+            searchStart = s.index(s.startIndex, offsetBy: resumeOffset)
         }
         return s
     }

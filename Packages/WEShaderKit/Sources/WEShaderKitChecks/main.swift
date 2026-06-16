@@ -504,6 +504,31 @@ if let device = MTLCreateSystemDefaultDevice() {
     }
 }
 
+// The promotion and array-constructor rewrites resume forward from each edit (linear time), so a 3-deep
+// nest and successive constructors must still all be reached. A missed nested promotion would leave a
+// min(float, int) that MSL rejects, so the compile check alone proves every level was promoted.
+let nestedShader = """
+varying vec4 v_TexCoord;
+void main() {
+    float x = v_TexCoord.x;
+    float y = min(min(min(x, 1), 2), 3);
+    vec2 a[2] = vec2[2](vec2(0.0), vec2(1.0));
+    vec2 b[2] = vec2[2](vec2(2.0), vec2(3.0));
+    gl_FragColor = vec4(y + a[0].x + b[1].y, 0.0, 0.0, 1.0);
+}
+"""
+let nestedMSL = WEShaderTranspiler.fragmentToMSL(nestedShader)
+Check.that("each successive array constructor becomes a brace initializer", nestedMSL.components(separatedBy: "= {float2").count == 3)
+if let device = MTLCreateSystemDefaultDevice() {
+    do {
+        _ = try device.makeLibrary(source: nestedMSL, options: nil)
+        Check.that("a 3-deep nested promotion and successive array constructors compile", true)
+    } catch {
+        print("──── MSL ────\n\(nestedMSL)\n─────────────")
+        Check.that("a 3-deep nested promotion and successive array constructors compile", false)
+    }
+}
+
 // GLSL parameter direction qualifiers have no MSL spelling: `out`/`inout T x` becomes a `thread T&`
 // reference (the caller's lvalue receives the write), and an explicit `in T x` drops to MSL's default.
 // Exercised by a pure helper (emitted as a free function, like the lens shaders' computeUV) and a
