@@ -623,29 +623,24 @@ public final class SceneRenderer {
                     .flatMap { name in effect.fbos.first { $0.name == name } }
                     .map { EffectRenderer.pixelFormat(for: $0.format) } ?? .rgba8Unorm
 
-                // A combo's // [COMBO] default is often annotated in only one of the pair (e.g. NOISE in the
-                // fragment), but its #if gates matching varyings in BOTH. Resolve the defaults from both
-                // stages so the vertex and fragment take the same branch and their varyings line up.
-                var passCombos = ShaderPreprocessor.comboDefaults(fragmentSource)
-                if let vertexSource { passCombos.merge(ShaderPreprocessor.comboDefaults(vertexSource)) { existing, _ in existing } }
-                passCombos.merge(pass.combos) { _, explicit in explicit }
-
                 var pipeline: MTLRenderPipelineState?
                 var hasVertex = false
                 var vertexScalars: [ShaderUniform] = []
                 if let vertexSource {
                     if let made = effectRenderer.makeVertexPipeline(vertexShader: vertexSource, fragmentShader: fragmentSource,
-                                                                    combos: passCombos, pixelFormat: outputFormat) {
+                                                                    combos: pass.combos, pixelFormat: outputFormat) {
                         pipeline = made
                         hasVertex = true
-                        let vertexResolved = ShaderPreprocessor.resolve(vertexSource, combos: passCombos)
+                        let vertexResolved = ShaderPreprocessor.resolve(vertexSource,
+                            combos: ShaderPreprocessor.comboDefaults(vertexSource).merging(pass.combos) { _, b in b })
                         vertexScalars = ShaderUniforms.parse(vertexResolved).filter { !$0.type.hasPrefix("sampler") }
                     }
                 }
-                if pipeline == nil { pipeline = effectRenderer.makePipeline(fragmentShader: fragmentSource, combos: passCombos, pixelFormat: outputFormat) }
+                if pipeline == nil { pipeline = effectRenderer.makePipeline(fragmentShader: fragmentSource, combos: pass.combos, pixelFormat: outputFormat) }
                 guard let pipeline else { graphOK = false; break }
 
-                let resolved = ShaderPreprocessor.resolve(fragmentSource, combos: passCombos)
+                let resolved = ShaderPreprocessor.resolve(fragmentSource,
+                    combos: ShaderPreprocessor.comboDefaults(fragmentSource).merging(pass.combos) { _, b in b })
                 let uniforms = ShaderUniforms.parse(resolved)
                 // Each declared sampler binds at its enumeration slot; its WE g_Texture<number> decides
                 // whether it reads `previous` (the effect input, the implicit default for number 0), a named
