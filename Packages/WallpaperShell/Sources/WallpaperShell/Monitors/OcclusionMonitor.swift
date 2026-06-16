@@ -85,6 +85,9 @@ public struct DesktopCoverDetector {
         var rects: [WindowRect] = []
         for info in infos {
             if let pid = info[kCGWindowOwnerPID as String] as? NSNumber, pid.int32Value == ownPID { continue }
+            // A near-transparent window (a dimmer/tint overlay) covers geometrically but shows the desktop
+            // through it, so it must not pause the wallpaper.
+            if let alpha = info[kCGWindowAlpha as String] as? NSNumber, alpha.doubleValue < 0.95 { continue }
             guard let layer = info[kCGWindowLayer as String] as? NSNumber,
                   let boundsDict = info[kCGWindowBounds as String] as? NSDictionary,
                   let bounds = CGRect(dictionaryRepresentation: boundsDict as CFDictionary) else { continue }
