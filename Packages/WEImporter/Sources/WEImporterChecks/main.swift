@@ -481,6 +481,18 @@ if let pkg = Check.noThrow("parses the scene package", { try ScenePackage.read(s
         Check.that("visible parsed", layer.visible == true)
         Check.that("parallax depth parsed", layer.parallaxDepth.x == 0.4 && layer.parallaxDepth.y == 0.5)
     }
+    Check.that("a non-puppet scene is not flagged", doc.usesPuppet == false)
+}
+
+// A puppet-rigged object (its model references a bone/mesh .mdl) flags the whole scene, so the player can
+// fall back to the static preview instead of drawing the unassembled body-part atlas.
+let puppetModelJSON = Data(#"{"material":"materials/mat.json","puppet":"models/m_puppet.mdl"}"#.utf8)
+let puppetPkg = buildPKG(version: "PKGV0009", files: [
+    ("scene.json", sceneJSON), ("models/m.json", puppetModelJSON),
+    ("materials/mat.json", materialJSON), ("materials/mytex.tex", Data("x".utf8)),
+])
+if let pkg = try? ScenePackage.read(puppetPkg), let doc = try? SceneGraph.load(from: pkg) {
+    Check.that("a puppet-model scene is flagged usesPuppet", doc.usesPuppet == true)
 }
 Check.that("SceneVec3 parses a partial string", {
     let v = SceneVec3(parsing: "1.5 2"); return v.x == 1.5 && v.y == 2 && v.z == 0

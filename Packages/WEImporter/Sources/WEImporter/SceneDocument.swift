@@ -136,14 +136,19 @@ public struct RenderableScene: Sendable, Equatable {
     public let clearColor: SceneVec3
     public let layers: [SceneLayer]
     public let particleSystems: [ParticleSystem]
+    /// True when any object is a puppet-rigged model (it references a bone/mesh `.mdl`). Such a scene
+    /// needs skeletal mesh deformation the renderer doesn't do yet, so drawing its layer atlas raw shows
+    /// scattered body parts — the player shows the static preview instead.
+    public let usesPuppet: Bool
 
     public init(orthoWidth: Int, orthoHeight: Int, clearColor: SceneVec3,
-                layers: [SceneLayer], particleSystems: [ParticleSystem] = []) {
+                layers: [SceneLayer], particleSystems: [ParticleSystem] = [], usesPuppet: Bool = false) {
         self.orthoWidth = orthoWidth
         self.orthoHeight = orthoHeight
         self.clearColor = clearColor
         self.layers = layers
         self.particleSystems = particleSystems
+        self.usesPuppet = usesPuppet
     }
 }
 
@@ -174,6 +179,7 @@ public enum SceneGraph {
 
         var layers: [SceneLayer] = []
         var particleSystems: [ParticleSystem] = []
+        var usesPuppet = false
         for object in root["objects"] as? [[String: Any]] ?? [] {
             // A particle object spawns sprites instead of drawing an image; collect it and move on.
             if let particlePath = object["particle"] as? String,
@@ -189,6 +195,11 @@ public enum SceneGraph {
             }
             guard let imagePath = object["image"] as? String, !imagePath.isEmpty else { continue }
             let material = resolveMaterial(imagePath: imagePath, in: package)
+            // A puppet object references a bone/mesh model — flag the scene so the player can fall back to
+            // the static preview rather than drawing the unassembled atlas.
+            if object["puppet"] != nil || (json(package.entry(named: imagePath)).map { $0["puppet"] != nil } ?? false) {
+                usesPuppet = true
+            }
             layers.append(SceneLayer(
                 name: object["name"] as? String ?? "",
                 texturePath: material.texture,
@@ -213,7 +224,8 @@ public enum SceneGraph {
             orthoHeight: int(ortho["height"]),
             clearColor: clearColor,
             layers: layers,
-            particleSystems: particleSystems
+            particleSystems: particleSystems,
+            usesPuppet: usesPuppet
         )
     }
 

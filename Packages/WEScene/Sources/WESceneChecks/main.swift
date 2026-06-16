@@ -144,6 +144,17 @@ if CommandLine.arguments.count > 1 {
     guard let data = try? Data(contentsOf: URL(fileURLWithPath: arg)),
           let package = try? ScenePackage.read(data),
           let document = try? SceneGraph.load(from: package) else { print("failed to load \(arg)"); exit(1) }
+    if CommandLine.arguments.count > 2, CommandLine.arguments[2] == "layers" {   // dev: dump layer placement
+        print("ortho \(Int(document.orthoWidth))x\(Int(document.orthoHeight)), \(document.layers.count) layers, usesPuppet=\(document.usesPuppet):")
+        for (i, l) in document.layers.enumerated() {
+            let sz = l.size.map { "(\(Int($0.x)),\(Int($0.y)))" } ?? "-"
+            print("  [\(i)] vis=\(l.visible ? 1 : 0) tex=\(l.texturePath ?? (l.isSolidLayer ? "SOLID" : "nil")) "
+                + "origin=(\(Int(l.origin.x)),\(Int(l.origin.y))) size=\(sz) scale=(\(l.scale.x),\(l.scale.y)) "
+                + "angles=(\(l.angles.x),\(l.angles.y),\(l.angles.z)) depth=(\(l.parallaxDepth.x),\(l.parallaxDepth.y)) "
+                + "anim=\(l.originAnimation != nil) eff=\(l.effects.count) blend=\(l.blending ?? "-")")
+        }
+        exit(0)
+    }
     let time = CommandLine.arguments.count > 2 ? (Double(CommandLine.arguments[2]) ?? 0) : 0
     // Optional width/height override (args 3 and 4) so a scene can be rendered at an arbitrary target —
     // e.g. a display's real pixel size/aspect — to reproduce size-dependent artifacts the scene's own
