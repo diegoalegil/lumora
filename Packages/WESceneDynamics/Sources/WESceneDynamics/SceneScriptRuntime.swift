@@ -44,9 +44,24 @@ public final class SceneScriptRuntime {
         function Vec3(x, y, z) { this.x = x || 0; this.y = (y === undefined ? (x || 0) : y); this.z = (z === undefined ? (x || 0) : z); }
         Vec3.prototype.copy = function () { return new Vec3(this.x, this.y, this.z); };
         var __layers = [];
+        // WE's layer property setters COPY the assigned vector — a script that does `bar.origin = origin`
+        // then mutates `origin` in a loop (the bar visualisers do exactly this to space N bars) must leave
+        // each bar with its own snapshot. Plain JS would alias them all to one object, so define vec
+        // properties with copying setters.
+        function __copyVec(v) {
+            if (v && typeof v === 'object' && 'x' in v) {
+                return ('z' in v) ? new Vec3(v.x, v.y, v.z) : new Vec2(v.x, v.y);
+            }
+            return v;
+        }
         function __mkLayer(model, origin, color, alpha) {
-            var L = { origin: origin, color: color, alpha: alpha, scale: new Vec3(1, 1, 1),
-                      alignment: 'centre', parallaxDepth: new Vec2(0, 0), model: model };
+            var L = { model: model, alignment: 'centre', alpha: alpha };
+            var _o = __copyVec(origin), _s = new Vec3(1, 1, 1), _c = __copyVec(color), _a = new Vec3(0, 0, 0), _p = new Vec2(0, 0);
+            Object.defineProperty(L, 'origin', { get: function () { return _o; }, set: function (v) { _o = __copyVec(v); }, enumerable: true });
+            Object.defineProperty(L, 'scale', { get: function () { return _s; }, set: function (v) { _s = __copyVec(v); }, enumerable: true });
+            Object.defineProperty(L, 'color', { get: function () { return _c; }, set: function (v) { _c = __copyVec(v); }, enumerable: true });
+            Object.defineProperty(L, 'angles', { get: function () { return _a; }, set: function (v) { _a = __copyVec(v); }, enumerable: true });
+            Object.defineProperty(L, 'parallaxDepth', { get: function () { return _p; }, set: function (v) { _p = __copyVec(v); }, enumerable: true });
             __layers.push(L); return L;
         }
         var thisLayer = __mkLayer(null, new Vec3(\(baseOrigin.x), \(baseOrigin.y), \(baseOrigin.z)),

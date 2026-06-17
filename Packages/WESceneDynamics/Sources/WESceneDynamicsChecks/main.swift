@@ -126,6 +126,7 @@ export var scriptProperties = createScriptProperties()
     .finish();
 const audioBuffer = engine.registerAudioBuffers(engine.AUDIO_RESOLUTION_64);
 var bars = [];
+var baseOrigin;
 export function init() {
     bars.push(thisLayer);
     let i0 = thisScene.getLayerIndex(thisLayer);
@@ -134,14 +135,19 @@ export function init() {
         thisScene.sortLayer(bar, i0);
         bars.push(bar);
     }
+    baseOrigin = thisLayer.origin;
 }
 export function update() {
-    var baseX = thisLayer.origin.copy().x;
+    // The real bar scripts reuse ONE origin/scale object, mutate it, and assign it to each bar — relying on
+    // the layer setter to COPY. This exercises that semantic (without copying, every bar aliases one object).
+    var origin = baseOrigin.copy();
+    var scale = new Vec3(1, 0, 1);
     for (var i = 0; i < scriptProperties.barAmount; ++i) {
-        let bar = bars[i];
         let idx = Math.floor((i / scriptProperties.barAmount) * 64);
-        bar.origin = new Vec3(baseX + i * scriptProperties.offsetX, thisLayer.origin.y, 0);
-        bar.scale = new Vec3(1, Math.min(audioBuffer.average[idx], 1), 1);
+        scale.y = Math.min(audioBuffer.average[idx], 1);
+        origin.x += scriptProperties.offsetX;
+        bars[i].scale = scale;
+        bars[i].origin = origin;
     }
 }
 """
