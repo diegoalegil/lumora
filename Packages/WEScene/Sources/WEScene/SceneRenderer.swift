@@ -547,7 +547,7 @@ public final class SceneRenderer {
                 let runtime = layer.textScript.flatMap { SceneScriptRuntime(script: $0) }
                 let prepText = PreparedTextLayer(runtime: runtime, staticText: layer.textValue ?? "",
                                                  font: font, color: SIMD3(Float(layer.color.x), Float(layer.color.y), Float(layer.color.z)),
-                                                 pointSize: layer.pointSize, device: device)
+                                                 pointSize: layer.pointSize, device: device, horizontalAlign: layer.horizontalAlign)
                 let center = SIMD2(Float(layer.origin.x / orthoW * 2 - 1), Float(layer.origin.y / orthoH * 2 - 1))
                 prepared.append(PreparedLayer(
                     texture: whiteTexture, center: center, halfExtent: .zero, uvScale: SIMD2(1, 1),
@@ -1225,7 +1225,15 @@ public final class SceneRenderer {
             if let textLayer = layer.text {
                 guard let (textTexture, w, h) = textLayer.currentTexture() else { continue }
                 let half = SIMD2(Float(Double(w) / scene.orthoWidth), Float(Double(h) / scene.orthoHeight))
-                var quad = QuadUniform(center: animatedCenter(layer, time: time, swayX: swayX, swayY: swayY),
+                // Honour the text's horizontal alignment: the origin is the string's left edge / centre / right
+                // edge. Left-aligned text extends right of origin (centre shifts right by a half-width), etc.
+                var center = animatedCenter(layer, time: time, swayX: swayX, swayY: swayY)
+                switch textLayer.horizontalAlign {
+                case "left":  center.x += half.x
+                case "right": center.x -= half.x
+                default: break
+                }
+                var quad = QuadUniform(center: center,
                                        halfExtent: half, uvScale: SIMD2(1, 1), aspectScale: aspectScale,
                                        rotA: layer.rotA, rotB: layer.rotB)
                 var tint = layer.tint

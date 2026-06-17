@@ -6,6 +6,7 @@ import Foundation
 import CoreText
 import CoreGraphics
 import Metal
+import Accelerate
 import WESceneDynamics
 
 /// A prepared text layer: its font, colour, and the static string or the script that drives it. Caches the
@@ -18,19 +19,22 @@ final class PreparedTextLayer {
     private let device: MTLDevice
     /// Point size in scene units — maps the glyph height to the scene so the quad is the right size.
     let pointSize: Double
+    /// "left" | "center" | "right" — which edge of the rendered string sits at the layer origin.
+    let horizontalAlign: String?
 
     private var cachedString: String?
     private var cachedTexture: MTLTexture?
     private var cachedSize: (w: Int, h: Int) = (0, 0)   // texture pixel dimensions (≈ scene units at 1:1)
 
     init(runtime: SceneScriptRuntime?, staticText: String, font: CTFont, color: SIMD3<Float>,
-         pointSize: Double, device: MTLDevice) {
+         pointSize: Double, device: MTLDevice, horizontalAlign: String? = nil) {
         self.runtime = runtime
         self.staticText = staticText
         self.font = font
         self.color = color
         self.pointSize = pointSize
         self.device = device
+        self.horizontalAlign = horizontalAlign
     }
 
     /// The current string (script-driven if scripted, else the static value).
@@ -68,6 +72,13 @@ final class PreparedTextLayer {
         ctx.textPosition = CGPoint(x: CGFloat(pad), y: CGFloat(pad) + descent)
         CTLineDraw(line, ctx)
         guard let data = ctx.data else { return nil }
+
+        // CoreGraphics emits premultiplied RGBA, but the scene composites text alpha-over (the blend multiplies
+        // by source alpha again), which would multiply the glyph's antialiased edges by their coverage twice and
+        // leave a dark fringe. Convert to straight alpha — the same un-premultiply the texture decoder applies to
+        // packed images — so the edges blend cleanly.
+        var buffer = vImage_Buffer(data: data, height: vImagePixelCount(h), width: vImagePixelCount(w), rowBytes: w * 4)
+        vImageUnpremultiplyData_RGBA8888(&buffer, &buffer, vImage_Flags(kvImageNoFlags))
 
         let descriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .rgba8Unorm, width: w, height: h, mipmapped: false)
         descriptor.usage = .shaderRead
