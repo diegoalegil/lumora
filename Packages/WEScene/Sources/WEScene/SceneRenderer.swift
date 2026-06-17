@@ -205,6 +205,11 @@ public final class SceneRenderer {
     private let effectRenderer: EffectRenderer?   // compiles + runs per-layer post-process effects
     private var auxCache: [String: MTLTexture] = [:]   // resolved packaged aux textures, by name
     private var pooledOutput: MTLTexture?              // reused frame target (rendering is synchronous)
+    // Effect render targets are reused across frames instead of reallocated every frame. Rendering is fully
+    // synchronous (each pass waits for the GPU), and targets are only recycled after the frame is composited,
+    // so a borrowed texture is never aliased while still in use.
+    private var effectTexturePool: [Int: [MTLTexture]] = [:]
+    private var effectTexturesInUse: [MTLTexture] = []
 
     private static let shaderSource = """
     #include <metal_stdlib>
@@ -656,14 +661,42 @@ public final class SceneRenderer {
     /// intermediate buffers at their scaled size, run each pass (binding `previous`/buffers/aux per slot,
     /// packing the stage uniforms fresh so it animates) into its target, and return the final full-size
     /// output. A separable blur is x→buffer→y→output; a downsample chain ping-pongs the quarter buffers.
+    /// Borrow an effect render target from the per-frame pool (a reused texture for the requested size/format,
+    /// or a freshly made one), tracking it so `recycleEffectTextures()` can return it after compositing.
+    private func borrowEffectTarget(width: Int, height: Int, pixelFormat: MTLPixelFormat) -> MTLTexture? {
+        let key = (width &* 73_856_093) ^ (height &* 19_349_663) ^ (Int(pixelFormat.rawValue) &* 83_492_791)
+        let texture: MTLTexture
+        if var free = effectTexturePool[key], let reused = free.popLast() {
+            effectTexturePool[key] = free
+            texture = reused
+        } else if let made = effectRenderer?.makeTarget(width: width, height: height, pixelFormat: pixelFormat) {
+            texture = made
+        } else {
+            return nil
+        }
+        effectTexturesInUse.append(texture)
+        return texture
+    }
+
+    /// Return every target borrowed this frame to the pool. Call once the frame is fully composited and read
+    /// back (rendering is synchronous, so the GPU is done with them).
+    private func recycleEffectTextures() {
+        for texture in effectTexturesInUse {
+            let key = (texture.width &* 73_856_093) ^ (texture.height &* 19_349_663) ^ (Int(texture.pixelFormat.rawValue) &* 83_492_791)
+            effectTexturePool[key, default: []].append(texture)
+        }
+        effectTexturesInUse.removeAll(keepingCapacity: true)
+    }
+
     private func applyEffect(_ effect: PreparedEffect, to input: MTLTexture, time: Float,
-                             width: Int, height: Int) -> MTLTexture? {
+                             width: Int, height: Int,
+                             allocTarget: (Int, Int, MTLPixelFormat) -> MTLTexture?) -> MTLTexture? {
         guard let effectRenderer else { return nil }
         var buffers: [String: MTLTexture] = [:]
         for fbo in effect.fbos {
             let scale = max(1, fbo.scale)
-            guard let target = effectRenderer.makeTarget(width: width / scale, height: height / scale,
-                                                         pixelFormat: EffectRenderer.pixelFormat(for: fbo.format)) else { return nil }
+            guard let target = allocTarget(width / scale, height / scale,
+                                           EffectRenderer.pixelFormat(for: fbo.format)) else { return nil }
             buffers[fbo.name] = target
         }
         var result = input
@@ -686,7 +719,7 @@ public final class SceneRenderer {
 
             let output: MTLTexture
             if let target = pass.target, let buffer = buffers[target] { output = buffer }
-            else if let made = effectRenderer.makeTarget(width: width, height: height) { output = made }
+            else if let made = allocTarget(width, height, .rgba8Unorm) { output = made }
             else { return nil }
 
             guard effectRenderer.renderPass(pipeline: pass.pipeline, hasVertex: pass.hasVertex, inputs: inputs,
@@ -795,7 +828,9 @@ public final class SceneRenderer {
             var stableRGBA: Data?
             var stable = true
             for time in times {
-                guard let output = applyEffect(effect, to: probe, time: time, width: probeW, height: probeH) else { stable = false; break }
+                // The one-time dry run allocates targets directly (not from the per-frame render pool).
+                guard let output = applyEffect(effect, to: probe, time: time, width: probeW, height: probeH,
+                    allocTarget: { w, h, fmt in effectRenderer.makeTarget(width: w, height: h, pixelFormat: fmt) }) else { stable = false; break }
                 let rgba = effectRenderer.readback(output)
                 // Drop a pass that erases the layer's coverage, flattens it to near-uniform colour, OR washes
                 // it toward white (a screen blend against the missing aux placeholder) — all three otherwise
@@ -946,7 +981,8 @@ public final class SceneRenderer {
                                                         tint: layer.tint, width: width, height: height,
                                                         rotA: layer.rotA, rotB: layer.rotB) else { continue }
                 for effect in layer.effects {
-                    guard let output = applyEffect(effect, to: texture, time: Float(time), width: width, height: height) else { break }
+                    guard let output = applyEffect(effect, to: texture, time: Float(time), width: width, height: height,
+                        allocTarget: { w, h, fmt in self.borrowEffectTarget(width: w, height: h, pixelFormat: fmt) }) else { break }
                     texture = output
                 }
                 effectResult[index] = texture
@@ -955,7 +991,7 @@ public final class SceneRenderer {
 
         // Pass 2: composite layers in painter's order — the effect result full-screen for effect layers,
         // the layer quad directly otherwise.
-        return withRenderPass(clearColor: scene.clearColor, width: width, height: height) { encoder in
+        let frame = withRenderPass(clearColor: scene.clearColor, width: width, height: height) { encoder in
             for (index, layer) in scene.layers.enumerated() {
                 var alpha = layer.alphaAnimation.map { Float($0.value(at: time)) } ?? layer.alpha
 
@@ -1016,6 +1052,10 @@ public final class SceneRenderer {
                 encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4, instanceCount: n)
             }
         }
+        // The frame is composited and read back (synchronous), so the effect targets are free to reuse next
+        // frame instead of being reallocated.
+        recycleEffectTextures()
+        return frame
     }
 
     /// The layer's texture at `time`: the looping video frame for a video-backed layer, else its static
