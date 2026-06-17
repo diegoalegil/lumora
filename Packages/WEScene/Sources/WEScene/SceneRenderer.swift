@@ -57,9 +57,11 @@ private struct ParticleInstance {
 private struct PreparedParticles {
     let system: ParticleSystem
     let texture: MTLTexture
+    let normalTexture: MTLTexture?   // for refractive droplets (rain-on-glass): the surface normal map
     let count: Int
     let isAdditive: Bool
-    let instanceBuffer: MTLBuffer   // sized for `count` instances, refilled each frame (not reallocated)
+    let isRefractive: Bool           // draw by refracting the background through the normal map
+    let instanceBuffer: MTLBuffer    // sized for `count` instances, refilled each frame (not reallocated)
 }
 
 /// How a pass's sampler slot gets its texture each frame: the effect's input ("previous"), a named
@@ -178,6 +180,10 @@ public final class PreparedScene {
     /// layers but still renders its sprites over the clear colour.
     public var isRenderable: Bool { !layers.isEmpty || !particles.isEmpty }
 
+    /// True if any particle system refracts the background (rain-on-glass) — the renderer takes a two-pass
+    /// path for these, composing the scene to a texture the droplets then sample with displacement.
+    fileprivate var hasRefractiveParticles: Bool { particles.contains { $0.isRefractive } }
+
     /// True if any layer animates (parallax, alpha/position keyframes, effects) or the scene emits
     /// particles — i.e. it moves over time and is worth driving with a render loop.
     public var hasAnimation: Bool {
@@ -197,6 +203,7 @@ public final class SceneRenderer {
     private let pipelineAdditive: MTLRenderPipelineState
     private let particleAdditive: MTLRenderPipelineState   // instanced sprite draw, additive (glow)
     private let particleAlpha: MTLRenderPipelineState      // instanced sprite draw, alpha (solid sprites)
+    private let particleRefract: MTLRenderPipelineState    // refractive droplets sampling the background
     private let pipelinePuppet: MTLRenderPipelineState     // skeletal puppet mesh (over-blend), atlas-textured
     private let sampler: MTLSamplerState
     private let whiteTexture: MTLTexture
@@ -206,6 +213,7 @@ public final class SceneRenderer {
     private let effectRenderer: EffectRenderer?   // compiles + runs per-layer post-process effects
     private var auxCache: [String: MTLTexture] = [:]   // resolved packaged aux textures, by name
     private var pooledOutput: MTLTexture?              // reused frame target (rendering is synchronous)
+    private var pooledBackground: MTLTexture?          // reused composited-scene target for refractive scenes
     // Effect render targets are reused across frames instead of reallocated every frame. Rendering is fully
     // synchronous (each pass waits for the GPU), and targets are only recycled after the frame is composited,
     // so a borrowed texture is never aliased while still in use.
@@ -273,6 +281,24 @@ public final class SceneRenderer {
         float4 t = tex.sample(samp, in.uv);
         return float4(t.rgb * in.color.rgb, t.a * in.color.a);
     }
+    // A refractive droplet (rain on glass): inside the sprite's shape (albedo alpha), show the composited
+    // background sampled at a screen position displaced by the droplet's surface normal — so the scene
+    // bends through the water — plus a faint specular highlight. Outside the shape it's transparent.
+    fragment float4 lumora_particle_refract(POut in [[stage_in]],
+                                            texture2d<float> albedo [[texture(0)]], sampler samp [[sampler(0)]],
+                                            texture2d<float> normalTex [[texture(1)]],
+                                            texture2d<float> background [[texture(2)]],
+                                            constant float2 &viewport [[buffer(0)]]) {
+        float4 a = albedo.sample(samp, in.uv);
+        float coverage = a.a * in.color.a;
+        if (coverage < 0.02) { discard_fragment(); }
+        float2 n = normalTex.sample(samp, in.uv).xy * 2.0 - 1.0;     // tangent-space normal xy
+        float2 screenUV = in.position.xy / viewport;                 // this fragment's spot on screen
+        float2 refracted = clamp(screenUV + n * 0.035, 0.0, 1.0);    // bend the view by the normal
+        float3 bg = background.sample(samp, refracted).rgb;
+        float3 col = bg + a.rgb * (0.12 * a.a);                      // subtle bright rim/highlight
+        return float4(col, coverage);
+    }
     """
 
     public init?(device: MTLDevice? = MTLCreateSystemDefaultDevice()) {
@@ -293,12 +319,16 @@ public final class SceneRenderer {
                                                               fragment: particleFragment, additive: true),
                   let particleOver = Self.makeParticlePipeline(device: device, vertex: particleVertex,
                                                                fragment: particleFragment, additive: false),
+                  let particleRefractFragment = library.makeFunction(name: "lumora_particle_refract"),
+                  let particleRefractPipe = Self.makeParticlePipeline(device: device, vertex: particleVertex,
+                                                                      fragment: particleRefractFragment, additive: false),
                   let puppetVertex = library.makeFunction(name: "lumora_puppet_vertex"),
                   let puppet = Self.makePuppetPipeline(device: device, vertex: puppetVertex, fragment: fragmentFunction) else { return nil }
             self.pipelineOver = over
             self.pipelineAdditive = additive
             self.particleAdditive = particleAdd
             self.particleAlpha = particleOver
+            self.particleRefract = particleRefractPipe
             self.pipelinePuppet = puppet
         } catch {
             return nil
@@ -601,7 +631,8 @@ public final class SceneRenderer {
             guard let instanceBuffer = device.makeBuffer(length: MemoryLayout<ParticleInstance>.stride * count,
                                                          options: .storageModeShared) else { continue }
             preparedParticles.append(PreparedParticles(system: system, texture: sprite.texture,
-                                                       count: count, isAdditive: sprite.isAdditive,
+                                                       normalTexture: sprite.normal, count: count,
+                                                       isAdditive: sprite.isAdditive, isRefractive: sprite.isRefractive,
                                                        instanceBuffer: instanceBuffer))
         }
         return PreparedScene(layers: prepared, clearColor: document.clearColor,
@@ -612,20 +643,24 @@ public final class SceneRenderer {
     /// The sprite a particle system draws — its material's first bound texture and blend mode
     /// (additive for glowy sparks/embers, alpha-over for solid sprites like petals/butterflies). Returns
     /// nil if the sprite can't be resolved, so the system is skipped rather than drawn as white squares.
-    private func particleSprite(_ system: ParticleSystem, package: ScenePackage) -> (texture: MTLTexture, isAdditive: Bool)? {
+    private func particleSprite(_ system: ParticleSystem, package: ScenePackage)
+        -> (texture: MTLTexture, normal: MTLTexture?, isAdditive: Bool, isRefractive: Bool)? {
         guard let materialPath = system.materialPath, let entry = package.entry(named: materialPath),
               let material = (try? JSONSerialization.jsonObject(with: entry.data)) as? [String: Any],
-              let pass = (material["passes"] as? [[String: Any]])?.first,
-              let name = (pass["textures"] as? [Any])?.compactMap({ $0 as? String }).first,
-              let texture = spriteTexture(named: name, package: package)
+              let pass = (material["passes"] as? [[String: Any]])?.first
         else { return nil }
-        // A refractive particle (rain-on-glass droplets: REFRACT combo + a normal map) distorts the scene
-        // behind each sprite. We don't refract, so drawing the albedo alone is just opaque blobs that
-        // obscure the scene — worse than the effect's absence. Skip it (degrade to no-op) rather than
-        // smear white circles over the wallpaper.
-        if (pass["combos"] as? [String: Any])?["REFRACT"] as? Int == 1 { return nil }
+        let names = (pass["textures"] as? [Any])?.compactMap { $0 as? String } ?? []
+        guard let first = names.first, let texture = spriteTexture(named: first, package: package) else { return nil }
+        // Rain-on-glass droplets (REFRACT combo + a normal map) distort the scene behind each sprite. We
+        // refract by sampling the composited background displaced by the droplet's normal map (see the
+        // refractive render branch). Needs the second texture; without it we can't refract faithfully, so
+        // skip (a plain albedo blob would just obscure the scene — worse than the effect's absence).
+        if (pass["combos"] as? [String: Any])?["REFRACT"] as? Int == 1 {
+            guard names.count >= 2, let normal = spriteTexture(named: names[1], package: package) else { return nil }
+            return (texture, normal, false, true)
+        }
         let blending = (pass["blending"] as? String) ?? "normal"
-        return (texture, blending == "additive" || blending == "add")
+        return (texture, nil, blending == "additive" || blending == "add", false)
     }
 
     /// Load a particle sprite: WE's common built-in shapes procedurally (they aren't shipped in the
@@ -1025,71 +1060,152 @@ public final class SceneRenderer {
 
         // Pass 2: composite layers in painter's order — the effect result full-screen for effect layers,
         // the layer quad directly otherwise.
-        let frame = withRenderPass(clearColor: scene.clearColor, width: width, height: height) { encoder in
-            for (index, layer) in scene.layers.enumerated() {
-                var alpha = layer.alphaAnimation.map { Float($0.value(at: time)) } ?? layer.alpha
-
-                // A puppet layer draws its assembled mesh (indexed triangles) textured with the atlas,
-                // instead of a flat quad.
-                if let pup = layer.puppet {
-                    var pu = PuppetU(origin: pup.origin, scale: pup.scale, ortho: pup.ortho, aspectScale: aspectScale)
-                    var tint = layer.tint
-                    encoder.setRenderPipelineState(pipelinePuppet)
-                    encoder.setVertexBuffer(pup.vertexBuffer, offset: 0, index: 0)
-                    encoder.setVertexBytes(&pu, length: MemoryLayout<PuppetU>.stride, index: 1)
-                    encoder.setFragmentTexture(layer.texture, index: 0)
-                    encoder.setFragmentSamplerState(sampler, index: 0)
-                    encoder.setFragmentBytes(&alpha, length: MemoryLayout<Float>.size, index: 0)
-                    encoder.setFragmentBytes(&tint, length: MemoryLayout<SIMD3<Float>>.stride, index: 1)
-                    encoder.drawIndexedPrimitives(type: .triangle, indexCount: pup.indexCount,
-                                                  indexType: .uint32, indexBuffer: pup.indexBuffer, indexBufferOffset: 0)
-                    continue
-                }
-                encoder.setRenderPipelineState(layer.isAdditive ? pipelineAdditive : pipelineOver)
-                var quad: QuadUniform
-                var tint: SIMD3<Float>
-                let texture: MTLTexture
-                if let effected = effectResult[index] {   // effect output sits at the layer's placement in
-                    // scene-NDC (Pass 1 samples 1:1), so the composite carries the same cover scale as the
-                    // direct path — otherwise an effected layer would stretch while the rest is cropped.
-                    quad = QuadUniform(center: SIMD2(0, 0), halfExtent: SIMD2(1, 1), uvScale: SIMD2(1, 1), aspectScale: aspectScale)
-                    tint = SIMD3(1, 1, 1)
-                    texture = effected
-                } else {
-                    quad = QuadUniform(center: animatedCenter(layer, time: time, swayX: swayX, swayY: swayY),
-                                       halfExtent: layer.halfExtent, uvScale: layer.uvScale, aspectScale: aspectScale,
-                                       rotA: layer.rotA, rotB: layer.rotB)
-                    tint = layer.tint
-                    texture = currentTexture(layer, time: time)
-                }
+        let frame: RenderedFrame?
+        if scene.hasRefractiveParticles,
+           let background = renderBackground(scene, time: time, aspectScale: aspectScale,
+                                             swayX: swayX, swayY: swayY, effectResult: effectResult,
+                                             width: width, height: height) {
+            // Two-pass: the scene minus the droplets is composed to `background`; the final pass copies it,
+            // then draws the refractive droplets sampling that background with normal-map displacement.
+            var viewport = SIMD2<Float>(Float(width), Float(height))
+            frame = withRenderPass(clearColor: scene.clearColor, width: width, height: height) { encoder in
+                var quad = QuadUniform(center: SIMD2(0, 0), halfExtent: SIMD2(1, 1), uvScale: SIMD2(1, 1))
+                var bgAlpha: Float = 1
+                var bgTint = SIMD3<Float>(1, 1, 1)
+                encoder.setRenderPipelineState(pipelineOver)
                 encoder.setVertexBytes(&quad, length: MemoryLayout<QuadUniform>.stride, index: 0)
-                encoder.setFragmentTexture(texture, index: 0)
+                encoder.setFragmentTexture(background, index: 0)
                 encoder.setFragmentSamplerState(sampler, index: 0)
-                encoder.setFragmentBytes(&alpha, length: MemoryLayout<Float>.size, index: 0)
-                encoder.setFragmentBytes(&tint, length: MemoryLayout<SIMD3<Float>>.stride, index: 1)
+                encoder.setFragmentBytes(&bgAlpha, length: MemoryLayout<Float>.size, index: 0)
+                encoder.setFragmentBytes(&bgTint, length: MemoryLayout<SIMD3<Float>>.stride, index: 1)
                 encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
-            }
 
-            // Particles draw on top of the composited layers, additively, as instanced sprite quads.
-            for prepared in scene.particles {
-                // simulateParticles writes the live sprites directly into prepared.instanceBuffer and
-                // returns how many — no staging array, no per-frame copy.
-                let n = simulateParticles(prepared, time: time,
-                                          orthoW: scene.orthoWidth, orthoH: scene.orthoHeight)
-                guard n > 0 else { continue }
-                encoder.setRenderPipelineState(prepared.isAdditive ? particleAdditive : particleAlpha)
-                encoder.setVertexBuffer(prepared.instanceBuffer, offset: 0, index: 0)
                 var pAspect = aspectScale
-                encoder.setVertexBytes(&pAspect, length: MemoryLayout<SIMD2<Float>>.stride, index: 1)
-                encoder.setFragmentTexture(prepared.texture, index: 0)
-                encoder.setFragmentSamplerState(sampler, index: 0)
-                encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4, instanceCount: n)
+                for prepared in scene.particles where prepared.isRefractive {
+                    let n = simulateParticles(prepared, time: time, orthoW: scene.orthoWidth, orthoH: scene.orthoHeight)
+                    guard n > 0, let normal = prepared.normalTexture else { continue }
+                    encoder.setRenderPipelineState(particleRefract)
+                    encoder.setVertexBuffer(prepared.instanceBuffer, offset: 0, index: 0)
+                    encoder.setVertexBytes(&pAspect, length: MemoryLayout<SIMD2<Float>>.stride, index: 1)
+                    encoder.setFragmentTexture(prepared.texture, index: 0)
+                    encoder.setFragmentSamplerState(sampler, index: 0)
+                    encoder.setFragmentTexture(normal, index: 1)
+                    encoder.setFragmentTexture(background, index: 2)
+                    encoder.setFragmentBytes(&viewport, length: MemoryLayout<SIMD2<Float>>.stride, index: 0)
+                    encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4, instanceCount: n)
+                }
+            }
+        } else {
+            frame = withRenderPass(clearColor: scene.clearColor, width: width, height: height) { encoder in
+                drawSceneContent(encoder, scene: scene, time: time, aspectScale: aspectScale,
+                                 swayX: swayX, swayY: swayY, effectResult: effectResult)
             }
         }
         // The frame is composited and read back (synchronous), so the effect targets are free to reuse next
         // frame instead of being reallocated.
         recycleEffectTextures()
         return frame
+    }
+
+    /// Draw the scene's image layers (painter's order) and its NON-refractive particles into `encoder`.
+    /// The single-pass render path and the refractive scenes' background pass both use this; refractive
+    /// droplets are drawn separately (they need the composited background as an input).
+    private func drawSceneContent(_ encoder: MTLRenderCommandEncoder, scene: PreparedScene, time: Double,
+                                  aspectScale: SIMD2<Float>, swayX: Float, swayY: Float,
+                                  effectResult: [Int: MTLTexture]) {
+        for (index, layer) in scene.layers.enumerated() {
+            var alpha = layer.alphaAnimation.map { Float($0.value(at: time)) } ?? layer.alpha
+
+            // A puppet layer draws its assembled mesh (indexed triangles) textured with the atlas,
+            // instead of a flat quad.
+            if let pup = layer.puppet {
+                var pu = PuppetU(origin: pup.origin, scale: pup.scale, ortho: pup.ortho, aspectScale: aspectScale)
+                var tint = layer.tint
+                encoder.setRenderPipelineState(pipelinePuppet)
+                encoder.setVertexBuffer(pup.vertexBuffer, offset: 0, index: 0)
+                encoder.setVertexBytes(&pu, length: MemoryLayout<PuppetU>.stride, index: 1)
+                encoder.setFragmentTexture(layer.texture, index: 0)
+                encoder.setFragmentSamplerState(sampler, index: 0)
+                encoder.setFragmentBytes(&alpha, length: MemoryLayout<Float>.size, index: 0)
+                encoder.setFragmentBytes(&tint, length: MemoryLayout<SIMD3<Float>>.stride, index: 1)
+                encoder.drawIndexedPrimitives(type: .triangle, indexCount: pup.indexCount,
+                                              indexType: .uint32, indexBuffer: pup.indexBuffer, indexBufferOffset: 0)
+                continue
+            }
+            encoder.setRenderPipelineState(layer.isAdditive ? pipelineAdditive : pipelineOver)
+            var quad: QuadUniform
+            var tint: SIMD3<Float>
+            let texture: MTLTexture
+            if let effected = effectResult[index] {   // effect output sits at the layer's placement in
+                // scene-NDC (Pass 1 samples 1:1), so the composite carries the same cover scale as the
+                // direct path — otherwise an effected layer would stretch while the rest is cropped.
+                quad = QuadUniform(center: SIMD2(0, 0), halfExtent: SIMD2(1, 1), uvScale: SIMD2(1, 1), aspectScale: aspectScale)
+                tint = SIMD3(1, 1, 1)
+                texture = effected
+            } else {
+                quad = QuadUniform(center: animatedCenter(layer, time: time, swayX: swayX, swayY: swayY),
+                                   halfExtent: layer.halfExtent, uvScale: layer.uvScale, aspectScale: aspectScale,
+                                   rotA: layer.rotA, rotB: layer.rotB)
+                tint = layer.tint
+                texture = currentTexture(layer, time: time)
+            }
+            encoder.setVertexBytes(&quad, length: MemoryLayout<QuadUniform>.stride, index: 0)
+            encoder.setFragmentTexture(texture, index: 0)
+            encoder.setFragmentSamplerState(sampler, index: 0)
+            encoder.setFragmentBytes(&alpha, length: MemoryLayout<Float>.size, index: 0)
+            encoder.setFragmentBytes(&tint, length: MemoryLayout<SIMD3<Float>>.stride, index: 1)
+            encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
+        }
+
+        // Particles draw on top of the composited layers, additively, as instanced sprite quads.
+        for prepared in scene.particles where !prepared.isRefractive {
+            // simulateParticles writes the live sprites directly into prepared.instanceBuffer and
+            // returns how many — no staging array, no per-frame copy.
+            let n = simulateParticles(prepared, time: time,
+                                      orthoW: scene.orthoWidth, orthoH: scene.orthoHeight)
+            guard n > 0 else { continue }
+            encoder.setRenderPipelineState(prepared.isAdditive ? particleAdditive : particleAlpha)
+            encoder.setVertexBuffer(prepared.instanceBuffer, offset: 0, index: 0)
+            var pAspect = aspectScale
+            encoder.setVertexBytes(&pAspect, length: MemoryLayout<SIMD2<Float>>.stride, index: 1)
+            encoder.setFragmentTexture(prepared.texture, index: 0)
+            encoder.setFragmentSamplerState(sampler, index: 0)
+            encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4, instanceCount: n)
+        }
+    }
+
+    /// Compose the scene (layers + non-refractive particles) into a reused offscreen texture that the
+    /// refractive droplets then sample. Returns nil if the target can't be made (caller falls back to the
+    /// single-pass path).
+    private func renderBackground(_ scene: PreparedScene, time: Double, aspectScale: SIMD2<Float>,
+                                  swayX: Float, swayY: Float, effectResult: [Int: MTLTexture],
+                                  width: Int, height: Int) -> MTLTexture? {
+        let target: MTLTexture
+        if let pooled = pooledBackground, pooled.width == width, pooled.height == height {
+            target = pooled
+        } else {
+            let descriptor = MTLTextureDescriptor.texture2DDescriptor(
+                pixelFormat: .rgba8Unorm, width: width, height: height, mipmapped: false)
+            descriptor.usage = [.renderTarget, .shaderRead]
+            descriptor.storageMode = .shared
+            guard let made = device.makeTexture(descriptor: descriptor) else { return nil }
+            target = made
+            pooledBackground = made
+        }
+        guard let commandBuffer = queue.makeCommandBuffer() else { return nil }
+        let pass = MTLRenderPassDescriptor()
+        pass.colorAttachments[0].texture = target
+        pass.colorAttachments[0].loadAction = .clear
+        pass.colorAttachments[0].storeAction = .store
+        pass.colorAttachments[0].clearColor = MTLClearColor(
+            red: scene.clearColor.x, green: scene.clearColor.y, blue: scene.clearColor.z, alpha: 1)
+        guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: pass) else { return nil }
+        drawSceneContent(encoder, scene: scene, time: time, aspectScale: aspectScale,
+                         swayX: swayX, swayY: swayY, effectResult: effectResult)
+        encoder.endEncoding()
+        commandBuffer.commit()
+        commandBuffer.waitUntilCompleted()
+        return target
     }
 
     /// The layer's texture at `time`: the looping video frame for a video-backed layer, else its static
