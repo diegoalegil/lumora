@@ -179,12 +179,12 @@ public extension SceneTexture {
 
     /// Whether a `.tex` payload is a video-backed (animated) texture — an embedded MP4. Decodes nothing,
     /// so the renderer can cheaply decide to load a layer's frames off the render thread.
-    public static func isVideoTexture(_ data: Data) -> Bool { videoPayloadRange(data) != nil }
+    static func isVideoTexture(_ data: Data) -> Bool { videoPayloadRange(data) != nil }
 
     /// Extract up to `count` evenly-spaced frames (RGBA8, resolution-capped) of a video-backed texture,
     /// with the clip's loop duration, so the renderer can animate it. Returns nil if it isn't a video
     /// or yields fewer than two frames.
-    public static func videoFrames(_ data: Data, count: Int = 24) -> (frames: [DecodedTexture], duration: Double)? {
+    static func videoFrames(_ data: Data, count: Int = 24) -> (frames: [DecodedTexture], duration: Double)? {
         guard let range = videoPayloadRange(data) else { return nil }
         let payload = data.subdata(in: range)
 

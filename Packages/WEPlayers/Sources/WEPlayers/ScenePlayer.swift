@@ -124,8 +124,12 @@ public final class ScenePlayer: WallpaperRenderer {
         guard !isPaused, timer == nil, let prepared, prepared.hasAnimation,
               let interval = Self.frameInterval(forTargetFPS: targetFPS) else { return }
         // A block timer with a weak self avoids the retain cycle a `target: self` timer creates (the run
-        // loop keeps the timer alive, so a strong target would outlive a torn-down player).
-        let timer = Timer(timeInterval: interval, repeats: true) { [weak self] _ in self?.tick() }
+        // loop keeps the timer alive, so a strong target would outlive a torn-down player). The block is
+        // nonisolated but the timer is added to the main run loop, so it always fires on the main thread —
+        // assume the main actor to call `tick()` (instead of an async hop that would lag the frame).
+        let timer = Timer(timeInterval: interval, repeats: true) { _ in
+            MainActor.assumeIsolated { [weak self] in self?.tick() }
+        }
         RunLoop.main.add(timer, forMode: .common)
         self.timer = timer
     }
