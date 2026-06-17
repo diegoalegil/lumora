@@ -193,7 +193,7 @@ public extension SceneTexture {
         guard (try? payload.write(to: tempURL)) != nil else { return nil }
         defer { try? FileManager.default.removeItem(at: tempURL) }
         let asset = AVURLAsset(url: tempURL)
-        let duration = CMTimeGetSeconds(asset.duration)
+        let duration = Self.durationSeconds(of: asset)
         guard duration.isFinite, duration > 0.01 else { return nil }
         let generator = AVAssetImageGenerator(asset: asset)
         generator.appliesPreferredTrackTransform = true
@@ -211,6 +211,20 @@ public extension SceneTexture {
                                          imageWidth: px.width, imageHeight: px.height, pixels: px.rgba))
         }
         return frames.count >= 2 ? (frames, duration) : nil
+    }
+
+    /// The asset's duration in seconds, loaded with the modern async API but exposed synchronously for this
+    /// one-time, off-screen frame extraction. The load runs off the calling thread, and a timeout makes it
+    /// fail-safe (returns 0 → the caller keeps the static texture) rather than ever blocking indefinitely.
+    private static func durationSeconds(of asset: AVURLAsset) -> Double {
+        final class Box: @unchecked Sendable { var value = 0.0 }
+        let box = Box()
+        let semaphore = DispatchSemaphore(value: 0)
+        Task.detached {
+            if let duration = try? await asset.load(.duration) { box.value = CMTimeGetSeconds(duration) }
+            semaphore.signal()
+        }
+        return semaphore.wait(timeout: .now() + 5) == .success ? box.value : 0
     }
 
     /// Draw a CGImage into tightly-packed, straight-alpha RGBA8 bytes (capped at Metal's max size).
