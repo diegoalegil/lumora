@@ -524,6 +524,17 @@ let plainPkg = buildPKG(version: "PKGV0009", files: [
 ])
 if let pkg = try? ScenePackage.read(plainPkg), let doc = try? SceneGraph.load(from: pkg) {
     Check.that("an ordinary layer has no driverScript", doc.layers.first?.driverScript == nil)
+    Check.that("an ordinary layer has no explicit alignment (centre by default)", doc.layers.first?.alignment == nil)
+}
+// A non-centre alignment (e.g. a full-screen background anchored bottom-left) must survive parsing so the
+// renderer can shift the quad to land that corner on the layer's origin.
+let alignScene = #"{"objects":[{"name":"bg","image":"models/m.json","alignment":"bottomleft","origin":"0 0 0","size":"3840 2160"}]}"#
+let alignPkg = buildPKG(version: "PKGV0009", files: [
+    ("scene.json", Data(alignScene.utf8)), ("models/m.json", modelJSON),
+    ("materials/mat.json", materialJSON), ("materials/mytex.tex", Data("x".utf8)),
+])
+if let pkg = try? ScenePackage.read(alignPkg), let doc = try? SceneGraph.load(from: pkg) {
+    Check.that("a layer's alignment is parsed", doc.layers.first?.alignment == "bottomleft")
 }
 
 Check.that("SceneVec3 parses a partial string", {

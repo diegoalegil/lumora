@@ -584,8 +584,17 @@ public final class SceneRenderer {
 
             let sizeW = (layer.size?.x ?? 0) > 0 ? layer.size!.x : (textureW > 0 ? textureW : orthoW)
             let sizeH = (layer.size?.y ?? 0) > 0 ? layer.size!.y : (textureH > 0 ? textureH : orthoH)
-            let center = SIMD2(Float(layer.origin.x / orthoW * 2 - 1), Float(layer.origin.y / orthoH * 2 - 1))
             let halfExtent = SIMD2(Float(sizeW * layer.scale.x / orthoW), Float(sizeH * layer.scale.y / orthoH))
+            // `origin` is the layer's centre by default, but `alignment` can anchor it to an edge or corner
+            // (a "bottomleft"-aligned full-screen image puts its bottom-left at origin and extends up-right).
+            // Shift the quad centre by a half-extent toward the anchored side so the anchor lands on origin.
+            var center = SIMD2(Float(layer.origin.x / orthoW * 2 - 1), Float(layer.origin.y / orthoH * 2 - 1))
+            if let a = layer.alignment, a != "center" {
+                if a.contains("left")  { center.x += halfExtent.x }
+                if a.contains("right") { center.x -= halfExtent.x }
+                if a.contains("bottom") { center.y += halfExtent.y }   // scene/NDC y is up
+                if a.contains("top")    { center.y -= halfExtent.y }
+            }
             let tint = SIMD3(Float(layer.color.x), Float(layer.color.y), Float(layer.color.z))
 
             // The layer's roll (angles.z, radians) about its centre. The corner offset is in NDC, which is

@@ -151,6 +151,9 @@ public struct SceneLayer: Sendable, Equatable {
     /// layer is drawn from `color` alone.
     public let isSolidLayer: Bool
     public let origin: SceneVec3
+    /// Which point of the layer sits at `origin`: "center" (default), or an edge/corner like "bottomleft",
+    /// "topright", "left", "bottom"… WE anchors the layer there; the renderer shifts the quad accordingly.
+    public let alignment: String?
     public let scale: SceneVec3
     /// The layer's size in scene units (`"width height"`), or nil to fall back to the texture's size.
     public let size: SceneVec3?
@@ -191,7 +194,8 @@ public struct SceneLayer: Sendable, Equatable {
                 alphaAnimation: AlphaAnimation?, originAnimation: Vec3Animation?, parallaxDepth: SceneVec3,
                 visible: Bool, blending: String?, shader: String?, effects: [LayerEffect], puppetPath: String? = nil,
                 textValue: String? = nil, textScript: String? = nil, fontPath: String? = nil,
-                pointSize: Double = 32, horizontalAlign: String? = nil, driverScript: String? = nil) {
+                pointSize: Double = 32, horizontalAlign: String? = nil, driverScript: String? = nil,
+                alignment: String? = nil) {
         self.name = name
         self.texturePath = texturePath
         self.isSolidLayer = isSolidLayer
@@ -215,6 +219,7 @@ public struct SceneLayer: Sendable, Equatable {
         self.pointSize = pointSize
         self.horizontalAlign = horizontalAlign
         self.driverScript = driverScript
+        self.alignment = alignment
     }
 }
 
@@ -338,7 +343,8 @@ public enum SceneGraph {
                 shader: material.shader,
                 effects: effects(of: object, in: package),
                 puppetPath: puppetPath,
-                driverScript: boundScript(of: object, in: package)
+                driverScript: boundScript(of: object, in: package),
+                alignment: object["alignment"] as? String
             ))
         }
         return RenderableScene(
