@@ -673,13 +673,17 @@ public final class SceneRenderer {
            let made = MetalTexture.make(decoded, device: device) {
             return made
         }
-        // WE's unshipped built-in sprites: blob-like glows (halo, fire, fog, dot, flare, …) approximate
-        // well as a soft radial glow tinted by the particle's colour. Elongated shapes (shafts, beams,
-        // lightning) and detailed debris don't — skip those rather than draw a wrong blob.
+        // WE's unshipped built-in sprites: blob-like glows (halo, fog, dot, flare, …) approximate well as a
+        // soft radial glow tinted by the particle's colour. Two families we DON'T approximate, because a
+        // wrong stand-in is worse than the effect's absence: elongated shapes (shafts, beams, lightning,
+        // debris), and FIRE/ember/spark — WE ships a flame sprite that scenes recolour per-emitter (a
+        // "Wildfire" can be orange in one scene, blue energy in another), so a fixed white/orange blob is as
+        // often wrong as right and just obscures the scene. Skip both rather than draw a wrong blob.
         if name.hasPrefix("particle/") {
-            let blob = ["halo", "glow", "drop", "fire", "dot", "fog", "flare", "smoke", "spark", "star", "bokeh", "circle"]
-            let elongated = ["shaft", "beam", "lightning", "bolt", "ray", "trail", "streak", "debris"]
-            if blob.contains(where: name.contains), !elongated.contains(where: name.contains) {
+            let skip = ["shaft", "beam", "lightning", "bolt", "ray", "trail", "streak", "debris",
+                        "fire", "flame", "ember", "spark", "lava", "magma", "wildfire"]
+            let blob = ["halo", "glow", "drop", "dot", "fog", "flare", "smoke", "star", "bokeh", "circle"]
+            if blob.contains(where: name.contains), !skip.contains(where: name.contains) {
                 return haloTexture
             }
         }
