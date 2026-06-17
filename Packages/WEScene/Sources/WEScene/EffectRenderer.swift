@@ -141,7 +141,13 @@ public final class EffectRenderer {
         descriptor.fragmentFunction = fragment
         descriptor.vertexDescriptor = vertexDescriptor
         descriptor.colorAttachments[0].pixelFormat = pixelFormat
-        return try? device.makeRenderPipelineState(descriptor: descriptor)
+        do { return try device.makeRenderPipelineState(descriptor: descriptor) }
+        catch {
+            if ProcessInfo.processInfo.environment["LUMORA_FX_AUDIT"] != nil {
+                FileHandle.standardError.write("LINKFAIL vert: \(error.localizedDescription.replacingOccurrences(of: "\n", with: " ").prefix(280))\n".data(using: .utf8)!)
+            }
+            return nil
+        }
     }
 
     /// Map a WE FBO format token to a Metal pixel format. Intermediate blur/glow buffers are usually the
