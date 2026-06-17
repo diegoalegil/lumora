@@ -21,6 +21,7 @@ public final class SceneScriptRuntime {
         public var color: SIMD3<Float>
         public var alpha: Float
         public var model: String?     // createLayer('models/bar.json') source; nil for the base layer
+        public var alignment: String? // 'centre' | 'bottom' | 'top' — the pivot the bar scales about
     }
 
     private let context: JSContext
@@ -148,7 +149,8 @@ public final class SceneScriptRuntime {
                 scale: vec3("scale", SIMD3(1, 1, 1)),
                 color: vec3("color", SIMD3(1, 1, 1)),
                 alpha: Float(layer.objectForKeyedSubscript("alpha")?.toDouble() ?? 1),
-                model: layer.objectForKeyedSubscript("model").flatMap { $0.isString ? $0.toString() : nil }))
+                model: layer.objectForKeyedSubscript("model").flatMap { $0.isString ? $0.toString() : nil },
+                alignment: layer.objectForKeyedSubscript("alignment").flatMap { $0.isString ? $0.toString() : nil }))
         }
         return result
     }

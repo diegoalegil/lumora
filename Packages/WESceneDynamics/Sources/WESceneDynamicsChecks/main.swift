@@ -148,6 +148,7 @@ export function update() {
         origin.x += scriptProperties.offsetX;
         bars[i].scale = scale;
         bars[i].origin = origin;
+        bars[i].alignment = 'bottom';
     }
 }
 """
@@ -165,6 +166,8 @@ if let bars = SceneScriptRuntime(script: barScript, baseOrigin: SIMD3(100, 500, 
     let tallest = heights.firstIndex(of: heights.max() ?? 0) ?? -1
     Check.that("the peak-band bar is the tallest (idx \(tallest))", tallest == 8 && (heights.max() ?? 0) > 0.9)
     Check.that("quiet bars are short", heights.filter { $0 < 0.1 }.count >= 10)
+    Check.that("the bar's pivot alignment is read back (for the renderer's grow direction)",
+               layers.allSatisfy { $0.alignment == "bottom" })
 } else {
     Check.that("bar runtime constructs", false)
 }

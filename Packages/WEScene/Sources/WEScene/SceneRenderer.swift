@@ -1296,8 +1296,16 @@ public final class SceneRenderer {
             guard half.x > 0.0001, half.y > 0.0001 else { continue }   // a zero-height bar draws nothing
             let baseX = Float(Double(bar.origin.x) / group.orthoW * 2 - 1)
             let baseY = Float(Double(bar.origin.y) / group.orthoH * 2 - 1)
-            // bottom edge fixed at the baseline, centre raised by the half-height → the bar grows up
-            var quad = QuadUniform(center: SIMD2(baseX, baseY + half.y), halfExtent: half,
+            // Honour the bar's pivot: a 'bottom' bar keeps its bottom edge at the baseline and grows up, a
+            // 'top' bar keeps its top edge there and grows down, and 'centre' (the default) scales about the
+            // baseline. Y is up in scene space, so a bottom pivot raises the centre by the half-height.
+            let centerY: Float
+            switch bar.alignment {
+            case "bottom": centerY = baseY + half.y
+            case "top":    centerY = baseY - half.y
+            default:       centerY = baseY
+            }
+            var quad = QuadUniform(center: SIMD2(baseX, centerY), halfExtent: half,
                                    uvScale: group.uvScale, aspectScale: aspectScale)
             var tint = bar.color
             var a = bar.alpha * layerAlpha
