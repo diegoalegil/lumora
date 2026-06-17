@@ -43,9 +43,12 @@ final class NavigationGuard: NSObject, WKNavigationDelegate {
         self.policy = policy
     }
 
+    // The decisionHandler closure type must match WKNavigationDelegate's optional requirement EXACTLY
+    // (`@MainActor @Sendable`); a near-miss isn't seen as @objc, so WebKit never calls it and the policy goes
+    // inert — a web wallpaper could then navigate to the network unchecked.
     func webView(_ webView: WKWebView,
                  decidePolicyFor navigationAction: WKNavigationAction,
-                 decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
+                 decisionHandler: @escaping @MainActor @Sendable (WKNavigationActionPolicy) -> Void) {
         decisionHandler(policy.allows(navigationAction.request.url) ? .allow : .cancel)
     }
 }
