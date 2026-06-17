@@ -79,6 +79,13 @@ public enum WEStandardHeaders {
     #define blur13a(uv, step) _weBlur13(g_Texture0, g_Texture0_smp, (uv), (step))
     #define blur7a(uv, step) _weBlur7(g_Texture0, g_Texture0_smp, (uv), (step))
     #define blur3a(uv, step) _weBlur3(g_Texture0, g_Texture0_smp, (uv), (step))
+    // Radial (zoom) blur: the same gaussian kernels, but the per-tap step runs along the ray FROM `center`
+    // through `uv`, so the framebuffer smears outward from the centre and the blur grows with distance —
+    // WE's blurRadial{13,7,3}a(uv, center, scale). The 0.03 factor maps `scale` (≈0.01…2) to a sensible
+    // zoom length (the 6th tap reaches ~0.18·dist·scale).
+    #define blurRadial13a(uv, center, scale) _weBlur13(g_Texture0, g_Texture0_smp, (uv), ((uv) - (center)) * (scale) * 0.03)
+    #define blurRadial7a(uv, center, scale) _weBlur7(g_Texture0, g_Texture0_smp, (uv), ((uv) - (center)) * (scale) * 0.03)
+    #define blurRadial3a(uv, center, scale) _weBlur3(g_Texture0, g_Texture0_smp, (uv), ((uv) - (center)) * (scale) * 0.03)
     float4 _weBlur13(texture2d<float> t, sampler s, float2 uv, float2 d) {
         float4 c = t.sample(s, uv) * 0.171834;
         c += (t.sample(s, uv + d) + t.sample(s, uv - d)) * 0.156756;
