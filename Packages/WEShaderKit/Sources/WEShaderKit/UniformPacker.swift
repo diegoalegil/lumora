@@ -14,24 +14,30 @@ public enum UniformPacker {
         var maxAlignment = 4
         for uniform in uniforms {
             let info = layout(uniform.type)
+            let count = max(1, uniform.arrayCount ?? 1)   // N for `float g_Name[N]` (audio spectra), else 1
             maxAlignment = max(maxAlignment, info.alignment)
             buffer.pad(to: align(buffer.count, to: info.alignment))
             let components: [Float]
             if let override = overrides[uniform.name] {   // a built-in supplied by the renderer
-                components = fit(override, to: info.components)
+                components = fit(override, to: info.components * count)
             } else {
                 let source = uniform.material.flatMap { values[$0] } ?? uniform.defaultValue ?? "0"
-                components = floats(source, count: info.components)
+                components = floats(source, count: info.components * count)
             }
-            if uniform.type == "mat3" {
-                // float3x3 in MSL is three columns of float3, each padded to 16 bytes (48 total).
-                for column in 0 ..< 3 {
-                    for row in 0 ..< 3 { buffer.appendFloat(components[column * 3 + row]) }
-                    buffer.appendFloat(0)
+            // Emit `count` array elements (count == 1 for a plain uniform). MSL packs a scalar/vector array
+            // member at the element's own stride — float[N] is tightly packed at 4 bytes, vecN[N] at 16, etc.
+            for element in 0 ..< count {
+                let base = element * info.components
+                if uniform.type == "mat3" {
+                    // float3x3 in MSL is three columns of float3, each padded to 16 bytes (48 total).
+                    for column in 0 ..< 3 {
+                        for row in 0 ..< 3 { buffer.appendFloat(components[base + column * 3 + row]) }
+                        buffer.appendFloat(0)
+                    }
+                } else {
+                    for c in 0 ..< info.components { buffer.appendFloat(components[base + c]) }
+                    buffer.pad(to: buffer.count + (info.stride - info.components * 4))
                 }
-            } else {
-                for component in components { buffer.appendFloat(component) }
-                buffer.pad(to: buffer.count + (info.stride - info.components * 4))
             }
         }
         buffer.pad(to: align(buffer.count, to: maxAlignment))

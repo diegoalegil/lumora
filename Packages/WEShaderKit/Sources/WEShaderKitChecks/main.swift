@@ -944,4 +944,27 @@ let overridden = UniformPacker.pack([ShaderUniform(type: "float", name: "g_Time"
 Check.that("an override replaces the value by uniform name",
            overridden.withUnsafeBytes { $0.bindMemory(to: Float.self)[0] } == 5)
 
+// Array uniforms (audio spectra: `uniform float g_AudioSpectrum16Left[16];`). The parser must capture the
+// size, the transpiler must emit a `float[N]` member, and the packer must lay it out as N tightly-packed
+// floats (MSL packs a scalar array at 4-byte stride) so a renderer override of N values reaches the shader.
+let audioDecl = ShaderUniforms.parse("uniform float g_AudioSpectrum16Left[16];").first
+Check.that("parses an array uniform's element count", audioDecl?.arrayCount == 16)
+Check.that("a plain uniform has no array count", ShaderUniforms.parse("uniform float g_X;").first?.arrayCount == nil)
+let arrMSL = WEShaderTranspiler.fragmentToMSL("""
+uniform sampler2D g_Texture0;
+uniform float g_AudioSpectrum16Left[16];
+varying vec4 v_TexCoord;
+void main() { gl_FragColor = float4(g_AudioSpectrum16Left[3]); }
+""")
+Check.that("emits a float[N] array member in the Uniforms struct", arrMSL.contains("float g_AudioSpectrum16Left[16];"))
+if let device = MTLCreateSystemDefaultDevice() {
+    Check.that("an indexed array uniform compiles via Metal", (try? device.makeLibrary(source: arrMSL, options: nil))?.makeFunction(name: "we_fragment") != nil)
+}
+var spectrum = [Float](repeating: 0, count: 16); spectrum[3] = 0.75
+let packedArr = UniformPacker.pack([ShaderUniform(type: "float", name: "g_AudioSpectrum16Left", arrayCount: 16)],
+                                   values: [:], overrides: ["g_AudioSpectrum16Left": spectrum])
+Check.that("packs a float[16] array uniform to 64 contiguous bytes", packedArr.count == 64)
+Check.that("array element values land at their float index",
+           packedArr.withUnsafeBytes { $0.bindMemory(to: Float.self)[3] } == 0.75)
+
 Check.summarize()

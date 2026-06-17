@@ -59,7 +59,10 @@ public enum WEShaderTranspiler {
 
         if !scalars.isEmpty {
             msl += "struct Uniforms {\n"
-            for uniform in scalars { msl += "    \(mslType(uniform.type)) \(uniform.name);\n" }
+            for uniform in scalars {
+                let array = uniform.arrayCount.map { "[\(min(max($0, 1), 1024))]" } ?? ""
+                msl += "    \(mslType(uniform.type)) \(uniform.name)\(array);\n"
+            }
             msl += "};\n\n"
         }
 
@@ -121,7 +124,10 @@ public enum WEShaderTranspiler {
         msl += "};\n\nstruct VertexOut {\n    float4 position [[position]];\n" + varyingMembers(varyings) + "};\n\n"
         if !scalars.isEmpty {
             msl += "struct Uniforms {\n"
-            for uniform in scalars { msl += "    \(mslType(uniform.type)) \(uniform.name);\n" }
+            for uniform in scalars {
+                let array = uniform.arrayCount.map { "[\(min(max($0, 1), 1024))]" } ?? ""
+                msl += "    \(mslType(uniform.type)) \(uniform.name)\(array);\n"
+            }
             msl += "};\n\n"
         }
         msl += "vertex VertexOut \(functionName)(VertexIn in [[stage_in]]"

@@ -11,23 +11,27 @@ public struct ShaderUniform: Sendable, Equatable {
     public let material: String?       // UI label key from the annotation
     public let defaultValue: String?   // default as a string (number, asset path, or vector)
     public let range: [Double]?        // [min, max] from the annotation
+    public let arrayCount: Int?        // N for `uniform float g_Name[N];` (e.g. audio spectra), else nil
 
     public init(type: String, name: String, material: String? = nil,
-                defaultValue: String? = nil, range: [Double]? = nil) {
+                defaultValue: String? = nil, range: [Double]? = nil, arrayCount: Int? = nil) {
         self.type = type
         self.name = name
         self.material = material
         self.defaultValue = defaultValue
         self.range = range
+        self.arrayCount = arrayCount
     }
 }
 
 /// Pulls the `uniform g_*` declarations (and their JSON annotations) out of a WE shader.
 public enum ShaderUniforms {
-    // uniform <type> <name>[optional array] ; // optional {json annotation}
+    // uniform <type> <name>[optional array size] ; // optional {json annotation}
     // Names are usually g_* (engine globals) but materials also declare u_* user uniforms; capture both.
+    // The array size (group 3) is captured so `uniform float g_AudioSpectrum16Left[16];` round-trips as a
+    // float[16] member rather than a scalar (which makes `g_…[i]` indexing invalid MSL).
     private static let pattern = try! NSRegularExpression(
-        pattern: #"^\s*uniform\s+(\w+)\s+(\w+)\s*(?:\[\s*\d+\s*\])?\s*;?\s*(?://\s*(\{.*\}))?"#)
+        pattern: #"^\s*uniform\s+(\w+)\s+(\w+)\s*(?:\[\s*(\d+)\s*\])?\s*;?\s*(?://\s*(\{.*\}))?"#)
 
     /// Every `uniform` declaration in `source`, in declaration order.
     public static func parse(_ source: String) -> [ShaderUniform] {
@@ -40,7 +44,9 @@ public enum ShaderUniforms {
             var material: String?
             var defaultValue: String?
             var range: [Double]?
-            if let jsonRange = Range(match.range(at: 3), in: line),
+            var arrayCount: Int?
+            if let arrayRange = Range(match.range(at: 3), in: line) { arrayCount = Int(line[arrayRange]) }
+            if let jsonRange = Range(match.range(at: 4), in: line),
                let json = (try? JSONSerialization.jsonObject(with: Data(line[jsonRange].utf8))) as? [String: Any] {
                 material = json["material"] as? String
                 defaultValue = stringify(json["default"])
@@ -49,7 +55,8 @@ public enum ShaderUniforms {
                 }
             }
             uniforms.append(ShaderUniform(type: String(line[typeRange]), name: String(line[nameRange]),
-                                          material: material, defaultValue: defaultValue, range: range))
+                                          material: material, defaultValue: defaultValue, range: range,
+                                          arrayCount: arrayCount))
         }
         return uniforms
     }
