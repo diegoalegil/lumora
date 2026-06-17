@@ -5,6 +5,7 @@
 // GPL source was consulted.
 import Foundation
 import Metal
+import WECore
 import WEImporter
 import WEShaderKit
 
@@ -210,6 +211,10 @@ public final class SceneRenderer {
     // so a borrowed texture is never aliased while still in use.
     private var effectTexturePool: [Int: [MTLTexture]] = [:]
     private var effectTexturesInUse: [MTLTexture] = []
+    // The audio spectra (g_AudioSpectrum16/32/64 Left/Right) for the frame being rendered, as packer
+    // overrides keyed by uniform name. Set at the top of render() from the AudioSpectrumProvider; merged
+    // into every effect pass's uniforms. Empty (no audio uniforms touched) when the source is silent.
+    private var currentAudioOverrides: [String: [Float]] = [:]
 
     private static let shaderSource = """
     #include <metal_stdlib>
@@ -662,6 +667,19 @@ public final class SceneRenderer {
         return overrides
     }
 
+    /// The audio spectrum overrides for a frame, keyed by the WE uniform names an audio-reactive shader
+    /// declares (`uniform float g_AudioSpectrum16Left[16];` etc.). The packer lays each out as a float[N].
+    private static func audioOverrides(_ audio: AudioSpectrumProvider) -> [String: [Float]] {
+        [
+            "g_AudioSpectrum16Left": audio.spectrum(bands: 16, channel: .left),
+            "g_AudioSpectrum16Right": audio.spectrum(bands: 16, channel: .right),
+            "g_AudioSpectrum32Left": audio.spectrum(bands: 32, channel: .left),
+            "g_AudioSpectrum32Right": audio.spectrum(bands: 32, channel: .right),
+            "g_AudioSpectrum64Left": audio.spectrum(bands: 64, channel: .left),
+            "g_AudioSpectrum64Right": audio.spectrum(bands: 64, channel: .right),
+        ]
+    }
+
     /// Run one prepared effect over `input` at `time`, executing its pass graph: allocate the named
     /// intermediate buffers at their scaled size, run each pass (binding `previous`/buffers/aux per slot,
     /// packing the stage uniforms fresh so it animates) into its target, and return the final full-size
@@ -719,6 +737,7 @@ public final class SceneRenderer {
                 resolutions[sampler.number] = SIMD2(texture.width, texture.height)
             }
             let overrides = Self.effectOverrides(time: time, resolutions: resolutions)
+                .merging(currentAudioOverrides) { _, audio in audio }
             let fragmentUniforms = UniformPacker.pack(pass.scalars, values: pass.constants, overrides: overrides)
             let vertexUniforms = pass.hasVertex ? UniformPacker.pack(pass.vertexScalars, values: pass.constants, overrides: overrides) : Data()
 
@@ -971,7 +990,11 @@ public final class SceneRenderer {
     /// Render a prepared scene at `time` seconds, applying a gentle automatic camera parallax so layers
     /// configured with depth drift slightly — the wallpaper breathes instead of sitting perfectly still.
     /// `time = 0` is the still composite (no sway).
-    public func render(_ scene: PreparedScene, width: Int, height: Int, time: Double = 0) -> RenderedFrame? {
+    public func render(_ scene: PreparedScene, width: Int, height: Int, time: Double = 0,
+                       audio: AudioSpectrumProvider = SilentSpectrum()) -> RenderedFrame? {
+        // Snapshot this frame's audio spectra as packer overrides (only non-zero when something is playing
+        // and capture permission is granted; otherwise the arrays are zeros and audio shaders read flat).
+        currentAudioOverrides = Self.audioOverrides(audio)
         let swayX = Float(0.012 * sin(time * 0.6))
         let swayY = Float(0.009 * sin(time * 0.45))
 

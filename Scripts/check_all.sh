@@ -13,6 +13,7 @@ run "Firewall audit" bash Scripts/audit_licenses.sh
 run "WECore checks"  bash -c 'cd Packages/WECore && swift run -q WECoreChecks'
 run "WallpaperShell checks" bash -c 'cd Packages/WallpaperShell && swift run -q WallpaperShellChecks'
 run "WEImporter checks" bash -c 'cd Packages/WEImporter && swift run -q WEImporterChecks'
+run "WESceneDynamics checks" bash -c 'cd Packages/WESceneDynamics && swift run -q WESceneDynamicsChecks'
 run "WEPlayers checks" bash -c 'cd Packages/WEPlayers && swift run -q WEPlayersChecks'
 run "WEScene checks" bash -c 'cd Packages/WEScene && swift run -q WESceneChecks'
 run "WEShaderKit checks" bash -c 'cd Packages/WEShaderKit && swift run -q WEShaderKitChecks'

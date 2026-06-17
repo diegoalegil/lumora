@@ -7,6 +7,7 @@ import ImageIO
 import WECore
 import WEImporter
 import WEScene
+import WESceneDynamics
 
 public enum ScenePlayerError: Error, Equatable, Sendable, CustomStringConvertible {
     case unsupportedType(WallpaperType)
@@ -33,6 +34,11 @@ public final class ScenePlayer: WallpaperRenderer {
     private var timer: Timer?
     private var elapsed = 0.0
     private var isPaused = false
+    // System-audio spectrum for audio-reactive scenes. Capture only starts for a scene that actually uses
+    // audio (so non-audio wallpapers never trigger the Screen Recording permission prompt); if permission
+    // is denied the engine stays silent and the scene renders flat.
+    private let audio = AudioEngine()
+    private var sceneUsesAudio = false
     private var loggedRenderFailure = false
     private var previewImage: CGImage?   // the wallpaper's own thumbnail, shown if the scene can't render
     /// The frame rate the playback policy currently wants — 60 active, 30 on battery / low-power, 0 when
@@ -62,7 +68,21 @@ public final class ScenePlayer: WallpaperRenderer {
         package = scenePackage
         document = try SceneGraph.load(from: scenePackage)
         prepared = nil
+        sceneUsesAudio = Self.usesAudio(scenePackage)
         previewImage = Self.loadPreview(besides: wallpaper.mainFileURL)
+    }
+
+    /// Whether the scene's shaders read the audio spectrum (so we should capture system audio for it). A
+    /// substring scan of the packaged shader sources for the WE audio globals — cheap, done once on load,
+    /// and keeps the Screen Recording permission prompt off wallpapers that don't react to sound.
+    private static func usesAudio(_ package: ScenePackage) -> Bool {
+        for entry in package.entries where entry.path.hasSuffix(".frag") || entry.path.hasSuffix(".vert") {
+            if let text = String(data: entry.data, encoding: .utf8),
+               text.contains("g_AudioSpectrum") || text.contains("audioprocessing") {
+                return true
+            }
+        }
+        return false
     }
 
     /// The wallpaper's bundled `preview.{jpg,png,gif}` (gif → first frame) as a static fallback for a
@@ -81,12 +101,14 @@ public final class ScenePlayer: WallpaperRenderer {
 
     public func resume() {
         isPaused = false
+        if sceneUsesAudio { audio.start() }   // no-op if already running or permission unavailable
         present()
     }
 
     public func pause() {
         isPaused = true
-        stopLoop()   // freeze on the last frame
+        audio.stop()   // release the audio tap while frozen — no point capturing for a still frame
+        stopLoop()     // freeze on the last frame
     }
 
     public func apply(_ directive: PlaybackDirective) {
@@ -104,6 +126,7 @@ public final class ScenePlayer: WallpaperRenderer {
     }
 
     public func tearDown() {
+        audio.stop()
         stopLoop()
         hostView?.removeFromSuperview()
         hostView = nil
@@ -163,7 +186,7 @@ public final class ScenePlayer: WallpaperRenderer {
         let height = max(1, Int(hostView.bounds.height * scale))
 
         if let renderer, let prepared, prepared.isRenderable,
-           let frame = renderer.render(prepared, width: width, height: height, time: elapsed),
+           let frame = renderer.render(prepared, width: width, height: height, time: elapsed, audio: audio),
            let image = frame.makeCGImage() {
             hostView.layer?.backgroundColor = nil
             hostView.layer?.contents = image
