@@ -662,6 +662,20 @@ if let sphere = ParticleSystem.parse(sphereParticle) {
 Check.that("rejects a system with no emitter", ParticleSystem.parse(["maxcount": 10]) == nil)
 Check.that("rejects a system with a zero spawn rate",
            ParticleSystem.parse(["emitter": [["name": "boxrandom", "rate": 0]]]) == nil)
+// Rotation: rotationrandom gives a full-circle starting orientation; angularvelocityrandom's z is the
+// screen-plane spin rate (rad/s). A system with neither leaves both ranges at zero (no spin).
+let spinParticle: [String: Any] = [
+    "emitter": [["name": "boxrandom", "rate": 20]],
+    "initializer": [["name": "rotationrandom"], ["name": "angularvelocityrandom", "min": "0 0 -2", "max": "0 0 3"]],
+]
+if let spin = ParticleSystem.parse(spinParticle) {
+    Check.that("rotationrandom → a full-circle initial orientation",
+               spin.initialRotation.lowerBound == 0 && abs(spin.initialRotation.upperBound - 2 * .pi) < 1e-6)
+    Check.that("angularvelocityrandom → the z spin-rate range", spin.angularVelocity == -2 ... 3)
+}
+if let plain = ParticleSystem.parse(boxParticle) {
+    Check.that("a system without rotation has no spin", plain.initialRotation == 0 ... 0 && plain.angularVelocity == 0 ... 0)
+}
 
 // MARK: - Done
 

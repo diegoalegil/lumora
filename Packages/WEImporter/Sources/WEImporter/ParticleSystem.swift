@@ -29,6 +29,8 @@ public struct ParticleSystem: Sendable, Equatable {
     public var color: Range3            // 0–255 per channel
     public var alpha: ClosedRange<Double>
     public var gravity: SceneVec3       // scene units / s²
+    public var initialRotation: ClosedRange<Double>   // radians; a random starting orientation (rotationrandom)
+    public var angularVelocity: ClosedRange<Double>   // radians/s about z (angularvelocityrandom's z component)
 
     /// Parse a particle system from its JSON object, or nil if it lacks an emitter we can drive.
     public static func parse(_ json: [String: Any], materialOverride: String? = nil) -> ParticleSystem? {
@@ -54,7 +56,8 @@ public struct ParticleSystem: Sendable, Equatable {
             speed: scalarRange(emitter, fallback: 0, keys: ("speedmin", "speedmax")),
             directions: vec3(emitter["directions"]),
             color: Range3(min: SceneVec3(x: 255, y: 255, z: 255), max: SceneVec3(x: 255, y: 255, z: 255)),
-            alpha: 1 ... 1, gravity: SceneVec3(x: 0, y: 0, z: 0))
+            alpha: 1 ... 1, gravity: SceneVec3(x: 0, y: 0, z: 0),
+            initialRotation: 0 ... 0, angularVelocity: 0 ... 0)
 
         for initializer in (json["initializer"] as? [[String: Any]]) ?? [] {
             let name = (initializer["name"] as? String) ?? ""
@@ -66,6 +69,13 @@ public struct ParticleSystem: Sendable, Equatable {
             case "colorrandom":
                 system.color = Range3(min: vec3(initializer["min"], default: 255),
                                       max: vec3(initializer["max"], default: 255))
+            case "rotationrandom":
+                // A random starting orientation. WE stores no bounds for the common 2-D case → a full circle.
+                system.initialRotation = 0 ... (2 * .pi)
+            case "angularvelocityrandom":
+                // Per-axis spin; for a flat sprite only the z component (the screen-plane spin, rad/s) matters.
+                let lo = vec3(initializer["min"]).z, hi = vec3(initializer["max"]).z
+                system.angularVelocity = min(lo, hi) ... max(lo, hi)
             default: break
             }
         }

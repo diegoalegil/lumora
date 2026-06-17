@@ -51,6 +51,7 @@ private struct ParticleInstance {
     var center: SIMD2<Float>
     var halfExtent: SIMD2<Float>
     var color: SIMD4<Float>
+    var rotor: SIMD2<Float>   // (cos θ, sin θ) — the sprite's screen-plane rotation this frame
 }
 
 /// A particle system prepared for rendering: its parsed definition, sprite texture, and the number of
@@ -294,7 +295,7 @@ public final class SceneRenderer {
         out.uv = in.uv;
         return out;
     }
-    struct PInst { float2 center; float2 halfExtent; float4 color; };
+    struct PInst { float2 center; float2 halfExtent; float4 color; float2 rotor; };
     struct POut { float4 position [[position]]; float2 uv; float4 color; };
     vertex POut lumora_particle_vertex(uint vid [[vertex_id]], uint iid [[instance_id]],
                                        constant PInst *insts [[buffer(0)]],
@@ -303,7 +304,11 @@ public final class SceneRenderer {
         float2 uvs[4]    = { float2(0, 1),  float2(1, 1),  float2(0, 0),  float2(1, 0) };
         PInst p = insts[iid];
         POut out;
-        out.position = float4((p.center + corner[vid] * p.halfExtent) * aspectScale, 0, 1);
+        // Rotate the unit corner by the sprite's rotor (cos, sin) before scaling: halfExtent maps the unit
+        // square to equal pixels on both axes, so this spins the sprite in the screen plane.
+        float2 c = corner[vid];
+        float2 r = float2(c.x * p.rotor.x - c.y * p.rotor.y, c.x * p.rotor.y + c.y * p.rotor.x);
+        out.position = float4((p.center + r * p.halfExtent) * aspectScale, 0, 1);
         out.uv = uvs[vid];
         out.color = p.color;
         return out;
@@ -1076,10 +1081,16 @@ public final class SceneRenderer {
             let posY = spawnY + velY * age + 0.5 * s.gravity.y * age * age
             let lifeFrac = age / life
             let fade = Float(smoothstep(0, 0.15, lifeFrac) * (1 - smoothstep(0.85, 1, lifeFrac)))
+            // Screen-plane spin: a random starting orientation plus a constant angular velocity over the
+            // particle's age (radians). Clamp the rate defensively so no malformed value can strobe.
+            let angle0 = lerp(s.initialRotation.lowerBound, s.initialRotation.upperBound, rand(seed, 13))
+            let spin = max(-12, min(12, lerp(s.angularVelocity.lowerBound, s.angularVelocity.upperBound, rand(seed, 14))))
+            let angle = Float(angle0 + spin * age)
             dst[n] = ParticleInstance(
                 center: SIMD2(Float(posX / orthoW * 2 - 1), Float(posY / orthoH * 2 - 1)),
                 halfExtent: SIMD2(Float(size / orthoW), Float(size / orthoH)),
-                color: SIMD4(color, Float(alpha0) * fade))
+                color: SIMD4(color, Float(alpha0) * fade),
+                rotor: SIMD2(cos(angle), sin(angle)))
             n += 1
         }
         return n
