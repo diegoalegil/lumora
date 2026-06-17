@@ -84,9 +84,20 @@ public final class EffectRenderer {
 
     /// Build a pipeline pairing the fixed full-screen vertex with a WE effect's transpiled fragment, or
     /// nil if it fails to transpile, compile, or link. `combos` are the effect's combo selections.
+    /// Compile transpiled MSL, logging the compiler error (gated) so transpile failures can be diagnosed.
+    private func library(_ source: String, _ label: String) -> MTLLibrary? {
+        do { return try device.makeLibrary(source: source, options: nil) }
+        catch {
+            if ProcessInfo.processInfo.environment["LUMORA_FX_AUDIT"] != nil {
+                FileHandle.standardError.write("MSLFAIL \(label): \(error.localizedDescription.replacingOccurrences(of: "\n", with: " ").prefix(280))\n".data(using: .utf8)!)
+            }
+            return nil
+        }
+    }
+
     public func makePipeline(fragmentShader: String, combos: [String: Int] = [:],
                              pixelFormat: MTLPixelFormat = .rgba8Unorm) -> MTLRenderPipelineState? {
-        guard let fragmentLibrary = try? device.makeLibrary(source: WEShaderTranspiler.fragmentToMSL(fragmentShader, combos: combos), options: nil),
+        guard let fragmentLibrary = library(WEShaderTranspiler.fragmentToMSL(fragmentShader, combos: combos), "frag"),
               let fragmentFunction = fragmentLibrary.makeFunction(name: "we_fragment") else { return nil }
         let descriptor = MTLRenderPipelineDescriptor()
         descriptor.vertexFunction = vertexFunction
@@ -106,9 +117,9 @@ public final class EffectRenderer {
         let attributes = WEShaderTranspiler.vertexAttributes(vertexShader, combos: combos)
         guard !attributes.isEmpty,
               attributes.allSatisfy({ $0.name == "a_Position" || $0.name == "a_TexCoord" }) else { return nil }
-        guard let vertexLibrary = try? device.makeLibrary(source: WEShaderTranspiler.vertexToMSL(vertexShader, combos: combos), options: nil),
+        guard let vertexLibrary = library(WEShaderTranspiler.vertexToMSL(vertexShader, combos: combos), "vert"),
               let vertex = vertexLibrary.makeFunction(name: "we_vertex"),
-              let fragmentLibrary = try? device.makeLibrary(source: WEShaderTranspiler.fragmentToMSL(fragmentShader, combos: combos, pairedVertex: vertexShader), options: nil),
+              let fragmentLibrary = library(WEShaderTranspiler.fragmentToMSL(fragmentShader, combos: combos, pairedVertex: vertexShader), "frag+vert"),
               let fragment = fragmentLibrary.makeFunction(name: "we_fragment") else { return nil }
 
         let vertexDescriptor = MTLVertexDescriptor()
