@@ -1,74 +1,140 @@
 // SPDX-License-Identifier: MIT
-// Provenance: clean-room. Runs Wallpaper Engine "SceneScript" property scripts on JavaScriptCore. WE binds
-// a small JS module to a scene property (e.g. a clock text layer's `text`, a bar's `scale`): it declares
-// user-editable `scriptProperties` and exports `init()`/`update(value)`, and the engine calls `update` each
-// frame to drive the property. This runs that module and exposes its update result. The host API surface
-// (createScriptProperties, a minimal `engine`) is reconstructed from observed script usage + public WE docs;
-// no GPL. Designed to DEGRADE GRACEFULLY: a script that throws or uses an unsupported call yields nil, so the
-// caller keeps the static value — a scripted property is never rendered wrong, only un-animated.
+// Provenance: clean-room. Runs Wallpaper Engine "SceneScript" property scripts on JavaScriptCore. WE binds a
+// small JS module to a scene property: it declares user `scriptProperties` and exports `init()`/`update(value)`
+// which the engine calls per frame to drive the property — a clock text's `text`, or an audio visualiser's
+// `scale` that clones `thisLayer` into N bars and sets each one's height from the audio spectrum. This runs
+// that module and exposes its result + the layers it manipulates. The host API (createScriptProperties, a
+// minimal `engine`, Vec2/Vec3, thisLayer/thisScene with createLayer, an audio buffer) is reconstructed from
+// observed script usage + public WE docs; no GPL. DEGRADES GRACEFULLY: a script that throws or uses an
+// unsupported call yields nil / no scripted layers, so the caller keeps the static value — a scripted
+// property is never rendered wrong, only un-animated.
 import Foundation
+import simd
 import JavaScriptCore
 
 public final class SceneScriptRuntime {
+    /// One layer the script created or manipulates (the base `thisLayer` plus any `createLayer` clones),
+    /// read back after `runUpdate()` so the renderer can draw the bars/elements the script produced.
+    public struct ScriptedLayer: Sendable, Equatable {
+        public var origin: SIMD3<Float>
+        public var scale: SIMD3<Float>
+        public var color: SIMD3<Float>
+        public var alpha: Float
+        public var model: String?     // createLayer('models/bar.json') source; nil for the base layer
+    }
+
     private let context: JSContext
     private var updateFn: JSValue?
-    private var hasInit = false
-    /// The script's declared user properties (name → default value), from `createScriptProperties()`.
+    /// True when this script manipulates the scene graph (created layers / has init) vs a plain value script.
+    public private(set) var drivesLayers = false
     public private(set) var properties: [String: Any] = [:]
     public private(set) var loaded = false
 
-    /// Build a runtime for one property script. Returns nil only if JavaScriptCore can't be created.
-    public init?(script: String) {
+    /// Build a runtime for one property script. `baseOrigin/baseColor/baseAlpha` seed `thisLayer` (the scene
+    /// object the script is attached to). Returns nil only if JavaScriptCore can't be created.
+    public init?(script: String, baseOrigin: SIMD3<Float> = .zero,
+                 baseColor: SIMD3<Float> = SIMD3(1, 1, 1), baseAlpha: Float = 1) {
         guard let context = JSContext() else { return nil }
         self.context = context
-        context.exceptionHandler = { _, _ in }   // swallow; loaded stays false / update returns nil
-        // Host API the scripts call at module-load and per-frame. createScriptProperties records declared
-        // defaults; the minimal `engine` stub keeps audio/util-using scripts from throwing at load (audio
-        // bands stay zero here — the live spectrum is wired separately).
+        context.exceptionHandler = { _, _ in }   // swallow; loaded stays false / results are nil
+
         let prelude = """
+        function Vec2(x, y) { this.x = x || 0; this.y = (y === undefined ? (x || 0) : y); }
+        Vec2.prototype.copy = function () { return new Vec2(this.x, this.y); };
+        function Vec3(x, y, z) { this.x = x || 0; this.y = (y === undefined ? (x || 0) : y); this.z = (z === undefined ? (x || 0) : z); }
+        Vec3.prototype.copy = function () { return new Vec3(this.x, this.y, this.z); };
+        var __layers = [];
+        function __mkLayer(model, origin, color, alpha) {
+            var L = { origin: origin, color: color, alpha: alpha, scale: new Vec3(1, 1, 1),
+                      alignment: 'centre', parallaxDepth: new Vec2(0, 0), model: model };
+            __layers.push(L); return L;
+        }
+        var thisLayer = __mkLayer(null, new Vec3(\(baseOrigin.x), \(baseOrigin.y), \(baseOrigin.z)),
+                                  new Vec3(\(baseColor.x), \(baseColor.y), \(baseColor.z)), \(baseAlpha));
+        var thisScene = {
+            getLayerIndex: function (l) { return Math.max(0, __layers.indexOf(l)); },
+            createLayer: function (model) { return __mkLayer(model, thisLayer.origin.copy(), thisLayer.color.copy(), thisLayer.alpha); },
+            sortLayer: function (l, idx) {},
+            getLayer: function () { return thisLayer; }
+        };
+        var __audio = { average: new Array(65).fill(0), length: 64 };
         function createScriptProperties() {
             var props = {};
             function rec(o) { if (o && o.name !== undefined) props[o.name] = o.value; return b; }
             var b = {
                 addSlider: rec, addCheckbox: rec, addText: rec, addColor: rec,
-                addCombo: function(o){ if(o&&o.name!==undefined) props[o.name]=(o.value!==undefined?o.value:(o.options&&o.options[0]?o.options[0].value:0)); return b; },
-                finish: function(){ return props; }
+                addCombo: function (o) { if (o && o.name !== undefined) props[o.name] = (o.value !== undefined ? o.value : (o.options && o.options[0] ? o.options[0].value : 0)); return b; },
+                finish: function () { return props; }
             };
             return b;
         }
         var engine = {
             AUDIO_RESOLUTION_16: 16, AUDIO_RESOLUTION_32: 32, AUDIO_RESOLUTION_64: 64,
-            registerAudioBuffers: function(){ return { average: function(){ return 0; }, length: 0 }; },
-            getArrayValues: function(){ return []; }
+            registerAudioBuffers: function () { return __audio; },
+            getArrayValues: function () { return []; }
         };
         """
         context.evaluateScript(prelude)
-        // WE scripts use ES `export`; JSContext evaluates a plain script, so drop the `export ` keyword and
-        // read the resulting globals. (A module loader would be heavier and isn't needed for these.)
-        let stripped = script.replacingOccurrences(of: "export ", with: "")
-        context.evaluateScript(stripped)
+        context.evaluateScript(script.replacingOccurrences(of: "export ", with: ""))
 
         if let props = context.objectForKeyedSubscript("scriptProperties"), !props.isUndefined,
-           let dict = props.toDictionary() as? [String: Any] {
-            properties = dict
-        }
+           let dict = props.toDictionary() as? [String: Any] { properties = dict }
         guard let update = context.objectForKeyedSubscript("update"), update.isObject else { return nil }
         updateFn = update
-        if let initFn = context.objectForKeyedSubscript("init"), initFn.isObject { hasInit = true; _ = initFn.call(withArguments: []) }
+        if let initFn = context.objectForKeyedSubscript("init"), initFn.isObject {
+            drivesLayers = true
+            _ = initFn.call(withArguments: [])
+        }
         loaded = true
     }
 
-    /// Run `update(value)` and return its result as a string (clocks/text), or nil on any error/non-string.
-    public func updateString(_ value: String = "") -> String? {
-        guard loaded, let result = updateFn?.call(withArguments: [value]), !result.isUndefined, !result.isNull
-        else { return nil }
-        return result.isString ? result.toString() : nil
+    /// Set the audio spectrum the script reads as `audioBuffer.average[i]` (0…63, plus a guard slot). Call
+    /// each frame before `runUpdate()` for an audio-reactive script.
+    public func setAudioSpectrum(_ bands: [Float]) {
+        guard loaded, let audio = context.objectForKeyedSubscript("__audio") else { return }
+        var values = bands.map { NSNumber(value: $0) }
+        values.append(NSNumber(value: bands.last ?? 0))   // the bar script reads dataIndex+1
+        audio.setObject(values, forKeyedSubscript: "average" as NSString)
     }
 
-    /// Run `update(value)` and return its result as a number, or nil on any error/non-number.
+    /// Run `update(value)` (the per-frame driver). Use updateString/Number to read a value result, or
+    /// scriptedLayers() to read the layers a graph script produced.
+    @discardableResult public func runUpdate(_ value: Any = 0) -> JSValue? {
+        guard loaded else { return nil }
+        return updateFn?.call(withArguments: [value])
+    }
+
+    public func updateString(_ value: String = "") -> String? {
+        guard let r = runUpdate(value), !r.isUndefined, !r.isNull, r.isString else { return nil }
+        return r.toString()
+    }
+
     public func updateNumber(_ value: Double = 0) -> Double? {
-        guard loaded, let result = updateFn?.call(withArguments: [value]), !result.isUndefined, !result.isNull,
-              result.isNumber else { return nil }
-        return result.toDouble()
+        guard let r = runUpdate(value), !r.isUndefined, !r.isNull, r.isNumber else { return nil }
+        return r.toDouble()
+    }
+
+    /// The layers the script owns (base `thisLayer` + `createLayer` clones), with their current transforms —
+    /// read after `runUpdate()`. Empty for a plain value script.
+    public func scriptedLayers() -> [ScriptedLayer] {
+        guard loaded, let array = context.objectForKeyedSubscript("__layers"), array.isObject,
+              let count = array.objectForKeyedSubscript("length")?.toNumber()?.intValue, count > 0 else { return [] }
+        var result: [ScriptedLayer] = []
+        for i in 0 ..< min(count, 4096) {
+            guard let layer = array.objectAtIndexedSubscript(i), layer.isObject else { continue }
+            func vec3(_ key: String, _ d: SIMD3<Float>) -> SIMD3<Float> {
+                guard let v = layer.objectForKeyedSubscript(key), v.isObject else { return d }
+                return SIMD3(Float(v.objectForKeyedSubscript("x")?.toDouble() ?? Double(d.x)),
+                             Float(v.objectForKeyedSubscript("y")?.toDouble() ?? Double(d.y)),
+                             Float(v.objectForKeyedSubscript("z")?.toDouble() ?? Double(d.z)))
+            }
+            result.append(ScriptedLayer(
+                origin: vec3("origin", .zero),
+                scale: vec3("scale", SIMD3(1, 1, 1)),
+                color: vec3("color", SIMD3(1, 1, 1)),
+                alpha: Float(layer.objectForKeyedSubscript("alpha")?.toDouble() ?? 1),
+                model: layer.objectForKeyedSubscript("model").flatMap { $0.isString ? $0.toString() : nil }))
+        }
+        return result
     }
 }

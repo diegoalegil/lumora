@@ -115,4 +115,52 @@ if let thrower = SceneScriptRuntime(script: "export function update(v){ throw ne
 let audioish = SceneScriptRuntime(script: "var b = engine.registerAudioBuffers(engine.AUDIO_RESOLUTION_64); export function update(v){ return v; }")
 Check.that("an engine-using script loads against the stub", audioish != nil)
 
+Check.section("SceneScriptRuntime — scene-graph (audio bars)")
+// A representative WE audio-bar visualiser: declares properties, clones thisLayer into N bars in init(),
+// and sets each bar's height from the 64-band audio buffer in update(). Shape from the real bar scripts.
+let barScript = """
+'use strict';
+export var scriptProperties = createScriptProperties()
+    .addSlider({ name: 'barAmount', label: 'Bars', value: 16, min: 1, max: 64, integer: true })
+    .addSlider({ name: 'offsetX', label: 'Spacing', value: 50, min: 0, max: 100 })
+    .finish();
+const audioBuffer = engine.registerAudioBuffers(engine.AUDIO_RESOLUTION_64);
+var bars = [];
+export function init() {
+    bars.push(thisLayer);
+    let i0 = thisScene.getLayerIndex(thisLayer);
+    for (var i = 1; i < scriptProperties.barAmount; ++i) {
+        let bar = thisScene.createLayer('models/bar.json');
+        thisScene.sortLayer(bar, i0);
+        bars.push(bar);
+    }
+}
+export function update() {
+    var baseX = thisLayer.origin.copy().x;
+    for (var i = 0; i < scriptProperties.barAmount; ++i) {
+        let bar = bars[i];
+        let idx = Math.floor((i / scriptProperties.barAmount) * 64);
+        bar.origin = new Vec3(baseX + i * scriptProperties.offsetX, thisLayer.origin.y, 0);
+        bar.scale = new Vec3(1, Math.min(audioBuffer.average[idx], 1), 1);
+    }
+}
+"""
+if let bars = SceneScriptRuntime(script: barScript, baseOrigin: SIMD3(100, 500, 0)) {
+    Check.that("a graph script with init() drives layers", bars.drivesLayers)
+    // Synthetic spectrum: a single peak at band 32 (≈ bar index 8 of 16).
+    var spectrum = [Float](repeating: 0.05, count: 64); spectrum[32] = 1.0
+    bars.setAudioSpectrum(spectrum)
+    bars.runUpdate()
+    let layers = bars.scriptedLayers()
+    Check.that("creates barAmount layers (16)", layers.count == 16)
+    Check.that("bars are spaced along X", layers.count >= 2 && layers[1].origin.x > layers[0].origin.x)
+    // The bar whose band is the peak (idx 8 → band 32) should be the tallest.
+    let heights = layers.map { $0.scale.y }
+    let tallest = heights.firstIndex(of: heights.max() ?? 0) ?? -1
+    Check.that("the peak-band bar is the tallest (idx \(tallest))", tallest == 8 && (heights.max() ?? 0) > 0.9)
+    Check.that("quiet bars are short", heights.filter { $0 < 0.1 }.count >= 10)
+} else {
+    Check.that("bar runtime constructs", false)
+}
+
 Check.summarize()
