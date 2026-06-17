@@ -154,7 +154,10 @@ if CommandLine.arguments.count > 1 {
         if let e = package.entry(named: CommandLine.arguments[3]), let d = try? SceneTexture.decodeFirstMip(e.data),
            let f = renderer.render(decoded: d, alpha: 1, clearColor: SceneVec3(x: 0, y: 0, z: 0),
                                    width: min(d.imageWidth, 1024), height: min(d.imageHeight, 1024)) {
-            print("\(d.imageWidth)x\(d.imageHeight) -> \(writePNG(f, to: "/tmp/lumora_tex.png"))")
+            // alpha-channel stats of the decoded RGBA — a layer that decodes RGB but draws invisible has alpha≈0
+            let px = [UInt8](d.pixels); var aMin = 255, aMax = 0, aSum = 0; let n = px.count / 4
+            for i in 0 ..< n { let a = Int(px[i * 4 + 3]); aMin = min(aMin, a); aMax = max(aMax, a); aSum += a }
+            print("format=\(d.format) \(d.imageWidth)x\(d.imageHeight) alpha[min=\(aMin) max=\(aMax) mean=\(n > 0 ? aSum / n : 0)] -> \(writePNG(f, to: "/tmp/lumora_tex.png"))")
         } else { print("decode failed") }
         exit(0)
     }
@@ -175,7 +178,8 @@ if CommandLine.arguments.count > 1 {
             print("  [\(i)] vis=\(l.visible ? 1 : 0) tex=\(l.texturePath ?? (l.isSolidLayer ? "SOLID" : "nil")) "
                 + "origin=(\(Int(l.origin.x)),\(Int(l.origin.y))) size=\(sz) scale=(\(l.scale.x),\(l.scale.y)) "
                 + "angles=(\(l.angles.x),\(l.angles.y),\(l.angles.z)) depth=(\(l.parallaxDepth.x),\(l.parallaxDepth.y)) "
-                + "anim=\(l.originAnimation != nil) eff=\(l.effects.count) blend=\(l.blending ?? "-")")
+                + "anim=\(l.originAnimation != nil) eff=\(l.effects.count) blend=\(l.blending ?? "-") "
+                + "alpha=\(l.alpha) color=\(l.color)")
         }
         exit(0)
     }
