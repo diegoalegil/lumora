@@ -77,6 +77,14 @@ Check.that("defines the random-file hook", WEWebBridge.bootstrapScript.contains(
 Check.that("does not define wallpaperPropertyListener (the wallpaper owns it)",
            !WEWebBridge.bootstrapScript.contains("window.wallpaperPropertyListener ="))
 
+Check.section("WebPlayer hardening")
+// The URL-scheme content rule can't block WebRTC, so the page hardening script must neuter the peer-connection
+// APIs (non-configurable) before any page script runs — a regression here re-opens an exfiltration channel.
+Check.that("disables RTCPeerConnection", WebPlayer.disableWebRTCScript.contains("RTCPeerConnection"))
+Check.that("also disables the webkit-prefixed constructor", WebPlayer.disableWebRTCScript.contains("webkitRTCPeerConnection"))
+Check.that("makes the override non-configurable (page can't restore it)",
+           WebPlayer.disableWebRTCScript.contains("configurable: false"))
+
 Check.section("Players")
 Check.that("VideoPlayer handles the video type", VideoPlayer.supportedType == .video)
 Check.that("VideoFallbackPlayer handles the video type", VideoFallbackPlayer.supportedType == .video)

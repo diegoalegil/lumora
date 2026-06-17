@@ -27,6 +27,21 @@ public final class WebPlayer: WallpaperRenderer {
     /// Compiled once per process: a content-blocking rule that drops every remote (http/https/ws/ftp) load.
     private static var blockRemoteRules: WKContentRuleList?
 
+    /// Injected before any page script (all frames): removes the WebRTC constructors so an untrusted wallpaper
+    /// can't open a peer connection the URL-scheme content rule cannot block. The properties are made
+    /// non-writable/non-configurable so page code can't restore them.
+    public static let disableWebRTCScript = """
+    (function () {
+        'use strict';
+        var names = ['RTCPeerConnection', 'webkitRTCPeerConnection', 'mozRTCPeerConnection',
+                     'RTCDataChannel', 'RTCSessionDescription', 'RTCIceCandidate', 'RTCRtpSender'];
+        for (var i = 0; i < names.length; i++) {
+            try { Object.defineProperty(window, names[i], { value: undefined, writable: false, configurable: false }); }
+            catch (e) {}
+        }
+    })();
+    """
+
     public init() {
         let configuration = WKWebViewConfiguration()
         // A wallpaper should animate on its own — don't gate background video/audio on a click.
@@ -37,6 +52,14 @@ public final class WebPlayer: WallpaperRenderer {
         // Define WE's web API before the wallpaper runs so it doesn't ReferenceError on the hooks.
         configuration.userContentController.addUserScript(
             WKUserScript(source: WEWebBridge.bootstrapScript, injectionTime: .atDocumentStart, forMainFrameOnly: true)
+        )
+        // The remote-load content rule filters by URL scheme, so it can't see WebRTC: an RTCPeerConnection +
+        // data channel rides UDP/STUN/TURN, not http/ws, and would stay open as an exfiltration path. A
+        // wallpaper has no legitimate use for peer connections, so neuter the APIs in every frame before any
+        // page script runs. (EventSource/fetch/XHR/WebSocket all use blocked schemes, so the content rule
+        // already covers them; WebRTC is the only hole it structurally cannot close.)
+        configuration.userContentController.addUserScript(
+            WKUserScript(source: Self.disableWebRTCScript, injectionTime: .atDocumentStart, forMainFrameOnly: false)
         )
         webView = WKWebView(frame: .zero, configuration: configuration)
         // Let the desktop show through any transparent regions instead of an opaque white page.
