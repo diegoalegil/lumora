@@ -59,7 +59,9 @@ public enum PuppetModel {
                 if u32(s) == markerBytes { marker = s; break }
                 s += 1
             }
-            guard marker >= 0 else { return nil }
+            // marker + 8 <= n so the vertex-block size read below stays in bounds (the search only guaranteed
+            // the 4 marker bytes fit; this .mdl is untrusted input).
+            guard marker >= 0, marker + 8 <= n else { return nil }
 
             let stride = 80
             let vertexBytes = Int(u32(marker + 4))

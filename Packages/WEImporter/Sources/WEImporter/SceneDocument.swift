@@ -356,7 +356,9 @@ public enum SceneGraph {
             }
 
             var passes: [EffectPass] = []
-            for jsonPass in effectPasses {
+            // Cap the pass count: effect.json is untrusted, and a real effect graph is small (a 4-pass blur is
+            // the heaviest), so an unbounded list could only be an attempt to exhaust memory at prepare time.
+            for jsonPass in effectPasses.prefix(16) {
                 guard let materialPath = jsonPass["material"] as? String,
                       let material = json(package.entry(named: materialPath)),
                       let materialPass = (material["passes"] as? [[String: Any]])?.first,
@@ -383,10 +385,12 @@ public enum SceneGraph {
             }
             guard let first = passes.first else { continue }
 
-            let fbos: [EffectFBO] = ((effect["fbos"] as? [[String: Any]]) ?? []).compactMap {
+            // Same untrusted-input bound on the FBO list, and clamp each scale to the 1…16 the renderer
+            // actually allocates (1/2/4/8/16) so a bogus huge scale can't size a buffer absurdly.
+            let fbos: [EffectFBO] = ((effect["fbos"] as? [[String: Any]]) ?? []).prefix(16).compactMap {
                 guard let name = $0["name"] as? String else { return nil }
                 let scale = ($0["scale"] as? NSNumber)?.intValue ?? 1
-                return EffectFBO(name: name, scale: max(1, scale), format: ($0["format"] as? String) ?? "rgba_backbuffer")
+                return EffectFBO(name: name, scale: min(16, max(1, scale)), format: ($0["format"] as? String) ?? "rgba_backbuffer")
             }
 
             let name = URL(fileURLWithPath: file).deletingLastPathComponent().lastPathComponent
