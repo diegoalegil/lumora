@@ -168,6 +168,10 @@ public enum PuppetModel {
             guard o >= 0, o + 64 <= n, let m = affine(o), finite(m) else { return nil }
             func z(_ i: Int) -> Bool { abs(f32(o + i * 4)) < 1e-3 }
             func one(_ i: Int) -> Bool { abs(f32(o + i * 4) - 1) < 1e-3 }
+            // A flat 2-D-in-4×4 affine: rows 0/1 the linear part (cols 2,3 zero), row 2 the z axis (0,0,1,0),
+            // row 3 the planar translation (z and w fixed). Versions that carry a z translation here are a
+            // different pose convention whose "pose" is animation, not a rest layout — matching strictly keeps
+            // those (e.g. a pre-assembled soft rig) on their clean preview rather than deforming them wrongly.
             guard z(2), z(3), z(6), z(7), z(8), z(9), one(10), z(11), z(14), one(15) else { return nil }
             return m
         }
