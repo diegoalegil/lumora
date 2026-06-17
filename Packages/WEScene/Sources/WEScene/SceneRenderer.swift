@@ -252,6 +252,9 @@ public final class SceneRenderer {
     // overrides keyed by uniform name. Set at the top of render() from the AudioSpectrumProvider; merged
     // into every effect pass's uniforms. Empty (no audio uniforms touched) when the source is silent.
     private var currentAudioOverrides: [String: [Float]] = [:]
+    // Target pixels per scene unit for the frame being rendered, set at the top of render(). Text layers
+    // rasterise at this density so glyphs stay crisp on a Retina/4K target instead of being magnified 1×.
+    private var currentPixelScale: Double = 1
 
     private static let shaderSource = """
     #include <metal_stdlib>
@@ -1111,6 +1114,9 @@ public final class SceneRenderer {
         // Snapshot this frame's audio spectra as packer overrides (only non-zero when something is playing
         // and capture permission is granted; otherwise the arrays are zeros and audio shaders read flat).
         currentAudioOverrides = Self.audioOverrides(audio)
+        // How many target pixels each scene unit covers (the larger axis, since cover-fit scales one axis up):
+        // text rasterises at this density so it's sharp on the real display rather than upscaled from 1×.
+        currentPixelScale = max(Double(width) / max(1, scene.orthoWidth), Double(height) / max(1, scene.orthoHeight))
         let swayX = Float(0.012 * sin(time * 0.6))
         let swayY = Float(0.009 * sin(time * 0.45))
 
@@ -1223,7 +1229,7 @@ public final class SceneRenderer {
             // sized to the glyphs; an empty string draws nothing. The font is sized in scene units, so the
             // pixel dimensions map ≈1:1 to scene units for the quad half-extent.
             if let textLayer = layer.text {
-                guard let (textTexture, w, h) = textLayer.currentTexture() else { continue }
+                guard let (textTexture, w, h) = textLayer.currentTexture(pixelScale: currentPixelScale) else { continue }
                 let half = SIMD2(Float(Double(w) / scene.orthoWidth), Float(Double(h) / scene.orthoHeight))
                 // Honour the text's horizontal alignment: the origin is the string's left edge / centre / right
                 // edge. Left-aligned text extends right of origin (centre shifts right by a half-width), etc.
