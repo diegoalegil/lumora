@@ -45,6 +45,7 @@ public enum WEShaderTranspiler {
         qualifiers.append(("gl_FragColor", "_fragColor"))
 
         var body = rewriteTypes(rewriteIntrinsics(mainBody(of: resolved)))
+        body = coerceVectorTruncations(body, vectorDims(of: resolved))
         for (name, replacement) in qualifiers { body = qualify(body, name: name, with: replacement) }
 
         var msl = "#include <metal_stdlib>\nusing namespace metal;\n\n" + comboConstants(combos)
@@ -99,6 +100,7 @@ public enum WEShaderTranspiler {
         qualifiers.append(("gl_Position", "out.position"))
 
         var body = rewriteTypes(rewriteIntrinsics(mainBody(of: resolved)))
+        body = coerceVectorTruncations(body, vectorDims(of: resolved))
         for (name, replacement) in qualifiers { body = qualify(body, name: name, with: replacement) }
 
         var msl = "#include <metal_stdlib>\nusing namespace metal;\n\n" + comboConstants(combos)
@@ -177,6 +179,98 @@ public enum WEShaderTranspiler {
             if seen.insert(name).inserted { result.append((type: String(line[t]), name: name, count: count)) }   // dedup repeats
         }
         return result
+    }
+
+    /// Component count of a GLSL type (1 for scalars), or nil for mat/sampler/unknown.
+    private static func componentCount(of type: String) -> Int? {
+        switch type {
+        case "vec2", "float2", "ivec2", "uvec2", "bvec2": return 2
+        case "vec3", "float3", "ivec3", "uvec3", "bvec3": return 3
+        case "vec4", "float4", "ivec4", "uvec4", "bvec4": return 4
+        case "float", "int", "uint", "bool", "half": return 1
+        default: return nil
+        }
+    }
+
+    /// Map every confidently-typed name in the shader to its component count: declared uniforms, varyings,
+    /// attributes, the gl_* builtins, and local `vecN name`/`float name` declarations in the body.
+    private static func vectorDims(of resolved: String) -> [String: Int] {
+        var dims: [String: Int] = ["gl_FragCoord": 4, "gl_Position": 4, "gl_PointCoord": 2]
+        for u in ShaderUniforms.parse(resolved) { if let c = componentCount(of: u.type) { dims[u.name] = c } }
+        for keyword in ["varying", "attribute"] {
+            for d in parseDeclarations(resolved, keyword: keyword) where d.count == nil {
+                if let c = componentCount(of: d.type) { dims[d.name] = c }
+            }
+        }
+        let local = try! NSRegularExpression(pattern: #"\b(vec[234]|float[234]?|ivec[234]|bvec[234])\s+([A-Za-z_]\w*)"#)
+        let ns = resolved as NSString
+        for m in local.matches(in: resolved, range: NSRange(location: 0, length: ns.length)) {
+            let name = ns.substring(with: m.range(at: 2))
+            if dims[name] == nil, let c = componentCount(of: ns.substring(with: m.range(at: 1))) { dims[name] = c }
+        }
+        return dims
+    }
+
+    /// Component count of a SIMPLE operand — a literal, a typed name (optionally swizzled), or a vecN/float
+    /// constructor. nil for anything compound (a binary expression, an unknown call) so the caller leaves it
+    /// untouched. Used to spot — and only spot — dimension mismatches that are safe to truncate.
+    private static func operandDim(_ token: String, _ dims: [String: Int]) -> Int? {
+        let t = token.trimmingCharacters(in: .whitespaces)
+        if t.range(of: #"^[-+]?[0-9.]+$"#, options: .regularExpression) != nil { return 1 }   // numeric literal
+        if let m = t.range(of: #"^(vec([234])|float([234])?)\s*\("#, options: .regularExpression) {
+            let head = t[t.startIndex..<m.upperBound]
+            if head.contains("4") { return 4 }; if head.contains("3") { return 3 }; if head.contains("2") { return 2 }
+            return 1   // float(...)
+        }
+        guard t.range(of: #"^[A-Za-z_]\w*(\.[xyzwrgba]+)?$"#, options: .regularExpression) != nil else { return nil }
+        if let dot = t.firstIndex(of: ".") { return t.distance(from: t.index(after: dot), to: t.endIndex) }   // swizzle
+        return dims[t]
+    }
+
+    /// Append the leading-N swizzle (.x/.xy/.xyz) that truncates a vector to `target` components.
+    private static func truncated(_ token: String, to target: Int) -> String {
+        token + "." + String("xyzw".prefix(target))
+    }
+
+    /// WE's shaders are HLSL-derived and rely on implicit vector truncation (assigning/passing a vecM where a
+    /// vecN, N<M, is wanted); MSL rejects it. Insert the leading-N swizzle for the cases we can type with full
+    /// confidence — a simple operand assigned to a smaller declared target, and a vec4/vec3 passed where a
+    /// known builtin wants vec2. Anything compound (a binary expression) is left untouched, so a shader that
+    /// already type-checks is never rewritten.
+    private static func coerceVectorTruncations(_ body: String, _ dims: [String: Int]) -> String {
+        // Functions whose first parameter is a 2-component vector (a vecM arg is truncated to .xy).
+        let vec2FirstParam: Set<String> = ["rotateVec2"]
+        var out: [String] = []
+        for rawLine in body.components(separatedBy: "\n") {
+            var line = rawLine
+            // (1) `[type] lhs = rhs;` where rhs is a single operand wider than the target.
+            let ns0 = line as NSString
+            let assign = try! NSRegularExpression(pattern: #"^(\s*)(?:(vec[234]|float[234]?)\s+)?([A-Za-z_]\w*(?:\.[xyzwrgba]+)?)\s*=\s*([^=;][^;]*);\s*$"#)
+            if let r = assign.firstMatch(in: line, range: NSRange(location: 0, length: ns0.length)) {
+                let indent = ns0.substring(with: r.range(at: 1))
+                let declType = r.range(at: 2).location != NSNotFound ? ns0.substring(with: r.range(at: 2)) : ""
+                let lhs = ns0.substring(with: r.range(at: 3))
+                let rhs = ns0.substring(with: r.range(at: 4)).trimmingCharacters(in: .whitespaces)
+                let lhsDim = !declType.isEmpty ? componentCount(of: declType) : operandDim(lhs, dims)
+                if let lhsDim, lhsDim >= 1, lhsDim <= 3, let rhsDim = operandDim(rhs, dims), rhsDim > lhsDim {
+                    let lhsPart = declType.isEmpty ? lhs : "\(declType) \(lhs)"
+                    line = "\(indent)\(lhsPart) = \(truncated(rhs, to: lhsDim));"
+                }
+            }
+            // (2) `fn(arg, …)` for a known vec2-first-param function, arg a wider simple operand.
+            for fn in vec2FirstParam {
+                let re = try! NSRegularExpression(pattern: "\\b\(fn)\\(\\s*([A-Za-z_]\\w*(?:\\.[xyzwrgba]+)?)\\s*,")
+                let ns = line as NSString
+                if let r = re.firstMatch(in: line, range: NSRange(location: 0, length: ns.length)) {
+                    let arg = ns.substring(with: r.range(at: 1))
+                    if let d = operandDim(arg, dims), d > 2 {
+                        line = line.replacingOccurrences(of: "\(fn)(\(arg),", with: "\(fn)(\(truncated(arg, to: 2)),")
+                    }
+                }
+            }
+            out.append(line)
+        }
+        return out.joined(separator: "\n")
     }
 
     /// The `[[user(locn…)]]` member declarations for `varyings`. MSL forbids an array member in a

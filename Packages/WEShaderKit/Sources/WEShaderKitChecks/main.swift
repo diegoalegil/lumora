@@ -119,6 +119,29 @@ if let device = MTLCreateSystemDefaultDevice() {
     print("  ⚠︎ no Metal device — skipping the MSL compile check")
 }
 
+// HLSL-style implicit vector truncation: WE shaders assign/pass a wider vector where a narrower one is
+// wanted. MSL rejects that, so the transpiler inserts the leading-N swizzle for the cases it can type with
+// confidence. A simple operand assigned to a narrower target, and a vec4 passed to a vec2-first-param func.
+let truncShader = """
+varying vec4 v_TexCoord;
+uniform sampler2D g_Texture0;
+void main() {
+    vec2 uv = v_TexCoord;
+    vec2 spun = rotateVec2(v_TexCoord, 1.0);
+    gl_FragColor = texSample2D(g_Texture0, uv + spun);
+}
+"""
+let truncMSL = WEShaderTranspiler.fragmentToMSL(truncShader)
+Check.that("truncates a vec4 assigned to a vec2 target", truncMSL.contains("float2 uv = in.v_TexCoord.xy"))
+Check.that("truncates a vec4 arg to a vec2-param function", truncMSL.contains("rotateVec2(in.v_TexCoord.xy,"))
+Check.that("leaves a correctly-dimensioned assignment alone", {
+    let ok = WEShaderTranspiler.fragmentToMSL("varying vec4 v_TexCoord;\nvoid main() { vec2 uv = v_TexCoord.xy; gl_FragColor = vec4(uv, 0.0, 1.0); }")
+    return ok.contains("float2 uv = in.v_TexCoord.xy") && !ok.contains(".xy.xy")
+}())
+if let device = MTLCreateSystemDefaultDevice() {
+    Check.that("truncated MSL compiles via Metal", (try? device.makeLibrary(source: truncMSL, options: nil))?.makeFunction(name: "we_fragment") != nil)
+}
+
 // A pure helper defined AFTER main() must be emitted at file scope, not swallowed into main's body.
 // Under the old "body runs to the file's last }" rule the helper landed inside main and was also
 // emitted separately, so the shader failed to compile (a nested/duplicate definition).
