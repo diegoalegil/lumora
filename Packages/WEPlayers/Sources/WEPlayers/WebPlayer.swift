@@ -24,11 +24,16 @@ public final class WebPlayer: WallpaperRenderer {
 
     private let webView: WKWebView
     private var navigationGuard: NavigationGuard?
+    /// Compiled once per process: a content-blocking rule that drops every remote (http/https/ws/ftp) load.
+    private static var blockRemoteRules: WKContentRuleList?
 
     public init() {
         let configuration = WKWebViewConfiguration()
         // A wallpaper should animate on its own — don't gate background video/audio on a click.
         configuration.mediaTypesRequiringUserActionForPlayback = []
+        // An ephemeral store: an untrusted wallpaper gets no persistent cookies/localStorage/cache to stage
+        // tracking state in across launches.
+        configuration.websiteDataStore = .nonPersistent()
         // Define WE's web API before the wallpaper runs so it doesn't ReferenceError on the hooks.
         configuration.userContentController.addUserScript(
             WKUserScript(source: WEWebBridge.bootstrapScript, injectionTime: .atDocumentStart, forMainFrameOnly: true)
@@ -49,8 +54,33 @@ public final class WebPlayer: WallpaperRenderer {
         let navigationGuard = NavigationGuard(policy: WallpaperNavigationPolicy(confinedTo: wallpaper.ref.folderURL))
         webView.navigationDelegate = navigationGuard
         self.navigationGuard = navigationGuard
-        // Grant read access to the wallpaper folder so the page can reach its css/js/image assets.
-        webView.loadFileURL(wallpaper.mainFileURL, allowingReadAccessTo: wallpaper.ref.folderURL)
+        // The navigation delegate only sees navigations, not subresource loads (fetch/XHR/WebSocket/<img>),
+        // which are the real exfiltration path. Block all remote loads with a content rule before the page
+        // runs; only then load it. The rule compiles asynchronously, so defer the load into the completion.
+        let target = wallpaper.mainFileURL, folder = wallpaper.ref.folderURL
+        Self.withBlockRemoteRules { [weak self] rules in
+            guard let self else { return }
+            if let rules { self.webView.configuration.userContentController.add(rules) }
+            // Grant read access to the wallpaper folder so the page can reach its css/js/image assets.
+            self.webView.loadFileURL(target, allowingReadAccessTo: folder)
+        }
+    }
+
+    /// Compile (once) and hand back the remote-blocking rule list. Loads still proceed if compilation fails,
+    /// falling back to the navigation guard alone rather than refusing to show the wallpaper.
+    private static func withBlockRemoteRules(_ completion: @escaping @MainActor (WKContentRuleList?) -> Void) {
+        if let rules = blockRemoteRules { completion(rules); return }
+        let source = """
+        [{"trigger":{"url-filter":"^https?://"},"action":{"type":"block"}},
+         {"trigger":{"url-filter":"^wss?://"},"action":{"type":"block"}},
+         {"trigger":{"url-filter":"^ftp://"},"action":{"type":"block"}}]
+        """
+        WKContentRuleListStore.default().compileContentRuleList(forIdentifier: "lumora-block-remote",
+                                                                encodedContentRuleList: source) { list, error in
+            if let error { NSLog("Lumora: remote-block rules failed to compile (\(error)); navigation guard only") }
+            blockRemoteRules = list
+            completion(list)
+        }
     }
 
     public func resume() { webView.setAllMediaPlaybackSuspended(false, completionHandler: nil) }
