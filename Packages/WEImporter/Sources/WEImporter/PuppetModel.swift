@@ -95,7 +95,24 @@ public enum PuppetModel {
             // moved by its bones' `pose ∘ bind⁻¹` transforms, weighted. If the skeleton doesn't decode to a
             // sane result, `assemble` leaves the positions untouched and reports false so the caller keeps
             // the static preview.
-            let ok = assemble(&positions, boneIdx: boneIdx, weights: weights, data: raw, count: n)
+            var ok = assemble(&positions, boneIdx: boneIdx, weights: weights, data: raw, count: n)
+            // Torn-mesh guard. A correct skin keeps each triangle roughly atlas-proportioned; a mis-parsed
+            // skeleton (wrong stride for this .mdl version) leaves parts at their flat-atlas spots so the
+            // triangles bridging them stretch across the whole figure. Reject when the longest edge spans a
+            // large fraction of the assembled bounds — that's a scatter, not a character.
+            if ok, positions.count > 2 {
+                var lo = positions[0], hi = positions[0]
+                for p in positions { lo = SIMD2(min(lo.x, p.x), min(lo.y, p.y)); hi = SIMD2(max(hi.x, p.x), max(hi.y, p.y)) }
+                let diag = max(1, ((hi.x - lo.x) * (hi.x - lo.x) + (hi.y - lo.y) * (hi.y - lo.y)).squareRoot())
+                var maxEdge: Float = 0
+                var i = 0
+                while i + 2 < indices.count {
+                    let a = Int(indices[i]), b = Int(indices[i + 1]), c = Int(indices[i + 2]); i += 3
+                    func edge(_ u: Int, _ v: Int) { let d = positions[u] - positions[v]; maxEdge = max(maxEdge, (d.x * d.x + d.y * d.y).squareRoot()) }
+                    edge(a, b); edge(b, c); edge(c, a)
+                }
+                if maxEdge / diag > 0.5 { ok = false }   // longest edge spans half the figure → a scatter
+            }
 
             return PuppetMesh(positions: positions, uvs: uvs, indices: indices, assembled: ok)
         }
@@ -142,33 +159,56 @@ public enum PuppetModel {
             guard mat >= 0, mat + 64 <= n else { return nil }
             return Affine(a: f32(mat), b: f32(mat + 4), c: f32(mat + 16), d: f32(mat + 20), tx: f32(mat + 48), ty: f32(mat + 52))
         }
-        let boneCount = Int(u32(mdls + 13))
-        guard boneCount >= 1, boneCount <= 1024 else { return false }
         func finite(_ m: Affine) -> Bool {
             m.a.isFinite && m.b.isFinite && m.c.isFinite && m.d.isFinite && m.tx.isFinite && m.ty.isFinite
         }
+        // A 4×4 row-major 2-D affine has a rigid z-axis: the off-axis terms are 0 and the z/w diagonal is 1.
+        // Used to find matrices in the byte stream past variable-length records, allowing any rotation.
+        func structuralMatrix(_ o: Int) -> Affine? {
+            guard o >= 0, o + 64 <= n, let m = affine(o), finite(m) else { return nil }
+            func z(_ i: Int) -> Bool { abs(f32(o + i * 4)) < 1e-3 }
+            func one(_ i: Int) -> Bool { abs(f32(o + i * 4) - 1) < 1e-3 }
+            guard z(2), z(3), z(6), z(7), z(8), z(9), one(10), z(11), z(14), one(15) else { return nil }
+            return m
+        }
+        let boneCount = Int(u32(mdls + 13))
+        guard boneCount >= 1, boneCount <= 1024 else { return false }
 
-        // Bind poses: one 78-byte record per bone (parent at +5, matrix at +13).
-        let firstBone = mdls + 17, bindStride = 78
+        // Bind poses: one record per bone, `[u8 flag][u32=1][i32 parent@+5][u32 matsize=64@+9][64-B matrix@+13]`
+        // then a variable trailer (empty in some versions, a null-terminated JSON metadata blob in others), so
+        // the record stride isn't fixed — read the fixed head + matrix, then skip to the trailer's null.
+        let firstBone = mdls + 17
         var parents = [Int](repeating: -1, count: boneCount)
         var bindLocal = [Affine](repeating: Affine(), count: boneCount)
+        var rec = firstBone
         for k in 0 ..< boneCount {
-            let rec = firstBone + k * bindStride
             guard rec + 13 + 64 <= n, let m = affine(rec + 13), finite(m) else { return false }
             parents[k] = Int(i32(rec + 5)); bindLocal[k] = m
+            var o = rec + 13 + 64
+            while o < n, raw[o] != 0 { o += 1 }   // skip the null-terminated trailer
+            rec = o + 1
         }
-        // Pose matrices: a back-to-back array of `boneCount` 64-byte matrices that begins right after the bind
-        // records (a few bytes of padding precede the first one — skip to the next clean affine).
-        var poseStart = firstBone + boneCount * bindStride
-        var scan = poseStart
-        while scan + 64 <= n, scan < poseStart + 32 {
-            if let m = affine(scan), abs(m.a) > 0.001, abs(m.d) > 0.001,
-               f32(scan + 8) == 0, f32(scan + 24) == 0 { poseStart = scan; break }
+        // Pose matrices: a back-to-back array of `boneCount` matrices after the bind records. A few header
+        // bytes precede the first one, and the per-matrix stride varies by version (64 with no gap, ~76 with a
+        // small per-entry header) — locate the first matrix, then measure the stride from the second. Require
+        // the WHOLE array to be present (every slot a clean matrix at the same stride): a partial hit means we
+        // mis-parsed this version's layout, and assembling on it would scatter the parts, so bail to false.
+        var poseLocal = bindLocal
+        var poseStart = -1
+        var scan = rec
+        while scan + 64 <= n, scan < rec + 64 {
+            if structuralMatrix(scan) != nil { poseStart = scan; break }
             scan += 1
         }
-        var poseLocal = [Affine](repeating: Affine(), count: boneCount)
+        guard poseStart >= 0 else { return false }
+        var poseStride = 64
+        var t = poseStart + 56
+        while t + 64 <= n, t < poseStart + 160 {
+            if structuralMatrix(t) != nil { poseStride = t - poseStart; break }
+            t += 1
+        }
         for k in 0 ..< boneCount {
-            if let m = affine(poseStart + k * 64) { poseLocal[k] = m }
+            if let m = structuralMatrix(poseStart + k * poseStride) { poseLocal[k] = m }
         }
         // Accumulate local transforms up the parent chain into world transforms.
         func world(_ locals: [Affine], _ k: Int, _ depth: Int) -> Affine {
