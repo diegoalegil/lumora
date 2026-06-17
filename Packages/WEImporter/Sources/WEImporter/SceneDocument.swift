@@ -266,9 +266,12 @@ public enum SceneGraph {
             // A puppet object references a bone/mesh model (on the object, or inside its model JSON). Capture
             // the `.mdl` path so the renderer can draw the assembled mesh; flag the scene either way so the
             // player still falls back to the static preview for puppets the renderer can't yet assemble.
-            let puppetPath = (object["puppet"] as? String)
-                ?? (json(package.entry(named: imagePath))?["puppet"] as? String)
-            if puppetPath != nil { usesPuppet = true }
+            let modelJSON = json(package.entry(named: imagePath))
+            let puppetPath = (object["puppet"] as? String) ?? (modelJSON?["puppet"] as? String)
+            // Flag the scene as puppet-rigged whenever a puppet reference EXISTS in any form — not only when
+            // it casts to a String path. A variant-shaped reference that failed the cast would otherwise drop
+            // the preview fallback and leave the renderer drawing the raw atlas as scattered parts.
+            if object["puppet"] != nil || modelJSON?["puppet"] != nil { usesPuppet = true }
             layers.append(SceneLayer(
                 name: object["name"] as? String ?? "",
                 texturePath: material.texture,
