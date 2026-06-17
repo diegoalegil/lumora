@@ -143,14 +143,15 @@ public final class ScenePlayer: WallpaperRenderer {
     /// Composite the prepared scene at the view's pixel size and the current time into its layer.
     private func present() {
         guard let hostView, hostView.bounds.width > 1, hostView.bounds.height > 1 else { return }
-        // A puppet-rigged scene needs skeletal mesh deformation the renderer doesn't do yet; drawing its raw
-        // layer atlas shows scattered body parts, so show the wallpaper's own static preview instead.
-        if document?.usesPuppet == true, let previewImage {
+        ensurePrepared()
+        // A puppet-rigged scene only renders live when every puppet layer assembled into a sane mesh
+        // (`puppetReady`). Otherwise drawing its raw layer atlas would show scattered body parts, so fall back
+        // to the wallpaper's own static preview.
+        if document?.usesPuppet == true, prepared?.puppetReady != true, let previewImage {
             hostView.layer?.backgroundColor = nil
             hostView.layer?.contents = previewImage
             return
         }
-        ensurePrepared()
         startLoopIfAnimated()
 
         let scale = hostView.window?.backingScaleFactor ?? 2

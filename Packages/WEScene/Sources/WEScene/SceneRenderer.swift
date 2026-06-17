@@ -155,14 +155,19 @@ public final class PreparedScene {
     fileprivate let particles: [PreparedParticles]
     fileprivate let orthoWidth: Double
     fileprivate let orthoHeight: Double
+    /// True when the scene has at least one puppet layer and EVERY puppet layer assembled into a sane mesh.
+    /// A puppet scene that isn't ready would draw its raw atlas as scattered parts, so the caller should show
+    /// the static preview instead; a ready one can be rendered live like any other scene.
+    public let puppetReady: Bool
 
     fileprivate init(layers: [PreparedLayer], clearColor: SceneVec3, particles: [PreparedParticles],
-                     orthoWidth: Double, orthoHeight: Double) {
+                     orthoWidth: Double, orthoHeight: Double, puppetReady: Bool) {
         self.layers = layers
         self.clearColor = clearColor
         self.particles = particles
         self.orthoWidth = orthoWidth
         self.orthoHeight = orthoHeight
+        self.puppetReady = puppetReady
     }
 
     /// How many layers will be drawn (0 means nothing resolved — the caller should show a fallback).
@@ -463,6 +468,7 @@ public final class SceneRenderer {
         let videoFrameCount = 24
         let videoVRAMBudget = 384 * 1024 * 1024
         var videoVRAMUsed = 0
+        var puppetLayerCount = 0, puppetReadyCount = 0   // a scene is puppet-ready only if every puppet assembles
         for layer in document.layers where layer.visible {
             var texture: MTLTexture?
             var textureW = 0.0, textureH = 0.0
@@ -530,28 +536,29 @@ public final class SceneRenderer {
             // A puppet layer draws its assembled skeletal mesh (sprite-atlas parts) instead of a quad. The
             // model-space positions are placed by the object's origin/scale; the mesh UVs are scaled by the
             // texture's content ratio so a padded (POT) atlas samples the right region, like the quad path.
-            // GATED behind LUMORA_PUPPET while skeletal assembly is being finished: off by default so puppet
-            // layers fall back to the existing path and the player shows the static-preview stopgap (no
-            // regression); set it to develop/verify the mesh path.
+            // The mesh is only built when the skeleton assembled into a verified-good figure (`mesh.assembled`,
+            // which the parser gates on finite matrices + a non-torn result); a layer that doesn't decode
+            // leaves `puppet` nil, marking the scene not puppet-ready so the caller keeps the static preview.
             var puppet: PreparedPuppet?
-            if ProcessInfo.processInfo.environment["LUMORA_PUPPET"] != nil,
-               let puppetPath = layer.puppetPath, let entry = package.entry(named: puppetPath),
-               let mesh = PuppetModel.parseMesh(entry.data), mesh.indices.count >= 3,
-               // Only draw the live mesh when the skeleton assembled into a verified-good figure; otherwise
-               // the static-preview path keeps a clean image instead of scattered/exploded parts.
-               mesh.assembled || ProcessInfo.processInfo.environment["LUMORA_PUPPET_RAW"] != nil {
-                var verts = [Float](); verts.reserveCapacity(mesh.positions.count * 4)
-                for i in 0 ..< mesh.positions.count {
-                    let p = mesh.positions[i], uv = mesh.uvs[i]
-                    verts.append(contentsOf: [p.x, p.y, uv.x * uvScale.x, uv.y * uvScale.y])
+            if let puppetPath = layer.puppetPath {
+                puppetLayerCount += 1
+                if let entry = package.entry(named: puppetPath),
+                   let mesh = PuppetModel.parseMesh(entry.data), mesh.indices.count >= 3,
+                   mesh.assembled || ProcessInfo.processInfo.environment["LUMORA_PUPPET_RAW"] != nil {
+                    var verts = [Float](); verts.reserveCapacity(mesh.positions.count * 4)
+                    for i in 0 ..< mesh.positions.count {
+                        let p = mesh.positions[i], uv = mesh.uvs[i]
+                        verts.append(contentsOf: [p.x, p.y, uv.x * uvScale.x, uv.y * uvScale.y])
+                    }
+                    if let vbuf = device.makeBuffer(bytes: verts, length: verts.count * 4, options: .storageModeShared),
+                       let ibuf = device.makeBuffer(bytes: mesh.indices, length: mesh.indices.count * 4, options: .storageModeShared) {
+                        puppet = PreparedPuppet(vertexBuffer: vbuf, indexBuffer: ibuf, indexCount: mesh.indices.count,
+                                                origin: SIMD2(Float(layer.origin.x), Float(layer.origin.y)),
+                                                scale: SIMD2(Float(layer.scale.x), Float(layer.scale.y)),
+                                                ortho: SIMD2(Float(orthoW), Float(orthoH)))
+                    }
                 }
-                if let vbuf = device.makeBuffer(bytes: verts, length: verts.count * 4, options: .storageModeShared),
-                   let ibuf = device.makeBuffer(bytes: mesh.indices, length: mesh.indices.count * 4, options: .storageModeShared) {
-                    puppet = PreparedPuppet(vertexBuffer: vbuf, indexBuffer: ibuf, indexCount: mesh.indices.count,
-                                            origin: SIMD2(Float(layer.origin.x), Float(layer.origin.y)),
-                                            scale: SIMD2(Float(layer.scale.x), Float(layer.scale.y)),
-                                            ortho: SIMD2(Float(orthoW), Float(orthoH)))
-                }
+                if puppet != nil { puppetReadyCount += 1 }
             }
             prepared.append(PreparedLayer(
                 texture: texture,
@@ -588,7 +595,8 @@ public final class SceneRenderer {
                                                        instanceBuffer: instanceBuffer))
         }
         return PreparedScene(layers: prepared, clearColor: document.clearColor,
-                             particles: preparedParticles, orthoWidth: orthoW, orthoHeight: orthoH)
+                             particles: preparedParticles, orthoWidth: orthoW, orthoHeight: orthoH,
+                             puppetReady: puppetLayerCount > 0 && puppetReadyCount == puppetLayerCount)
     }
 
     /// The sprite a particle system draws — its material's first bound texture and blend mode
