@@ -173,10 +173,11 @@ public final class ScenePlayer: WallpaperRenderer {
         ensurePrepared()
         // A puppet-rigged scene only renders live when every puppet layer assembled into a sane mesh
         // (`puppetReady`). Otherwise drawing its raw layer atlas would show scattered body parts, so fall back
-        // to the wallpaper's own static preview.
-        if document?.usesPuppet == true, prepared?.puppetReady != true, let previewImage {
-            hostView.layer?.backgroundColor = nil
+        // to the wallpaper's own static preview — or, if it ships none, the solid fill. Never the scattered
+        // geometry: a scene without a preview must not slip through to the live render here.
+        if document?.usesPuppet == true, prepared?.puppetReady != true {
             hostView.layer?.contents = previewImage
+            hostView.layer?.backgroundColor = previewImage == nil ? SceneHostView.fallbackColor : nil
             return
         }
         startLoopIfAnimated()
