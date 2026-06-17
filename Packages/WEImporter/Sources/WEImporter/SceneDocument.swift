@@ -347,6 +347,13 @@ public enum SceneGraph {
             if let source = (entry["passes"] as? [[String: Any]])?.first?["combos"] as? [String: Any] {
                 for (key, value) in source { if let i = (value as? NSNumber)?.intValue { entryCombos[key] = i } }
             }
+            // The instance can override the material's texture slots — most importantly the opacity mask
+            // that confines a ripple/distortion to a region. The material often declares only the framebuffer
+            // and a normal map; without the instance's mask the effect would smear the whole layer.
+            var entryTextures: [String?] = []
+            if let pass = (entry["passes"] as? [[String: Any]])?.first, let t = pass["textures"] as? [Any] {
+                entryTextures = t.map { $0 as? String }
+            }
 
             var passes: [EffectPass] = []
             for jsonPass in effectPasses {
@@ -358,7 +365,13 @@ public enum SceneGraph {
                 if let materialCombos = materialPass["combos"] as? [String: Any] {
                     for (key, value) in materialCombos { if let i = (value as? NSNumber)?.intValue { combos[key] = i } }
                 }
-                let textures = (materialPass["textures"] as? [Any])?.map { $0 as? String } ?? []
+                var textures = (materialPass["textures"] as? [Any])?.map { $0 as? String } ?? []
+                // Layer the instance's non-null texture overrides on top of the material defaults (a slot the
+                // instance leaves null keeps the material's), extending the list for slots the material omits.
+                for (i, override) in entryTextures.enumerated() {
+                    guard let override else { if i >= textures.count { textures.append(nil) }; continue }
+                    if i < textures.count { textures[i] = override } else { textures.append(override) }
+                }
                 let binds: [EffectBind] = ((jsonPass["bind"] as? [[String: Any]]) ?? []).compactMap {
                     guard let name = $0["name"] as? String, let index = ($0["index"] as? NSNumber)?.intValue else { return nil }
                     return EffectBind(name: name, index: index)
