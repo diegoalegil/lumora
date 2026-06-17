@@ -16,9 +16,10 @@ let package = Package(
         .package(path: "../WECore"),
         .package(path: "../WEImporter"),
         .package(path: "../WEShaderKit"),
+        .package(path: "../WESceneDynamics"),
     ],
     targets: [
-        .target(name: "WEScene", dependencies: ["WECore", "WEImporter", "WEShaderKit"]),
+        .target(name: "WEScene", dependencies: ["WECore", "WEImporter", "WEShaderKit", "WESceneDynamics"]),
         .executableTarget(name: "WESceneChecks", dependencies: ["WEScene", "WEImporter"]),
     ]
 )

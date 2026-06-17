@@ -172,11 +172,22 @@ public struct SceneLayer: Sendable, Equatable {
     /// In-package path of the layer's puppet mesh (`…_puppet.mdl`), if the object is puppet-rigged. The
     /// renderer draws this skeletal mesh (assembled from the sprite atlas) instead of a flat quad.
     public let puppetPath: String?
+    /// A text layer's content/styling, if this object is text (a clock, label, …) rather than an image.
+    /// `textValue` is the static string; `textScript` is the SceneScript that drives it per frame (a clock).
+    public let textValue: String?
+    public let textScript: String?
+    public let fontPath: String?          // in-package path of the .ttf (e.g. "fonts/RobotoMono-Regular.ttf")
+    public let pointSize: Double          // font point size in scene units
+    public let horizontalAlign: String?   // "left" | "center" | "right"
+    /// True when this object is a text layer (drawn from rendered glyphs, not a packed texture).
+    public var isTextLayer: Bool { textValue != nil || textScript != nil }
 
     public init(name: String, texturePath: String?, isSolidLayer: Bool, origin: SceneVec3, scale: SceneVec3,
                 size: SceneVec3?, angles: SceneVec3, alpha: Double, color: SceneVec3,
                 alphaAnimation: AlphaAnimation?, originAnimation: Vec3Animation?, parallaxDepth: SceneVec3,
-                visible: Bool, blending: String?, shader: String?, effects: [LayerEffect], puppetPath: String? = nil) {
+                visible: Bool, blending: String?, shader: String?, effects: [LayerEffect], puppetPath: String? = nil,
+                textValue: String? = nil, textScript: String? = nil, fontPath: String? = nil,
+                pointSize: Double = 32, horizontalAlign: String? = nil) {
         self.name = name
         self.texturePath = texturePath
         self.isSolidLayer = isSolidLayer
@@ -194,6 +205,11 @@ public struct SceneLayer: Sendable, Equatable {
         self.shader = shader
         self.effects = effects
         self.puppetPath = puppetPath
+        self.textValue = textValue
+        self.textScript = textScript
+        self.fontPath = fontPath
+        self.pointSize = pointSize
+        self.horizontalAlign = horizontalAlign
     }
 }
 
@@ -260,6 +276,33 @@ public enum SceneGraph {
                                           z: system.origin.z + objectOrigin.z)
                 particleSystems.append(system)
                 continue
+            }
+            // A text object (clock, label, counter, …) draws rendered glyphs, not a packed texture. Its
+            // `text` is a value-or-`{value, script}` field; the script drives it per frame (e.g. a clock).
+            if let textField = object["text"] {
+                let value = (textField as? [String: Any])?["value"] as? String ?? (textField as? String)
+                let script = (textField as? [String: Any])?["script"] as? String
+                if value != nil || script != nil {
+                    layers.append(SceneLayer(
+                        name: object["name"] as? String ?? "",
+                        texturePath: nil, isSolidLayer: false,
+                        origin: originVec(object["origin"]),
+                        scale: vec(object["scale"], default: SceneVec3(x: 1, y: 1, z: 1)),
+                        size: (object["size"] as? String).map(SceneVec3.init(parsing:)),
+                        angles: vec(object["angles"]),
+                        alpha: alphaValue(object["alpha"]),
+                        color: vec(object["color"], default: SceneVec3(x: 1, y: 1, z: 1)),
+                        alphaAnimation: alphaAnimation(object["alpha"]),
+                        originAnimation: vec3Animation(object["origin"]),
+                        parallaxDepth: vec(object["parallaxDepth"]),
+                        visible: isVisible(object["visible"]),
+                        blending: nil, shader: nil, effects: [],
+                        textValue: value, textScript: script,
+                        fontPath: object["font"] as? String,
+                        pointSize: (object["pointsize"] as? NSNumber)?.doubleValue ?? 32,
+                        horizontalAlign: object["horizontalalign"] as? String))
+                    continue
+                }
             }
             guard let imagePath = object["image"] as? String, !imagePath.isEmpty else { continue }
             let material = resolveMaterial(imagePath: imagePath, in: package)

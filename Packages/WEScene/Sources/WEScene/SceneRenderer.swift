@@ -8,6 +8,7 @@ import Metal
 import WECore
 import WEImporter
 import WEShaderKit
+import WESceneDynamics
 
 /// The pixels produced by an offscreen render: tightly-packed RGBA8, row-major, top-left origin.
 public struct RenderedFrame: Sendable {
@@ -148,6 +149,7 @@ private struct PreparedLayer {
     let effects: [PreparedEffect]   // post-process passes applied to this layer before compositing
     let videoTrack: VideoFrameTrack?  // video-texture animation frames (nil = static `texture`)
     let puppet: PreparedPuppet?     // skeletal mesh to draw instead of the quad (nil = ordinary layer)
+    let text: PreparedTextLayer?    // a text/clock layer drawn from rendered glyphs (nil = ordinary layer)
 }
 
 /// A scene whose layer textures are decoded and uploaded once, ready to re-render every frame (so an
@@ -510,6 +512,24 @@ public final class SceneRenderer {
         var videoVRAMUsed = 0
         var puppetLayerCount = 0, puppetReadyCount = 0   // a scene is puppet-ready only if every puppet assembles
         for layer in document.layers where layer.visible {
+            // A text layer (clock, label) draws rendered glyphs: build its font + (optional) script runtime;
+            // the quad's size is derived at render time from the rasterised string. No packed texture.
+            if layer.isTextLayer {
+                let fontData = layer.fontPath.flatMap { package.entry(named: $0)?.data }
+                let font = PreparedTextLayer.makeFont(data: fontData, pointSize: layer.pointSize)
+                let runtime = layer.textScript.flatMap { SceneScriptRuntime(script: $0) }
+                let prepText = PreparedTextLayer(runtime: runtime, staticText: layer.textValue ?? "",
+                                                 font: font, color: SIMD3(Float(layer.color.x), Float(layer.color.y), Float(layer.color.z)),
+                                                 pointSize: layer.pointSize, device: device)
+                let center = SIMD2(Float(layer.origin.x / orthoW * 2 - 1), Float(layer.origin.y / orthoH * 2 - 1))
+                prepared.append(PreparedLayer(
+                    texture: whiteTexture, center: center, halfExtent: .zero, uvScale: SIMD2(1, 1),
+                    alpha: Float(layer.alpha), alphaAnimation: layer.alphaAnimation, tint: SIMD3(1, 1, 1),
+                    isAdditive: false, parallaxDepth: SIMD2(Float(layer.parallaxDepth.x), Float(layer.parallaxDepth.y)),
+                    originAnimation: layer.originAnimation, originScale: SIMD2(Float(2 / orthoW), Float(2 / orthoH)),
+                    rotA: SIMD2(1, 0), rotB: SIMD2(0, 1), effects: [], videoTrack: nil, puppet: nil, text: prepText))
+                continue
+            }
             var texture: MTLTexture?
             var textureW = 0.0, textureH = 0.0
             var uvScale = SIMD2<Float>(1, 1)
@@ -617,7 +637,8 @@ public final class SceneRenderer {
                 effects: puppet != nil ? [] : prepareEffects(layer.effects, package: package, base: texture,
                                         center: center, halfExtent: halfExtent, uvScale: uvScale, tint: tint),
                 videoTrack: videoTrack,
-                puppet: puppet))
+                puppet: puppet,
+                text: nil))
         }
 
         var preparedParticles: [PreparedParticles] = []
@@ -1134,6 +1155,25 @@ public final class SceneRenderer {
                 encoder.setFragmentBytes(&tint, length: MemoryLayout<SIMD3<Float>>.stride, index: 1)
                 encoder.drawIndexedPrimitives(type: .triangle, indexCount: pup.indexCount,
                                               indexType: .uint32, indexBuffer: pup.indexBuffer, indexBufferOffset: 0)
+                continue
+            }
+            // A text layer rasterises its (possibly script-driven) string this frame and draws it as a quad
+            // sized to the glyphs; an empty string draws nothing. The font is sized in scene units, so the
+            // pixel dimensions map ≈1:1 to scene units for the quad half-extent.
+            if let textLayer = layer.text {
+                guard let (textTexture, w, h) = textLayer.currentTexture() else { continue }
+                let half = SIMD2(Float(Double(w) / scene.orthoWidth), Float(Double(h) / scene.orthoHeight))
+                var quad = QuadUniform(center: animatedCenter(layer, time: time, swayX: swayX, swayY: swayY),
+                                       halfExtent: half, uvScale: SIMD2(1, 1), aspectScale: aspectScale,
+                                       rotA: layer.rotA, rotB: layer.rotB)
+                var tint = layer.tint
+                encoder.setRenderPipelineState(pipelineOver)
+                encoder.setVertexBytes(&quad, length: MemoryLayout<QuadUniform>.stride, index: 0)
+                encoder.setFragmentTexture(textTexture, index: 0)
+                encoder.setFragmentSamplerState(sampler, index: 0)
+                encoder.setFragmentBytes(&alpha, length: MemoryLayout<Float>.size, index: 0)
+                encoder.setFragmentBytes(&tint, length: MemoryLayout<SIMD3<Float>>.stride, index: 1)
+                encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
                 continue
             }
             encoder.setRenderPipelineState(layer.isAdditive ? pipelineAdditive : pipelineOver)
