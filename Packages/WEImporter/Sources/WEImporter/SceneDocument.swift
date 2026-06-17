@@ -181,13 +181,17 @@ public struct SceneLayer: Sendable, Equatable {
     public let horizontalAlign: String?   // "left" | "center" | "right"
     /// True when this object is a text layer (drawn from rendered glyphs, not a packed texture).
     public var isTextLayer: Bool { textValue != nil || textScript != nil }
+    /// A SceneScript bound to one of this object's properties (visible / scale / origin) that manipulates the
+    /// scene graph rather than returning a value — an audio visualiser clones this layer into N bars and drives
+    /// each bar's height from the spectrum. The renderer runs it per frame and draws the layers it produces.
+    public let driverScript: String?
 
     public init(name: String, texturePath: String?, isSolidLayer: Bool, origin: SceneVec3, scale: SceneVec3,
                 size: SceneVec3?, angles: SceneVec3, alpha: Double, color: SceneVec3,
                 alphaAnimation: AlphaAnimation?, originAnimation: Vec3Animation?, parallaxDepth: SceneVec3,
                 visible: Bool, blending: String?, shader: String?, effects: [LayerEffect], puppetPath: String? = nil,
                 textValue: String? = nil, textScript: String? = nil, fontPath: String? = nil,
-                pointSize: Double = 32, horizontalAlign: String? = nil) {
+                pointSize: Double = 32, horizontalAlign: String? = nil, driverScript: String? = nil) {
         self.name = name
         self.texturePath = texturePath
         self.isSolidLayer = isSolidLayer
@@ -210,6 +214,7 @@ public struct SceneLayer: Sendable, Equatable {
         self.fontPath = fontPath
         self.pointSize = pointSize
         self.horizontalAlign = horizontalAlign
+        self.driverScript = driverScript
     }
 }
 
@@ -332,7 +337,8 @@ public enum SceneGraph {
                 blending: material.blending,
                 shader: material.shader,
                 effects: effects(of: object, in: package),
-                puppetPath: puppetPath
+                puppetPath: puppetPath,
+                driverScript: boundScript(of: object, in: package)
             ))
         }
         return RenderableScene(
@@ -343,6 +349,26 @@ public enum SceneGraph {
             particleSystems: particleSystems,
             usesPuppet: usesPuppet
         )
+    }
+
+    /// A SceneScript bound to one of an image object's transform/visibility properties drives the scene graph
+    /// rather than returning a value (the audio visualisers bind to `visible`/`scale`/`origin` and clone the
+    /// layer into bars). Find the first such `{ "value": …, "script": … }` binding and return its source. WE
+    /// stores the script either inline (the whole module as the string) or as a `scripts/…js` package path;
+    /// handle both. Returns nil when the object has no scripted property.
+    private static func boundScript(of object: [String: Any], in package: ScenePackage) -> String? {
+        for key in ["visible", "scale", "origin", "alpha", "color", "size", "angles"] {
+            guard let binding = object[key] as? [String: Any],
+                  let script = binding["script"] as? String, !script.isEmpty else { continue }
+            // Inline module (contains JS, not a bare path): use it directly. Otherwise resolve the path.
+            if script.contains("function") || script.contains("\n") || script.contains("=>") {
+                return script
+            }
+            if let entry = package.entry(named: script), let source = String(data: entry.data, encoding: .utf8) {
+                return source
+            }
+        }
+        return nil
     }
 
     /// A `visible` field is a Bool, or a `{ "user": …, "value": Bool }` property binding — read either.

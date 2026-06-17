@@ -494,6 +494,38 @@ let puppetPkg = buildPKG(version: "PKGV0009", files: [
 if let pkg = try? ScenePackage.read(puppetPkg), let doc = try? SceneGraph.load(from: pkg) {
     Check.that("a puppet-model scene is flagged usesPuppet", doc.usesPuppet == true)
 }
+// An audio visualiser binds a scene-graph SceneScript to a transform/visibility property. WE stores it
+// inline (the whole module as the `script` string) or as a `scripts/…js` path; both must surface as the
+// layer's `driverScript` so the renderer can clone the layer into bars.
+let inlineScript = "'use strict';\\nexport function init(){}\\nexport function update(){ return thisLayer; }"
+let visScene = #"{"objects":[{"name":"viz","image":"models/m.json","visible":{"value":true,"script":"INLINE"}}]}"#
+    .replacingOccurrences(of: "INLINE", with: inlineScript)
+let inlinePkg = buildPKG(version: "PKGV0009", files: [
+    ("scene.json", Data(visScene.utf8)), ("models/m.json", modelJSON),
+    ("materials/mat.json", materialJSON), ("materials/mytex.tex", Data("x".utf8)),
+])
+if let pkg = try? ScenePackage.read(inlinePkg), let doc = try? SceneGraph.load(from: pkg) {
+    Check.that("an inline visible.script becomes the layer's driverScript",
+               doc.layers.first?.driverScript?.contains("function update") == true)
+}
+let pathScene = #"{"objects":[{"name":"viz","image":"models/m.json","scale":{"value":"1 1 1","script":"scripts/bars.js"}}]}"#
+let pathPkg = buildPKG(version: "PKGV0009", files: [
+    ("scene.json", Data(pathScene.utf8)), ("models/m.json", modelJSON),
+    ("materials/mat.json", materialJSON), ("materials/mytex.tex", Data("x".utf8)),
+    ("scripts/bars.js", Data("export function update(){}".utf8)),
+])
+if let pkg = try? ScenePackage.read(pathPkg), let doc = try? SceneGraph.load(from: pkg) {
+    Check.that("a scripts/…js path binding loads the script source as driverScript",
+               doc.layers.first?.driverScript == "export function update(){}")
+}
+let plainPkg = buildPKG(version: "PKGV0009", files: [
+    ("scene.json", sceneJSON), ("models/m.json", modelJSON),
+    ("materials/mat.json", materialJSON), ("materials/mytex.tex", Data("x".utf8)),
+])
+if let pkg = try? ScenePackage.read(plainPkg), let doc = try? SceneGraph.load(from: pkg) {
+    Check.that("an ordinary layer has no driverScript", doc.layers.first?.driverScript == nil)
+}
+
 Check.that("SceneVec3 parses a partial string", {
     let v = SceneVec3(parsing: "1.5 2"); return v.x == 1.5 && v.y == 2 && v.z == 0
 }())
