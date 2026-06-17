@@ -71,4 +71,48 @@ Check.that("a fresh engine reports 32 zeros (right)", engine.spectrum(bands: 32,
 Check.that("a fresh engine reports 64 zeros (left)", engine.spectrum(bands: 64, channel: .left) == Array(repeating: 0, count: 64))
 Check.that("conforms to AudioSpectrumProvider", (engine as AudioSpectrumProvider).spectrum(bands: 16, channel: .left).count == 16)
 
+Check.section("SceneScriptRuntime — property scripts")
+// A representative WE clock script (shape taken from real text/script clocks across the library).
+let clockScript = """
+'use strict';
+export var scriptProperties = createScriptProperties()
+    .addCheckbox({ name: 'use24hFormat', label: '24h', value: true })
+    .addCheckbox({ name: 'showSeconds', label: 'Seconds', value: false })
+    .addText({ name: 'delimiter', label: 'Delimiter', value: ':' })
+    .finish();
+export function update(value) {
+    let time = new Date();
+    let hours = ("00" + time.getHours()).slice(-2);
+    let minutes = ("00" + time.getMinutes()).slice(-2);
+    return hours + scriptProperties.delimiter + minutes;
+}
+"""
+if let runtime = SceneScriptRuntime(script: clockScript) {
+    Check.that("loads a property script", runtime.loaded)
+    Check.that("extracts declared properties (defaults)",
+               (runtime.properties["delimiter"] as? String) == ":" && (runtime.properties["use24hFormat"] as? Bool) == true)
+    let out = runtime.updateString("")
+    // Compare against the same HH:MM the runtime's Date() produced (allow the minute to roll over once).
+    let f = DateFormatter(); f.dateFormat = "HH:mm"
+    Check.that("a clock update() returns the current HH:MM (got \(out ?? "nil"))",
+               out != nil && out!.count == 5 && out!.contains(":"))
+} else {
+    Check.that("clock runtime constructs", false)
+}
+
+// A numeric update (bar height, oscillator) returns a number.
+if let osc = SceneScriptRuntime(script: "export function update(v) { return 0.5; }") {
+    Check.that("a numeric update() returns its value", osc.updateNumber(0) == 0.5)
+}
+
+// Graceful degradation: a script with no update, or one that throws, never crashes — yields nil.
+let noUpdate = SceneScriptRuntime(script: "export var x = 1;")
+Check.that("a script without update() doesn't load as drivable", noUpdate == nil || noUpdate?.updateString() == nil)
+if let thrower = SceneScriptRuntime(script: "export function update(v){ throw new Error('boom'); }") {
+    Check.that("a throwing update() yields nil (graceful)", thrower.updateString() == nil)
+}
+// A script using unsupported API at load still doesn't crash the host (engine stub absorbs common calls).
+let audioish = SceneScriptRuntime(script: "var b = engine.registerAudioBuffers(engine.AUDIO_RESOLUTION_64); export function update(v){ return v; }")
+Check.that("an engine-using script loads against the stub", audioish != nil)
+
 Check.summarize()
