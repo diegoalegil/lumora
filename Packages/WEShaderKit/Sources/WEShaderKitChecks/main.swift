@@ -165,6 +165,44 @@ if let device = MTLCreateSystemDefaultDevice() {
     Check.that("harmonised mix MSL compiles via Metal", (try? device.makeLibrary(source: mixMSL, options: nil))?.makeFunction(name: "we_fragment") != nil)
 }
 
+// Plain arithmetic of mismatched-width operands (texture-transform shaders divide a vec2 offset by the
+// vec4 g_*Resolution): truncate the wider operand to the narrowest vector width, like the dialect does.
+// Both a same-width compound truncated to a narrower target and a vector·scalar chain stay correct.
+let arithVert = """
+attribute vec3 a_Position;
+attribute vec2 a_TexCoord;
+uniform mat4 g_ModelViewProjectionMatrix;
+uniform vec4 g_Texture0Resolution;
+uniform vec4 g_Texture1Resolution;
+uniform vec2 g_TexOffset;
+varying vec4 v_TexCoord;
+void main() {
+    gl_Position = vec4(a_Position, 1.0) * g_ModelViewProjectionMatrix;
+    v_TexCoord = a_TexCoord.xyxy;
+    vec2 scale = g_Texture0Resolution / g_Texture1Resolution;
+    vec2 offset = g_TexOffset / g_Texture0Resolution;
+    v_TexCoord.zw = v_TexCoord.zw * scale - offset;
+}
+"""
+let arithMSL = WEShaderTranspiler.vertexToMSL(arithVert)
+Check.that("harmonises a vec2 / vec4 to vec2 / vec4.xy", arithMSL.contains("g_TexOffset / u.g_Texture0Resolution.xy") || arithMSL.contains("u.g_TexOffset / u.g_Texture0Resolution.xy"))
+Check.that("truncates a same-width compound assigned to a narrower target", arithMSL.contains(").xy"))
+if let device = MTLCreateSystemDefaultDevice() {
+    Check.that("harmonised arithmetic MSL compiles via Metal", (try? device.makeLibrary(source: arithMSL, options: nil))?.makeFunction(name: "we_vertex") != nil)
+}
+// A function definition in an included header must not register its name as a variable dimension (a
+// `vec3 blend(...)` helper would otherwise mis-type a later `float blend` local and force a bad swizzle).
+Check.that("a vecN function name is not mistaken for a vecN variable", {
+    let m = WEShaderTranspiler.fragmentToMSL("""
+    uniform sampler2D g_Texture0;
+    uniform float g_Multiply;
+    varying vec4 v_TexCoord;
+    vec3 blend(vec3 a, vec3 b) { return a * b; }
+    void main() { float k = 1.0; float scaled = k * g_Multiply; gl_FragColor = float4(scaled); }
+    """)
+    return m.contains("float scaled = k * u.g_Multiply") && !m.contains("(k * u.g_Multiply)")
+}())
+
 // GLSL lets a local shadow a varying of the same name (chromatic aberration recomputes `bValue` over the
 // interpolated one). The local owns the name inside main, so it must NOT be qualified to in.bValue —
 // qualifying the declaration would emit the invalid `float4 in.bValue = …`.

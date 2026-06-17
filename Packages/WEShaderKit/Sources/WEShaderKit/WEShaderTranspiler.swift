@@ -227,7 +227,10 @@ public enum WEShaderTranspiler {
                 if let c = componentCount(of: d.type) { dims[d.name] = c }
             }
         }
-        let local = try! NSRegularExpression(pattern: #"\b(vec[234]|float[234]?|ivec[234]|bvec[234])\s+([A-Za-z_]\w*)"#)
+        // Only genuine variable declarations: the name must be followed by `=`, `;` or `[`. This excludes
+        // function definitions/parameters (`vec3 blend(vec3 base, …)` in an included header would otherwise
+        // register `blend` as a vec3, mis-typing a later `float blend` local and driving a wrong truncation).
+        let local = try! NSRegularExpression(pattern: #"\b(vec[234]|float[234]?|ivec[234]|bvec[234])\s+([A-Za-z_]\w*)\s*(?=[=;\[])"#)
         let ns = resolved as NSString
         for m in local.matches(in: resolved, range: NSRange(location: 0, length: ns.length)) {
             let name = ns.substring(with: m.range(at: 2))
@@ -255,6 +258,79 @@ public enum WEShaderTranspiler {
     /// Append the leading-N swizzle (.x/.xy/.xyz) that truncates a vector to `target` components.
     private static func truncated(_ token: String, to target: Int) -> String {
         token + "." + String("xyzw".prefix(target))
+    }
+
+    /// The component count of an arithmetic expression of SIMPLE operands joined by + - * / — the shared
+    /// width of its vector operands (scalars broadcast), or 1 if all scalar. nil if it isn't a pure
+    /// arithmetic chain of typeable operands (any call/unknown name, or vectors of differing widths), so the
+    /// caller leaves anything it can't type with confidence untouched. Used only to truncate a wider result
+    /// assigned to a narrower target; an already-matching assignment computes width ≤ target and isn't hit.
+    /// Split an arithmetic expression into its top-level operands and the + - * / operators between them,
+    /// respecting nested ()/[] and folding a unary sign into the following operand. Returns nil if there's
+    /// only one operand (nothing to harmonise).
+    private static func arithmeticTokens(_ expr: String) -> (operands: [String], ops: [Character])? {
+        var operands: [String] = []; var ops: [Character] = []
+        var cur = ""; var depth = 0; var prev: Character? = nil
+        for ch in expr {
+            if ch == "(" || ch == "[" { depth += 1; cur.append(ch) }
+            else if ch == ")" || ch == "]" { depth -= 1; cur.append(ch) }
+            else if depth == 0, "+-*/".contains(ch) {
+                let unary = prev == nil || "+-*/(,".contains(prev!)
+                if unary { cur.append(ch) } else { operands.append(cur); ops.append(ch); cur = "" }
+            } else { cur.append(ch) }
+            if ch != " " { prev = ch }
+        }
+        operands.append(cur)
+        return operands.count >= 2 ? (operands, ops) : nil
+    }
+
+    /// Truncate the wider vector operands of a pure arithmetic chain to the narrowest vector width, matching
+    /// the dialect's implicit truncation (`g_TexOffset /*vec2*/ / g_Texture0Resolution /*vec4*/` → `… / …xy`).
+    /// Returns the expression unchanged unless every operand is a simple typed operand and the vector widths
+    /// disagree — a chain that already type-checks (equal widths, or vector·scalar) is left exactly as-is.
+    private static func harmonizeArithmetic(_ expr: String, _ dims: [String: Int]) -> String {
+        guard let (operands, ops) = arithmeticTokens(expr) else { return expr }
+        func signSplit(_ s: String) -> (sign: String, core: String) {
+            let t = s.trimmingCharacters(in: .whitespaces)
+            return (t.hasPrefix("-") || t.hasPrefix("+")) ? (String(t.first!), String(t.dropFirst())) : ("", t)
+        }
+        let widths = operands.map { operandDim(signSplit($0).core, dims) }
+        guard !widths.contains(where: { $0 == nil }) else { return expr }
+        let vectorWidths = widths.compactMap { $0 }.filter { $0 > 1 }
+        guard let minVec = vectorWidths.min(), vectorWidths.contains(where: { $0 > minVec }) else { return expr }
+        var pieces: [String] = []
+        for (operand, width) in zip(operands, widths) {
+            let (sign, core) = signSplit(operand)
+            if let width, width > minVec, width > 1 { pieces.append(sign + truncated(core, to: minVec)) }
+            else { pieces.append(sign + core) }
+        }
+        var result = pieces[0]
+        for i in ops.indices { result += " \(ops[i]) " + pieces[i + 1] }
+        return result
+    }
+
+    private static func expressionDim(_ expr: String, _ dims: [String: Int]) -> Int? {
+        var tokens: [String] = []; var cur = ""; var depth = 0
+        var prev: Character? = nil   // last non-space char, to tell a binary operator from a unary sign
+        for ch in expr {
+            if ch == "(" || ch == "[" { depth += 1; cur.append(ch) }
+            else if ch == ")" || ch == "]" { depth -= 1; cur.append(ch) }
+            else if depth == 0, "+-*/".contains(ch) {
+                let unary = prev == nil || "+-*/(,".contains(prev!)
+                if unary { cur.append(ch) } else { tokens.append(cur); cur = "" }
+            } else { cur.append(ch) }
+            if ch != " " { prev = ch }
+        }
+        tokens.append(cur)
+        let parts = tokens.map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+        guard parts.count >= 2 else { return nil }   // a single operand is handled by operandDim
+        var width: Int? = nil
+        for part in parts {
+            let core = (part.hasPrefix("-") || part.hasPrefix("+")) ? String(part.dropFirst()) : part
+            guard let d = operandDim(core, dims) else { return nil }
+            if d > 1 { if let w = width, w != d { return nil }; width = d }
+        }
+        return width ?? 1
     }
 
     /// Component-wise intrinsics whose vector arguments must all share one dimension (the scalar `t`/edges
@@ -344,11 +420,23 @@ public enum WEShaderTranspiler {
                 let indent = ns0.substring(with: r.range(at: 1))
                 let declType = r.range(at: 2).location != NSNotFound ? ns0.substring(with: r.range(at: 2)) : ""
                 let lhs = ns0.substring(with: r.range(at: 3))
-                let rhs = ns0.substring(with: r.range(at: 4)).trimmingCharacters(in: .whitespaces)
+                let rawRHS = ns0.substring(with: r.range(at: 4)).trimmingCharacters(in: .whitespaces)
+                let rhs = harmonizeArithmetic(rawRHS, dims)
                 let lhsDim = !declType.isEmpty ? componentCount(of: declType) : operandDim(lhs, dims)
-                if let lhsDim, lhsDim >= 1, lhsDim <= 3, let rhsDim = operandDim(rhs, dims), rhsDim > lhsDim {
+                if let lhsDim, lhsDim >= 1, lhsDim <= 3 {
                     let lhsPart = declType.isEmpty ? lhs : "\(declType) \(lhs)"
-                    line = "\(indent)\(lhsPart) = \(truncated(rhs, to: lhsDim));"
+                    var finalRHS: String? = nil
+                    if let rhsDim = operandDim(rhs, dims), rhsDim > lhsDim {
+                        finalRHS = truncated(rhs, to: lhsDim)
+                    } else if operandDim(rhs, dims) == nil, let rhsDim = expressionDim(rhs, dims), rhsDim > lhsDim {
+                        // Compound arithmetic of equal-width operands (e.g. `float2 s = g_Tex0Res / g_Tex1Res;`,
+                        // both vec4): truncate the whole parenthesised expression. Safe — a narrower-or-equal
+                        // RHS already type-checks in MSL and isn't matched here.
+                        finalRHS = "(\(rhs)).\(String("xyzw".prefix(lhsDim)))"
+                    } else if rhs != rawRHS {
+                        finalRHS = rhs   // operand harmonisation alone made the widths match
+                    }
+                    if let finalRHS { line = "\(indent)\(lhsPart) = \(finalRHS);" }
                 }
             }
             // (2) `fn(arg, …)` for a known vec2-first-param function, arg a wider simple operand.
