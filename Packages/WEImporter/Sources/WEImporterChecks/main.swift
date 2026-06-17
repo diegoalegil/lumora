@@ -537,6 +537,38 @@ if let pkg = try? ScenePackage.read(alignPkg), let doc = try? SceneGraph.load(fr
     Check.that("a layer's alignment is parsed", doc.layers.first?.alignment == "bottomleft")
 }
 
+// PuppetModel.parseMesh consumes an untrusted binary `.mdl`. Its bounds guards must reject malformed input
+// with nil — never crash, read out of bounds, or hang — so a hostile package can't exploit the parser. (The
+// happy path is covered end-to-end by the live-rendering puppet scenes; here we lock down the failure modes.)
+Check.section("PuppetModel.parseMesh robustness")
+Check.that("empty data → nil", PuppetModel.parseMesh(Data()) == nil)
+Check.that("too-short data → nil", PuppetModel.parseMesh(Data([0x4d, 0x44, 0x4c, 0x56])) == nil)
+Check.that("no MDLV magic → nil", PuppetModel.parseMesh(Data(repeating: 0, count: 256)) == nil)
+// MDLV magic but no vertex marker in the window → nil (not a crash).
+var magicOnly = Data([0x4d, 0x44, 0x4c, 0x56]); magicOnly.append(Data(repeating: 0, count: 256))
+Check.that("MDLV magic with no vertex marker → nil", PuppetModel.parseMesh(magicOnly) == nil)
+// MDLV + the vertex marker but an absurd vertex-block size must fail the bounds/stride guards, not over-read.
+var badSize = Data([0x4d, 0x44, 0x4c, 0x56]); badSize.append(Data(repeating: 0, count: 0x12))
+badSize.append(Data([0x0f, 0x00, 0x80, 0x01]))                 // vertex marker
+badSize.append(Data([0xff, 0xff, 0xff, 0x7f]))                 // vertexBytes ≈ 2 GB
+badSize.append(Data(repeating: 0xab, count: 64))
+Check.that("MDLV with an out-of-range vertex size → nil (no over-read)", PuppetModel.parseMesh(badSize) == nil)
+// Fuzz: deterministic pseudo-random buffers, half of them MDLV-prefixed, must all parse without crashing —
+// reaching the assertion after the loop IS the test (an OOB/crash would abort the process before it).
+var seed: UInt64 = 0x1234_5678
+for trial in 0 ..< 200 {
+    seed = seed &* 6364136223846793005 &+ 1442695040888963407
+    let len = 32 + Int(UInt8(truncatingIfNeeded: seed >> 33)) * 4
+    var bytes = [UInt8]()
+    for _ in 0 ..< len {
+        seed = seed &* 6364136223846793005 &+ 1442695040888963407
+        bytes.append(UInt8(truncatingIfNeeded: seed >> 33))
+    }
+    if trial % 2 == 0 { bytes[0] = 0x4d; bytes[1] = 0x44; bytes[2] = 0x4c; bytes[3] = 0x56 }
+    _ = PuppetModel.parseMesh(Data(bytes))   // must not crash/OOB; result (nil or a bounded mesh) is fine
+}
+Check.that("200 fuzzed .mdl buffers parse without crashing", true)
+
 Check.that("SceneVec3 parses a partial string", {
     let v = SceneVec3(parsing: "1.5 2"); return v.x == 1.5 && v.y == 2 && v.z == 0
 }())
