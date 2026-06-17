@@ -97,6 +97,15 @@ let schemeServed = WallpaperNavigationPolicy()
 Check.that("allows the private asset scheme", schemeServed.allows(URL(string: "lumora-asset://asset/index.html")))
 Check.that("still blocks remote without confinement", !schemeServed.allows(URL(string: "https://evil.example")))
 
+Check.section("AssetByteRange (video fallback Range serving)")
+Check.that("open-ended range runs to EOF", AssetByteRange.parse("bytes=100-", total: 1000) == 100 ..< 1000)
+Check.that("closed range is inclusive", AssetByteRange.parse("bytes=0-99", total: 1000) == 0 ..< 100)
+Check.that("end past EOF is clamped", AssetByteRange.parse("bytes=900-5000", total: 1000) == 900 ..< 1000)
+Check.that("start at/past EOF is rejected", AssetByteRange.parse("bytes=1000-", total: 1000) == nil)
+Check.that("malformed header is rejected", AssetByteRange.parse("bytes=abc-def", total: 1000) == nil)
+Check.that("non-range header is rejected", AssetByteRange.parse("garbage", total: 1000) == nil)
+Check.that("empty file serves no range", AssetByteRange.parse("bytes=0-", total: 0) == nil)
+
 Check.section("ScenePlayer frame pacing")
 // The playback policy's targetFPS must actually drive the scene loop: 60 active, 30 on battery / low-power,
 // and 0 (paused / occluded) means no continuous loop at all. Previously the loop was a hardcoded 30fps, so

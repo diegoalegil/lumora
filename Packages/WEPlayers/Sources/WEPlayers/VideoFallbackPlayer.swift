@@ -58,6 +58,19 @@ public final class VideoFallbackPlayer: WallpaperRenderer {
     }
 }
 
+/// Parses an HTTP `Range: bytes=START-[END]` header into a half-open byte range within a file of `total`
+/// bytes (nil for anything malformed or out of range). A pure value so it can be tested without WebKit.
+public enum AssetByteRange {
+    public static func parse(_ header: String, total: Int) -> Range<Int>? {
+        guard total > 0, let spec = header.split(separator: "=").last.map(String.init) else { return nil }
+        let parts = spec.split(separator: "-", omittingEmptySubsequences: false)
+        guard let start = parts.first.flatMap({ Int($0) }), start >= 0, start < total else { return nil }
+        let end = (parts.count > 1 ? Int(parts[1]) : nil) ?? (total - 1)
+        let clampedEnd = min(max(end, start), total - 1)
+        return start ..< (clampedEnd + 1)
+    }
+}
+
 /// Serves the wallpaper's HTML page and the local video bytes over a private scheme so the WebKit
 /// `<video>` element can read a file outside any granted directory.
 @MainActor
@@ -76,8 +89,17 @@ final class AssetSchemeHandler: NSObject, WKURLSchemeHandler {
         let path = urlSchemeTask.request.url?.path ?? ""
         if path.hasSuffix("index.html") {
             respond(urlSchemeTask, data: Data(html.utf8), mime: "text/html")
-        } else if let fileURL, let data = try? Data(contentsOf: fileURL) {
-            respond(urlSchemeTask, data: data, mime: VideoFallbackHTML.mimeType(forExtension: fileURL.pathExtension))
+        } else if let fileURL, let data = try? Data(contentsOf: fileURL, options: .mappedIfSafe) {
+            // Memory-map the file (don't read it all into RAM) and honour the <video> element's Range
+            // requests, so a large clip streams a window at a time and seeking works, instead of buffering
+            // the whole file in memory.
+            let mime = VideoFallbackHTML.mimeType(forExtension: fileURL.pathExtension)
+            if let header = urlSchemeTask.request.value(forHTTPHeaderField: "Range"),
+               let range = AssetByteRange.parse(header, total: data.count) {
+                respond(urlSchemeTask, data: data.subdata(in: range), mime: mime, partialOf: data.count, start: range.lowerBound)
+            } else {
+                respond(urlSchemeTask, data: data, mime: mime)
+            }
         } else {
             urlSchemeTask.didFailWithError(URLError(.resourceUnavailable))
         }
@@ -85,14 +107,17 @@ final class AssetSchemeHandler: NSObject, WKURLSchemeHandler {
 
     func webView(_ webView: WKWebView, stop urlSchemeTask: any WKURLSchemeTask) {}
 
-    private func respond(_ task: any WKURLSchemeTask, data: Data, mime: String) {
+    /// Send a response. `partialOf` (the full length) marks it a 206 Partial Content with a Content-Range,
+    /// otherwise a 200 that advertises Accept-Ranges so the client knows it may request windows next time.
+    private func respond(_ task: any WKURLSchemeTask, data: Data, mime: String, partialOf total: Int? = nil, start: Int = 0) {
         let url = task.request.url ?? URL(string: "\(Self.scheme)://asset/")!
-        let response = HTTPURLResponse(
-            url: url,
-            statusCode: 200,
-            httpVersion: "HTTP/1.1",
-            headerFields: ["Content-Type": mime, "Content-Length": "\(data.count)"]
-        )!
+        var headers = ["Content-Type": mime, "Content-Length": "\(data.count)", "Accept-Ranges": "bytes"]
+        var status = 200
+        if let total {
+            status = 206
+            headers["Content-Range"] = "bytes \(start)-\(start + data.count - 1)/\(total)"
+        }
+        let response = HTTPURLResponse(url: url, statusCode: status, httpVersion: "HTTP/1.1", headerFields: headers)!
         task.didReceive(response)
         task.didReceive(data)
         task.didFinish()
