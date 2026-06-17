@@ -29,6 +29,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var wallpaperSubmenu: NSMenu?
     private var testPicker: TestPickerWindowController?   // test-only quick switcher
     private static let selectedWallpaperKey = "LumoraSelectedWallpaperID"
+    private static let pausedKey = "LumoraPaused"
 
     override init() {
         // Window factory: build the desktop window + an empty host. Renderers are attached in
@@ -61,6 +62,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             self?.renderers[id]?.apply(directive)
         }
         self.coordinator = coordinator
+
+        // Restore whether the user left wallpapers paused, before playback starts, so the choice survives a
+        // relaunch instead of silently resuming.
+        isPaused = UserDefaults.standard.bool(forKey: Self.pausedKey)
+        source.userPaused = isPaused
 
         // Discover the user's installed wallpapers once, before windows are built, so reconcile()
         // can pick a renderer. Disk-only; nothing is downloaded.
@@ -170,9 +176,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(wallpaperItem)
         wallpaperSubmenu = wallpaperItem.submenu
 
-        let testPickerItem = NSMenuItem(title: "Test Picker…", action: #selector(openTestPicker), keyEquivalent: "")
-        testPickerItem.target = self
-        menu.addItem(testPickerItem)
+        // The plain test picker is a development aid (driven by LUMORA_LIBRARY_DIR), not part of the shipping
+        // UI — only surface it when that override is in use.
+        if ProcessInfo.processInfo.environment["LUMORA_LIBRARY_DIR"] != nil {
+            let testPickerItem = NSMenuItem(title: "Test Picker…", action: #selector(openTestPicker), keyEquivalent: "")
+            testPickerItem.target = self
+            menu.addItem(testPickerItem)
+        }
         menu.addItem(.separator())
 
         let pause = NSMenuItem(title: "Pause Wallpapers", action: #selector(togglePause), keyEquivalent: "")
@@ -205,6 +215,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func updateMenuState() {
         pauseMenuItem?.title = isPaused ? "Resume Wallpapers" : "Pause Wallpapers"
         loginMenuItem?.state = loginItem.isEnabled ? .on : .off
+        // macOS can hold the registration pending the user's approval; say so instead of showing a dead toggle.
+        loginMenuItem?.title = loginItem.requiresApproval ? "Launch at Login — Approve in Settings" : "Launch at Login"
     }
 
     /// Populate the Wallpaper submenu from the discovered library, checking the active one.
@@ -216,6 +228,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let empty = NSMenuItem(title: "No wallpapers found", action: nil, keyEquivalent: "")
             empty.isEnabled = false
             submenu.addItem(empty)
+            let hint = NSMenuItem(title: "Subscribe to wallpapers in Steam Workshop, then relaunch Lumora",
+                                  action: nil, keyEquivalent: "")
+            hint.isEnabled = false
+            submenu.addItem(hint)
             return
         }
 
@@ -263,6 +279,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func togglePause() {
         isPaused.toggle()
+        UserDefaults.standard.set(isPaused, forKey: Self.pausedKey)
         signalSource?.userPaused = isPaused
         coordinator?.evaluate()
         updateMenuState()
@@ -271,8 +288,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func toggleLogin() {
         do {
             try loginItem.setEnabled(!loginItem.isEnabled)
+            // A fresh registration often lands in "requires approval"; take the user straight to the toggle.
+            if loginItem.requiresApproval { loginItem.openSystemSettings() }
         } catch {
-            NSLog("Lumora: login item toggle failed: \(error)")
+            let alert = NSAlert()
+            alert.messageText = "Couldn’t change Launch at Login"
+            alert.informativeText = error.localizedDescription
+            alert.alertStyle = .warning
+            NSApp.activate(ignoringOtherApps: true)
+            alert.runModal()
         }
         updateMenuState()
     }
