@@ -150,6 +150,32 @@ private struct PreparedLayer {
     let videoTrack: VideoFrameTrack?  // video-texture animation frames (nil = static `texture`)
     let puppet: PreparedPuppet?     // skeletal mesh to draw instead of the quad (nil = ordinary layer)
     let text: PreparedTextLayer?    // a text/clock layer drawn from rendered glyphs (nil = ordinary layer)
+    let scriptGroup: PreparedScriptGroup?  // an audio visualiser that clones this layer into bars (nil = ordinary)
+}
+
+/// A layer whose bound SceneScript clones it into N elements (an audio visualiser's spectrum bars). The
+/// bar sprite + its size-1 extent are captured once; each frame the runtime is fed the current spectrum,
+/// run, and the layers it produced are drawn as quads. Degrades gracefully: with no audio the spectrum is
+/// zeros, so the script leaves every bar flat (height 0) and nothing spurious is drawn.
+private final class PreparedScriptGroup {
+    let runtime: SceneScriptRuntime
+    let texture: MTLTexture
+    let baseHalfExtent: SIMD2<Float>   // a bar's NDC half-extent at the script's scale = 1 (before per-bar scale)
+    let uvScale: SIMD2<Float>
+    let isAdditive: Bool
+    let orthoW: Double
+    let orthoH: Double
+
+    init(runtime: SceneScriptRuntime, texture: MTLTexture, baseHalfExtent: SIMD2<Float>,
+         uvScale: SIMD2<Float>, isAdditive: Bool, orthoW: Double, orthoH: Double) {
+        self.runtime = runtime
+        self.texture = texture
+        self.baseHalfExtent = baseHalfExtent
+        self.uvScale = uvScale
+        self.isAdditive = isAdditive
+        self.orthoW = orthoW
+        self.orthoH = orthoH
+    }
 }
 
 /// A scene whose layer textures are decoded and uploaded once, ready to re-render every frame (so an
@@ -192,6 +218,7 @@ public final class PreparedScene {
         !particles.isEmpty || layers.contains {
             $0.parallaxDepth != SIMD2<Float>(0, 0) || $0.alphaAnimation != nil
                 || $0.originAnimation != nil || !$0.effects.isEmpty || $0.videoTrack != nil
+                || $0.scriptGroup != nil
         }
     }
 }
@@ -527,7 +554,8 @@ public final class SceneRenderer {
                     alpha: Float(layer.alpha), alphaAnimation: layer.alphaAnimation, tint: SIMD3(1, 1, 1),
                     isAdditive: false, parallaxDepth: SIMD2(Float(layer.parallaxDepth.x), Float(layer.parallaxDepth.y)),
                     originAnimation: layer.originAnimation, originScale: SIMD2(Float(2 / orthoW), Float(2 / orthoH)),
-                    rotA: SIMD2(1, 0), rotB: SIMD2(0, 1), effects: [], videoTrack: nil, puppet: nil, text: prepText))
+                    rotA: SIMD2(1, 0), rotB: SIMD2(0, 1), effects: [], videoTrack: nil, puppet: nil, text: prepText,
+                    scriptGroup: nil))
                 continue
             }
             var texture: MTLTexture?
@@ -620,6 +648,24 @@ public final class SceneRenderer {
                 }
                 if puppet != nil { puppetReadyCount += 1 }
             }
+            // A layer with a scene-graph SceneScript (an audio visualiser) clones itself into bars: build the
+            // runtime, seeding `thisLayer` with this layer's placement, and keep it only if its init() actually
+            // produced more than the base layer (otherwise it's an ordinary layer and draws as one quad). The
+            // bar half-extent is captured at the script's scale = 1; the per-frame scale comes from the script.
+            var scriptGroup: PreparedScriptGroup?
+            if let driver = layer.driverScript,
+               let runtime = SceneScriptRuntime(
+                   script: driver,
+                   baseOrigin: SIMD3(Float(layer.origin.x), Float(layer.origin.y), Float(layer.origin.z)),
+                   baseColor: SIMD3(Float(layer.color.x), Float(layer.color.y), Float(layer.color.z)),
+                   baseAlpha: Float(layer.alpha)),
+               runtime.drivesLayers, runtime.scriptedLayers().count > 1 {
+                let baseHalf = SIMD2(Float(sizeW / orthoW), Float(sizeH / orthoH))
+                scriptGroup = PreparedScriptGroup(
+                    runtime: runtime, texture: texture, baseHalfExtent: baseHalf, uvScale: uvScale,
+                    isAdditive: layer.blending == "additive" || layer.blending == "add",
+                    orthoW: orthoW, orthoH: orthoH)
+            }
             prepared.append(PreparedLayer(
                 texture: texture,
                 center: center,
@@ -638,7 +684,8 @@ public final class SceneRenderer {
                                         center: center, halfExtent: halfExtent, uvScale: uvScale, tint: tint),
                 videoTrack: videoTrack,
                 puppet: puppet,
-                text: nil))
+                text: nil,
+                scriptGroup: scriptGroup))
         }
 
         var preparedParticles: [PreparedParticles] = []
@@ -1141,6 +1188,12 @@ public final class SceneRenderer {
         for (index, layer) in scene.layers.enumerated() {
             var alpha = layer.alphaAnimation.map { Float($0.value(at: time)) } ?? layer.alpha
 
+            // An audio-visualiser layer drives its own scene graph: feed this frame's spectrum to the script,
+            // run it, and draw the bars it produced (instead of the single base quad).
+            if let group = layer.scriptGroup {
+                drawScriptGroup(encoder, group: group, layerAlpha: alpha, aspectScale: aspectScale)
+                continue
+            }
             // A puppet layer draws its assembled mesh (indexed triangles) textured with the atlas,
             // instead of a flat quad.
             if let pup = layer.puppet {
@@ -1215,6 +1268,45 @@ public final class SceneRenderer {
             encoder.setFragmentTexture(prepared.texture, index: 0)
             encoder.setFragmentSamplerState(sampler, index: 0)
             encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4, instanceCount: n)
+        }
+    }
+
+    /// Drive an audio-visualiser script group for this frame and draw the bars it produces. The script reads
+    /// `audioBuffer.average[i]` (64 bands); feed it this frame's spectrum (left/right averaged), run update(),
+    /// then draw each scripted layer as a quad. Each bar grows upward from its origin baseline — the universal
+    /// visualiser convention — so it never sinks below where it sits at rest. With no audio every band is 0,
+    /// the script leaves each bar at height 0, and nothing is drawn (graceful: an idle visualiser is empty,
+    /// never wrong).
+    private func drawScriptGroup(_ encoder: MTLRenderCommandEncoder, group: PreparedScriptGroup,
+                                 layerAlpha: Float, aspectScale: SIMD2<Float>) {
+        let left = currentAudioOverrides["g_AudioSpectrum64Left"] ?? []
+        let right = currentAudioOverrides["g_AudioSpectrum64Right"] ?? []
+        if !left.isEmpty || !right.isEmpty {
+            let n = max(left.count, right.count)
+            var bands = [Float](repeating: 0, count: n)
+            for i in 0 ..< n {
+                bands[i] = ((i < left.count ? left[i] : 0) + (i < right.count ? right[i] : 0)) * 0.5
+            }
+            group.runtime.setAudioSpectrum(bands)
+        }
+        group.runtime.runUpdate()
+        encoder.setRenderPipelineState(group.isAdditive ? pipelineAdditive : pipelineOver)
+        for bar in group.runtime.scriptedLayers() {
+            let half = SIMD2(group.baseHalfExtent.x * bar.scale.x, group.baseHalfExtent.y * bar.scale.y)
+            guard half.x > 0.0001, half.y > 0.0001 else { continue }   // a zero-height bar draws nothing
+            let baseX = Float(Double(bar.origin.x) / group.orthoW * 2 - 1)
+            let baseY = Float(Double(bar.origin.y) / group.orthoH * 2 - 1)
+            // bottom edge fixed at the baseline, centre raised by the half-height → the bar grows up
+            var quad = QuadUniform(center: SIMD2(baseX, baseY + half.y), halfExtent: half,
+                                   uvScale: group.uvScale, aspectScale: aspectScale)
+            var tint = bar.color
+            var a = bar.alpha * layerAlpha
+            encoder.setVertexBytes(&quad, length: MemoryLayout<QuadUniform>.stride, index: 0)
+            encoder.setFragmentTexture(group.texture, index: 0)
+            encoder.setFragmentSamplerState(sampler, index: 0)
+            encoder.setFragmentBytes(&a, length: MemoryLayout<Float>.size, index: 0)
+            encoder.setFragmentBytes(&tint, length: MemoryLayout<SIMD3<Float>>.stride, index: 1)
+            encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
         }
     }
 
