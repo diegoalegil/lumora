@@ -144,6 +144,12 @@ if CommandLine.arguments.count > 1 {
     guard let data = try? Data(contentsOf: URL(fileURLWithPath: arg)),
           let package = try? ScenePackage.read(data),
           let document = try? SceneGraph.load(from: package) else { print("failed to load \(arg)"); exit(1) }
+    if CommandLine.arguments.count > 3, CommandLine.arguments[2] == "dumpentry" {
+        if let e = package.entry(named: CommandLine.arguments[3]) {
+            print(String(data: e.data, encoding: .utf8) ?? "<\(e.data.count) bytes, not utf8>")
+        } else { print("no entry \(CommandLine.arguments[3])") }
+        exit(0)
+    }
     if CommandLine.arguments.count > 3, CommandLine.arguments[2] == "dumptex" {
         if let e = package.entry(named: CommandLine.arguments[3]), let d = try? SceneTexture.decodeFirstMip(e.data),
            let f = renderer.render(decoded: d, alpha: 1, clearColor: SceneVec3(x: 0, y: 0, z: 0),

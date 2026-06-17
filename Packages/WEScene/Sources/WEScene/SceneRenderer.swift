@@ -614,6 +614,11 @@ public final class SceneRenderer {
               let name = (pass["textures"] as? [Any])?.compactMap({ $0 as? String }).first,
               let texture = spriteTexture(named: name, package: package)
         else { return nil }
+        // A refractive particle (rain-on-glass droplets: REFRACT combo + a normal map) distorts the scene
+        // behind each sprite. We don't refract, so drawing the albedo alone is just opaque blobs that
+        // obscure the scene — worse than the effect's absence. Skip it (degrade to no-op) rather than
+        // smear white circles over the wallpaper.
+        if (pass["combos"] as? [String: Any])?["REFRACT"] as? Int == 1 { return nil }
         let blending = (pass["blending"] as? String) ?? "normal"
         return (texture, blending == "additive" || blending == "add")
     }
