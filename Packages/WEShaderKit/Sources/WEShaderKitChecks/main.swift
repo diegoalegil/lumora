@@ -142,6 +142,68 @@ if let device = MTLCreateSystemDefaultDevice() {
     Check.that("truncated MSL compiles via Metal", (try? device.makeLibrary(source: truncMSL, options: nil))?.makeFunction(name: "we_fragment") != nil)
 }
 
+// Component-wise intrinsics (mix/clamp/…) whose vector args disagree in width: WE passes the wider one
+// (here vec4 over a vec3) and relies on implicit truncation. Harmonise to the narrowest vector width;
+// scalars broadcast and stay. A call that already type-checks must be left exactly as-is.
+let mixShader = """
+varying vec4 v_TexCoord;
+uniform sampler2D g_Texture0;
+void main() {
+    vec4 albedo = texSample2D(g_Texture0, v_TexCoord.xy);
+    vec3 tint = vec3(0.2, 0.4, 0.6);
+    albedo.rgb = mix(albedo, tint, 0.5);
+    gl_FragColor = albedo;
+}
+"""
+let mixMSL = WEShaderTranspiler.fragmentToMSL(mixShader)
+Check.that("harmonises a wider mix arg to the narrowest vector width", mixMSL.contains("mix(albedo.xyz, tint, 0.5)"))
+Check.that("leaves a well-formed clamp(vec, scalar, scalar) untouched", {
+    let ok = WEShaderTranspiler.fragmentToMSL("varying vec4 v_TexCoord;\nvoid main() { vec3 c = v_TexCoord.xyz; gl_FragColor = vec4(clamp(c, 0.0, 1.0), 1.0); }")
+    return ok.contains("clamp(c, 0.0, 1.0)")
+}())
+if let device = MTLCreateSystemDefaultDevice() {
+    Check.that("harmonised mix MSL compiles via Metal", (try? device.makeLibrary(source: mixMSL, options: nil))?.makeFunction(name: "we_fragment") != nil)
+}
+
+// GLSL lets a local shadow a varying of the same name (chromatic aberration recomputes `bValue` over the
+// interpolated one). The local owns the name inside main, so it must NOT be qualified to in.bValue —
+// qualifying the declaration would emit the invalid `float4 in.bValue = …`.
+let varyShadowShader = """
+varying vec4 v_TexCoord;
+varying vec4 bValue;
+uniform sampler2D g_Texture0;
+void main() {
+    vec4 bValue = texSample2D(g_Texture0, v_TexCoord.xy);
+    gl_FragColor = bValue;
+}
+"""
+let varyShadowMSL = WEShaderTranspiler.fragmentToMSL(varyShadowShader)
+Check.that("a local shadowing a varying is not qualified", varyShadowMSL.contains("float4 bValue =") && !varyShadowMSL.contains("in.bValue ="))
+if let device = MTLCreateSystemDefaultDevice() {
+    Check.that("a varying-shadowing local compiles", (try? device.makeLibrary(source: varyShadowMSL, options: nil)) != nil)
+}
+
+// Uniforms aren't always g_/u_ prefixed (tone mapping's are t_*). A helper referencing one must be hosted
+// as a capturing lambda inside main (so it sees the uniform buffer), not emitted as a free function.
+let prefixShader = """
+varying vec4 v_TexCoord;
+uniform sampler2D g_Texture0;
+uniform float t_white; // {"material":"white","default":2.0}
+float tonemap(float l) { return 1.0 - exp(-l / t_white); }
+void main() {
+    vec4 c = texSample2D(g_Texture0, v_TexCoord.xy);
+    gl_FragColor = vec4(tonemap(c.r), tonemap(c.g), tonemap(c.b), 1.0);
+}
+"""
+let prefixMSL = WEShaderTranspiler.fragmentToMSL(prefixShader)
+Check.that("a helper using a t_* uniform reads it via the buffer", prefixMSL.contains("u.t_white"))
+if let device = MTLCreateSystemDefaultDevice() {
+    Check.that("a non-g_/u_ uniform helper compiles", (try? device.makeLibrary(source: prefixMSL, options: nil)) != nil)
+}
+
+// The prelude provides the standard HSV<->RGB helpers for gradient/hue shaders that don't ship their own.
+Check.that("prelude defines hsv2rgb and rgb2hsv", WEShaderPrelude.msl.contains("hsv2rgb") && WEShaderPrelude.msl.contains("rgb2hsv"))
+
 // A pure helper defined AFTER main() must be emitted at file scope, not swallowed into main's body.
 // Under the old "body runs to the file's last }" rule the helper landed inside main and was also
 // emitted separately, so the shader failed to compile (a nested/duplicate definition).

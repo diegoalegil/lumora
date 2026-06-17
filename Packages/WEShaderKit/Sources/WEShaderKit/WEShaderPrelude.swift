@@ -70,6 +70,22 @@ public enum WEShaderPrelude {
     // Rec.601 luma — WE's greyscale of an RGB colour.
     inline float greyscale(float3 c) { return dot(c, float3(0.299, 0.587, 0.114)); }
 
+    // RGB <-> HSV, the standard branchless hexcone formulas (hue/sat/value in [0,1]). WE's colour
+    // helpers expose these to gradient/hue shaders; a shader that ships its own copy shadows these.
+    inline float3 rgb2hsv(float3 c) {
+        float4 K = float4(0.0, -1.0 / 3.0, 2.0 / 3.0, -1.0);
+        float4 p = mix(float4(c.bg, K.wz), float4(c.gb, K.xy), step(c.b, c.g));
+        float4 q = mix(float4(p.xyw, c.r), float4(c.r, p.yzx), step(p.x, c.r));
+        float d = q.x - min(q.w, q.y);
+        float e = 1.0e-10;
+        return float3(abs(q.z + (q.w - q.y) / (6.0 * d + e)), d / (q.x + e), q.x);
+    }
+    inline float3 hsv2rgb(float3 c) {
+        float4 K = float4(1.0, 2.0 / 3.0, 1.0 / 3.0, 3.0);
+        float3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
+        return c.z * mix(K.xxx, saturate(p - K.xxx), c.y);
+    }
+
     // 1 where `uv` is inside the [0,1] square, falling to 0 just outside — the coverage of a sampled
     // sub-layer so its edges don't smear when blended.
     inline float GetUVBlend(float2 uv) {

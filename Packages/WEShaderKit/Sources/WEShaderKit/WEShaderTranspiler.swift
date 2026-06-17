@@ -39,8 +39,11 @@ public enum WEShaderTranspiler {
         // Qualify references: scalar varyings come from stage_in, scalar uniforms from the uniform
         // buffer, gl_FragColor → the local we return. Array varyings stay bare — they resolve to a local
         // array rebuilt below. The same map qualifies the global-touching helpers emitted as lambdas.
+        let shadowed = locallyDeclaredNames(in: mainBody(of: resolved))
         var qualifiers: [(String, String)] = []
-        for varying in varyings where varying.count == nil { qualifiers.append((varying.name, "in.\(varying.name)")) }
+        for varying in varyings where varying.count == nil && !shadowed.contains(varying.name) {
+            qualifiers.append((varying.name, "in.\(varying.name)"))
+        }
         for uniform in scalars { qualifiers.append((uniform.name, "u.\(uniform.name)")) }
         qualifiers.append(("gl_FragColor", "_fragColor"))
 
@@ -93,9 +96,14 @@ public enum WEShaderTranspiler {
         // Attributes come from stage_in, scalar varyings/gl_Position go to the output struct, scalar
         // uniforms from the buffer. Array varyings stay bare (the body writes a local copied out below).
         // The same map qualifies the global-touching helpers emitted as lambdas.
+        let shadowed = locallyDeclaredNames(in: mainBody(of: resolved))
         var qualifiers: [(String, String)] = []
-        for attribute in attributes { qualifiers.append((attribute.name, "in.\(attribute.name)")) }
-        for varying in varyings where varying.count == nil { qualifiers.append((varying.name, "out.\(varying.name)")) }
+        for attribute in attributes where !shadowed.contains(attribute.name) {
+            qualifiers.append((attribute.name, "in.\(attribute.name)"))
+        }
+        for varying in varyings where varying.count == nil && !shadowed.contains(varying.name) {
+            qualifiers.append((varying.name, "out.\(varying.name)"))
+        }
         for uniform in scalars { qualifiers.append((uniform.name, "u.\(uniform.name)")) }
         qualifiers.append(("gl_Position", "out.position"))
 
@@ -149,6 +157,23 @@ public enum WEShaderTranspiler {
         let escaped = NSRegularExpression.escapedPattern(for: name)
         let regex = try! NSRegularExpression(pattern: "(?<![\\w.])\(escaped)(?![\\w])")
         return regex.numberOfMatches(in: source, range: NSRange(source.startIndex..., in: source)) > 1
+    }
+
+    /// Names the body declares as locals via `<type> name [= …]`. GLSL lets a local shadow a varying or
+    /// attribute of the same name (e.g. chromatic_aberration recomputes `vec4 bValue` over the interpolated
+    /// `bValue`); the local owns the name inside the function, so we must NOT qualify it to `in.`/`out.` —
+    /// doing so emits the invalid declaration `float4 in.bValue = …`. The local stays bare and the varying
+    /// remains a (now unused) stage_in slot, preserving the layout.
+    private static func locallyDeclaredNames(in body: String) -> Set<String> {
+        let types = "(?:float|half|int|uint|bool|vec[234]|ivec[234]|uvec[234]|bvec[234]|mat[234]" +
+                    "|mat[234]x[234]|float[234]|half[234]|float[234]x[234])"
+        guard let re = try? NSRegularExpression(pattern: "\\b\(types)\\s+([A-Za-z_]\\w*)\\s*(?:=|;|\\[)") else { return [] }
+        let ns = body as NSString
+        var names = Set<String>()
+        for m in re.matches(in: body, range: NSRange(location: 0, length: ns.length)) {
+            names.insert(ns.substring(with: m.range(at: 1)))
+        }
+        return names
     }
 
     // MARK: - Pieces
@@ -232,6 +257,73 @@ public enum WEShaderTranspiler {
         token + "." + String("xyzw".prefix(target))
     }
 
+    /// Component-wise intrinsics whose vector arguments must all share one dimension (the scalar `t`/edges
+    /// broadcast). WE's HLSL-derived shaders pass a wider vector and rely on implicit truncation — e.g.
+    /// `mix(albedo /*vec4*/, newAlbedo /*vec3*/, mask)` — which MSL rejects.
+    private static let componentwiseFns: Set<String> = ["mix", "clamp", "min", "max", "step", "smoothstep", "pow", "mod", "fmod"]
+
+    /// Split a comma list at top level, respecting nested ()/[] (so `vec3(a,b,c)` stays one argument).
+    private static func splitTopLevelArgs(_ s: String) -> [String] {
+        var args: [String] = []; var depth = 0; var cur = ""
+        for ch in s {
+            if ch == "(" || ch == "[" { depth += 1; cur.append(ch) }
+            else if ch == ")" || ch == "]" { depth -= 1; cur.append(ch) }
+            else if ch == "," && depth == 0 { args.append(cur); cur = "" }
+            else { cur.append(ch) }
+        }
+        if !cur.isEmpty || !args.isEmpty { args.append(cur) }
+        return args
+    }
+
+    /// Harmonise the vector arguments of component-wise intrinsic calls in `line`: when every argument is a
+    /// simple, confidently-typed operand and the vector ones disagree in width, truncate the wider to the
+    /// narrowest vector width (scalars broadcast and are left alone). Regression-safe: a call that already
+    /// type-checks has equal vector widths, so the minimum equals them all and nothing is rewritten; only a
+    /// genuinely mismatched (non-compiling) call is touched. Skips any call with a compound argument so a
+    /// width it can't see never drives a wrong truncation. Recurses into nested calls.
+    private static func harmonizeComponentwiseArgs(_ line: String, _ dims: [String: Int]) -> String {
+        let chars = Array(line); let n = chars.count
+        var result = ""; var i = 0
+        while i < n {
+            let ch = chars[i]
+            if ch.isLetter || ch == "_" {
+                var j = i
+                while j < n, chars[j].isLetter || chars[j].isNumber || chars[j] == "_" { j += 1 }
+                let name = String(chars[i..<j])
+                let isMember = i > 0 && chars[i - 1] == "."
+                if !isMember, componentwiseFns.contains(name), j < n, chars[j] == "(" {
+                    var depth = 0, k = j
+                    while k < n { if chars[k] == "(" { depth += 1 } else if chars[k] == ")" { depth -= 1; if depth == 0 { break } }; k += 1 }
+                    if k < n {
+                        let inner = String(chars[(j + 1)..<k])
+                        result += name + "(" + harmonizeArgList(inner, dims) + ")"
+                        i = k + 1; continue
+                    }
+                }
+                result += name; i = j; continue
+            }
+            result.append(ch); i += 1
+        }
+        return result
+    }
+
+    private static func harmonizeArgList(_ inner: String, _ dims: [String: Int]) -> String {
+        let args = splitTopLevelArgs(inner).map { harmonizeComponentwiseArgs($0, dims) }
+        guard args.count >= 2 else { return args.joined(separator: ",") }
+        let argDims = args.map { operandDim($0.trimmingCharacters(in: .whitespaces), dims) }
+        guard !argDims.contains(where: { $0 == nil }) else { return args.joined(separator: ",") }
+        let vectorWidths = argDims.compactMap { $0 }.filter { $0 > 1 }
+        guard let minVec = vectorWidths.min(), vectorWidths.count >= 2, vectorWidths.contains(where: { $0 > minVec }) else {
+            return args.joined(separator: ",")
+        }
+        let out = zip(args, argDims).map { arg, d -> String in
+            guard let d, d > minVec, d > 1 else { return arg }
+            let lead = String(arg.prefix(while: { $0 == " " }))
+            return lead + truncated(arg.trimmingCharacters(in: .whitespaces), to: minVec)
+        }
+        return out.joined(separator: ",")
+    }
+
     /// WE's shaders are HLSL-derived and rely on implicit vector truncation (assigning/passing a vecM where a
     /// vecN, N<M, is wanted); MSL rejects it. Insert the leading-N swizzle for the cases we can type with full
     /// confidence — a simple operand assigned to a smaller declared target, and a vec4/vec3 passed where a
@@ -243,6 +335,8 @@ public enum WEShaderTranspiler {
         var out: [String] = []
         for rawLine in body.components(separatedBy: "\n") {
             var line = rawLine
+            // (0) Harmonise component-wise intrinsic args (mix/clamp/…) whose vector widths disagree.
+            line = harmonizeComponentwiseArgs(line, dims)
             // (1) `[type] lhs = rhs;` where rhs is a single operand wider than the target.
             let ns0 = line as NSString
             let assign = try! NSRegularExpression(pattern: #"^(\s*)(?:(vec[234]|float[234]?)\s+)?([A-Za-z_]\w*(?:\.[xyzwrgba]+)?)\s*=\s*([^=;][^;]*);\s*$"#)
@@ -407,17 +501,23 @@ public enum WEShaderTranspiler {
     private static func globalsTouchingFunctions(of source: String) -> Set<String> {
         let cleaned = stripDirectivesAndComments(source)
         let uniformConsts = uniformDerivedConstNames(of: source)
+        // Every parsed scalar uniform, by name — not every WE uniform uses the g_/u_ prefix (tone mapping's
+        // are t_*, a_*), so a prefix test misses them; match the real declared names instead.
+        let uniformNames = ShaderUniforms.parse(source).filter { !$0.type.hasPrefix("sampler") }.map(\.name)
         var functions: [(name: String, text: String)] = []
         for (signature, body) in topLevelBlocks(cleaned) where signature.contains("(") {
             let name = functionName(of: signature)
             if !name.isEmpty, name != "main" { functions.append((name, signature + body)) }
         }
-        // A helper "touches globals" if it reads a g_*/u_*/sampler/gl_* directly, OR reads a file-scope
-        // const that is itself uniform-derived (and so lives as a main-local, not at file scope).
-        func touchesGlobals(_ text: String) -> Bool {
-            referencesGlobals(text) || uniformConsts.contains { name in
+        func referencesAny(_ text: String, _ names: [String]) -> Bool {
+            names.contains { name in
                 text.range(of: "(?<![\\w.])\(NSRegularExpression.escapedPattern(for: name))(?![\\w])", options: .regularExpression) != nil
             }
+        }
+        // A helper "touches globals" if it reads a g_*/u_*/sampler/gl_* directly, a uniform of any prefix,
+        // OR a file-scope const that is itself uniform-derived (and so lives as a main-local).
+        func touchesGlobals(_ text: String) -> Bool {
+            referencesGlobals(text) || referencesAny(text, uniformNames) || referencesAny(text, Array(uniformConsts))
         }
         var touching = Set(functions.filter { touchesGlobals($0.text) }.map(\.name))
         var changed = true
