@@ -38,6 +38,12 @@ public struct ParticleSystem: Sendable, Equatable {
     public var sizeEnd: Double
     public var sizeStartTime: Double
     public var sizeEndTime: Double
+    // Alpha-over-life (alphafade operator): fade in over [0, fadeInTime] and out over [fadeOutTime, 1] (life
+    // fractions). `hasAlphaFade` is false when the system ships no alphafade operator — the renderer then
+    // keeps its generic gentle fade rather than guessing.
+    public var hasAlphaFade: Bool
+    public var fadeInTime: Double
+    public var fadeOutTime: Double
 
     /// Parse a particle system from its JSON object, or nil if it lacks an emitter we can drive.
     public static func parse(_ json: [String: Any], materialOverride: String? = nil) -> ParticleSystem? {
@@ -65,7 +71,8 @@ public struct ParticleSystem: Sendable, Equatable {
             color: Range3(min: SceneVec3(x: 255, y: 255, z: 255), max: SceneVec3(x: 255, y: 255, z: 255)),
             alpha: 1 ... 1, gravity: SceneVec3(x: 0, y: 0, z: 0),
             initialRotation: 0 ... 0, angularVelocity: 0 ... 0,
-            sizeStart: 1, sizeEnd: 1, sizeStartTime: 0, sizeEndTime: 1)
+            sizeStart: 1, sizeEnd: 1, sizeStartTime: 0, sizeEndTime: 1,
+            hasAlphaFade: false, fadeInTime: 0, fadeOutTime: 1)
 
         for initializer in (json["initializer"] as? [[String: Any]]) ?? [] {
             let name = (initializer["name"] as? String) ?? ""
@@ -97,6 +104,10 @@ public struct ParticleSystem: Sendable, Equatable {
                 system.sizeEnd = num("endvalue", 1)
                 system.sizeStartTime = num("starttime", 0)
                 system.sizeEndTime = num("endtime", 1)
+            case "alphafade":
+                system.hasAlphaFade = true
+                system.fadeInTime = (op["fadeintime"] as? NSNumber)?.doubleValue ?? 0
+                system.fadeOutTime = (op["fadeouttime"] as? NSNumber)?.doubleValue ?? 1
             default: break
             }
         }

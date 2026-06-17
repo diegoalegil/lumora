@@ -1080,7 +1080,17 @@ public final class SceneRenderer {
             let posX = spawnX + velX * age + 0.5 * s.gravity.x * age * age
             let posY = spawnY + velY * age + 0.5 * s.gravity.y * age * age
             let lifeFrac = age / life
-            let fade = Float(smoothstep(0, 0.15, lifeFrac) * (1 - smoothstep(0.85, 1, lifeFrac)))
+            // Alpha over life: the system's explicit alphafade (fade in over [0,fadeIn], out over [fadeOut,1])
+            // when it ships one, else a generic gentle fade so a system without the operator still eases in/out.
+            let fade: Float
+            if s.hasAlphaFade {
+                var a = 1.0
+                if s.fadeInTime > 0, lifeFrac < s.fadeInTime { a = lifeFrac / s.fadeInTime }
+                if s.fadeOutTime < 1, lifeFrac > s.fadeOutTime { a = min(a, (1 - lifeFrac) / max(1e-4, 1 - s.fadeOutTime)) }
+                fade = Float(max(0, a))
+            } else {
+                fade = Float(smoothstep(0, 0.15, lifeFrac) * (1 - smoothstep(0.85, 1, lifeFrac)))
+            }
             // Size over life (sizechange): ramp the multiplier between its start/end across the configured
             // life-fraction span, holding flat outside it. Default ramp (1→1) leaves the size unchanged.
             let sizeT = s.sizeEndTime > s.sizeStartTime

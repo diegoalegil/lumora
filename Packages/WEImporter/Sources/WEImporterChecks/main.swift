@@ -685,6 +685,16 @@ let growParticle: [String: Any] = [
 if let grow = ParticleSystem.parse(growParticle) {
     Check.that("sizechange parses the grow-in ramp",
                grow.sizeStart == 0 && grow.sizeEnd == 1 && grow.sizeStartTime == 0 && grow.sizeEndTime == 0.2)
+    Check.that("a system without alphafade is flagged so (keeps the generic fade)", grow.hasAlphaFade == false)
+}
+// alphafade (an operator): explicit fade-in / fade-out life fractions.
+let fadeParticle: [String: Any] = [
+    "emitter": [["name": "boxrandom", "rate": 20]],
+    "operator": [["name": "alphafade", "fadeintime": 0.1, "fadeouttime": 0.8]],
+]
+if let fade = ParticleSystem.parse(fadeParticle) {
+    Check.that("alphafade parses its fade-in/out fractions",
+               fade.hasAlphaFade && fade.fadeInTime == 0.1 && fade.fadeOutTime == 0.8)
 }
 
 // MARK: - Done
