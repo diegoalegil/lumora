@@ -773,11 +773,15 @@ public final class SceneRenderer {
         var probeCoverage = coverage(probeRGBA)
         var probeDetail = detail(probeRGBA)
         var kept: [PreparedEffect] = []
-        var probeLuma = lumaStats(probeRGBA).mean
         // A real WE glow/bloom/godray lifts the layer's mean luma only modestly (measured ≤ ~9 across the
-        // library); an effect that screen-blends against a white placeholder aux texture we don't have washes
-        // the layer toward white (+22…+255). Reject that wash so the layer keeps its faithful, un-blown look.
-        let washThreshold = 18.0
+        // library). An effect that screen-blends against a white placeholder aux texture we don't have washes
+        // it toward white — sometimes in one +22…+255 jump, sometimes as a slow +5-per-pass creep that no
+        // single-step check catches. Cap the CUMULATIVE rise above the un-effected layer so the wallpaper
+        // keeps the look it has in Wallpaper Engine either way.
+        let baseLuma = lumaStats(probeRGBA).mean
+        // Measured across the library: genuine glow/bloom/godray chains raise the layer's mean luma by at
+        // most ~8; the white-placeholder washes land at +18 and up, with nothing legitimate in between.
+        let washThreshold = 12.0
         for effect in compiled {
             var stableOutput: MTLTexture?
             var stableRGBA: Data?
@@ -789,7 +793,7 @@ public final class SceneRenderer {
                 // it toward white (a screen blend against the missing aux placeholder) — all three otherwise
                 // pass a coverage-only check while looking nothing like the wallpaper does in WE.
                 guard coverage(rgba) >= probeCoverage / 2, detail(rgba) >= probeDetail / 5,
-                      lumaStats(rgba).mean - probeLuma <= washThreshold else { stable = false; break }
+                      lumaStats(rgba).mean - baseLuma <= washThreshold else { stable = false; break }
                 if time == 0 { stableOutput = output; stableRGBA = rgba }
             }
             guard stable, let stableOutput, let stableRGBA else { continue }   // unstable / erasing / flattening / washing
@@ -797,7 +801,6 @@ public final class SceneRenderer {
             probe = stableOutput
             probeCoverage = coverage(stableRGBA)
             probeDetail = detail(stableRGBA)
-            probeLuma = lumaStats(stableRGBA).mean
         }
         return kept
     }
