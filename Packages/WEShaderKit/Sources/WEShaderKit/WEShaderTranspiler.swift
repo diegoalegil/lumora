@@ -393,6 +393,35 @@ public enum WEShaderTranspiler {
         return result
     }
 
+    /// Rewrite `length(x)` to `abs(x)` when `x` is a scalar. GLSL's length of a scalar is its magnitude;
+    /// MSL has no scalar `length` overload (the call is ambiguous), so a spin/distance shader's
+    /// `length(texCoord.x - g_Center.x)` fails to compile. Only fires when the argument types as width 1.
+    private static func rewriteScalarLength(_ line: String, _ dims: [String: Int]) -> String {
+        let chars = Array(line); let n = chars.count
+        var result = ""; var i = 0
+        while i < n {
+            let ch = chars[i]
+            if (ch.isLetter || ch == "_"), !(i > 0 && (chars[i - 1] == "." || chars[i - 1].isLetter || chars[i - 1].isNumber || chars[i - 1] == "_")) {
+                var j = i
+                while j < n, chars[j].isLetter || chars[j].isNumber || chars[j] == "_" { j += 1 }
+                let name = String(chars[i..<j])
+                if name == "length", j < n, chars[j] == "(" {
+                    var depth = 0, k = j
+                    while k < n { if chars[k] == "(" { depth += 1 } else if chars[k] == ")" { depth -= 1; if depth == 0 { break } }; k += 1 }
+                    if k < n {
+                        let inner = String(chars[(j + 1)..<k])
+                        let dim = operandDim(inner, dims) ?? expressionDim(inner, dims)
+                        result += (dim == 1 ? "abs" : "length") + "(" + rewriteScalarLength(inner, dims) + ")"
+                        i = k + 1; continue
+                    }
+                }
+                result += name; i = j; continue
+            }
+            result.append(ch); i += 1
+        }
+        return result
+    }
+
     private static func harmonizeArgList(_ inner: String, _ dims: [String: Int]) -> String {
         let args = splitTopLevelArgs(inner).map { harmonizeComponentwiseArgs($0, dims) }
         guard args.count >= 2 else { return args.joined(separator: ",") }
@@ -421,8 +450,9 @@ public enum WEShaderTranspiler {
         var out: [String] = []
         for rawLine in body.components(separatedBy: "\n") {
             var line = rawLine
-            // (0) Harmonise component-wise intrinsic args (mix/clamp/…) whose vector widths disagree.
-            line = harmonizeComponentwiseArgs(line, dims)
+            // (0) Harmonise component-wise intrinsic args (mix/clamp/…) whose vector widths disagree, and
+            // rewrite length() of a scalar to abs().
+            line = rewriteScalarLength(harmonizeComponentwiseArgs(line, dims), dims)
             // (1) `[type] lhs = rhs;` where rhs is a single operand wider than the target.
             let ns0 = line as NSString
             let assign = try! NSRegularExpression(pattern: #"^(\s*)(?:(vec[234]|float[234]?)\s+)?([A-Za-z_]\w*(?:\.[xyzwrgba]+)?)\s*=\s*([^=;][^;]*);\s*$"#)

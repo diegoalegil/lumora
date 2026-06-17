@@ -230,6 +230,24 @@ if let device = MTLCreateSystemDefaultDevice() {
     Check.that("scalar-mask sample MSL compiles via Metal", (try? device.makeLibrary(source: maskMSL, options: nil))?.makeFunction(name: "we_fragment") != nil)
 }
 
+// GLSL's length(scalar) is its magnitude; MSL has no scalar overload (ambiguous), so rewrite to abs().
+// A length() of a genuine vector must be left alone.
+let lenShader = """
+varying vec4 v_TexCoord;
+uniform vec2 g_Center;
+void main() {
+    float dx = length(v_TexCoord.x - g_Center.x);
+    float dv = length(v_TexCoord.xy - g_Center);
+    gl_FragColor = vec4(dx + dv);
+}
+"""
+let lenMSL = WEShaderTranspiler.fragmentToMSL(lenShader)
+Check.that("rewrites length() of a scalar to abs()", lenMSL.contains("abs(in.v_TexCoord.x - u.g_Center.x)"))
+Check.that("leaves length() of a vector as length()", lenMSL.contains("length(in.v_TexCoord.xy - u.g_Center)"))
+if let device = MTLCreateSystemDefaultDevice() {
+    Check.that("scalar-length MSL compiles via Metal", (try? device.makeLibrary(source: lenMSL, options: nil))?.makeFunction(name: "we_fragment") != nil)
+}
+
 // GLSL lets a local shadow a varying of the same name (chromatic aberration recomputes `bValue` over the
 // interpolated one). The local owns the name inside main, so it must NOT be qualified to in.bValue —
 // qualifying the declaration would emit the invalid `float4 in.bValue = …`.
