@@ -1071,7 +1071,7 @@ public final class SceneRenderer {
                     velY += dy / len * speed
                 }
             }
-            let size = lerp(s.size.lowerBound, s.size.upperBound, rand(seed, 5))
+            let baseSize = lerp(s.size.lowerBound, s.size.upperBound, rand(seed, 5))
             let alpha0 = lerp(s.alpha.lowerBound, s.alpha.upperBound, rand(seed, 6))
             let color = SIMD3<Float>(Float(lerp(s.color.min.x, s.color.max.x, rand(seed, 7)) / 255),
                                      Float(lerp(s.color.min.y, s.color.max.y, rand(seed, 8)) / 255),
@@ -1081,6 +1081,11 @@ public final class SceneRenderer {
             let posY = spawnY + velY * age + 0.5 * s.gravity.y * age * age
             let lifeFrac = age / life
             let fade = Float(smoothstep(0, 0.15, lifeFrac) * (1 - smoothstep(0.85, 1, lifeFrac)))
+            // Size over life (sizechange): ramp the multiplier between its start/end across the configured
+            // life-fraction span, holding flat outside it. Default ramp (1→1) leaves the size unchanged.
+            let sizeT = s.sizeEndTime > s.sizeStartTime
+                ? max(0, min(1, (lifeFrac - s.sizeStartTime) / (s.sizeEndTime - s.sizeStartTime))) : 1
+            let size = baseSize * lerp(s.sizeStart, s.sizeEnd, sizeT)
             // Screen-plane spin: a random starting orientation plus a constant angular velocity over the
             // particle's age (radians). Clamp the rate defensively so no malformed value can strobe.
             let angle0 = lerp(s.initialRotation.lowerBound, s.initialRotation.upperBound, rand(seed, 13))

@@ -675,6 +675,16 @@ if let spin = ParticleSystem.parse(spinParticle) {
 }
 if let plain = ParticleSystem.parse(boxParticle) {
     Check.that("a system without rotation has no spin", plain.initialRotation == 0 ... 0 && plain.angularVelocity == 0 ... 0)
+    Check.that("a system without sizechange holds a constant size", plain.sizeStart == 1 && plain.sizeEnd == 1)
+}
+// sizechange (an operator): a size multiplier ramping over a life-fraction span.
+let growParticle: [String: Any] = [
+    "emitter": [["name": "boxrandom", "rate": 20]],
+    "operator": [["name": "sizechange", "starttime": 0, "startvalue": 0, "endtime": 0.2, "endvalue": 1]],
+]
+if let grow = ParticleSystem.parse(growParticle) {
+    Check.that("sizechange parses the grow-in ramp",
+               grow.sizeStart == 0 && grow.sizeEnd == 1 && grow.sizeStartTime == 0 && grow.sizeEndTime == 0.2)
 }
 
 // MARK: - Done
