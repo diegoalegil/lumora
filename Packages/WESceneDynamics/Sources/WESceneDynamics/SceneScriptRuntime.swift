@@ -11,6 +11,7 @@
 import Foundation
 import simd
 import JavaScriptCore
+import CJSWatchdog
 
 public final class SceneScriptRuntime {
     /// One layer the script created or manipulates (the base `thisLayer` plus any `createLayer` clones),
@@ -23,6 +24,10 @@ public final class SceneScriptRuntime {
         public var model: String?     // createLayer('models/bar.json') source; nil for the base layer
         public var alignment: String? // 'centre' | 'bottom' | 'top' — the pivot the bar scales about
     }
+
+    /// Wall-clock ceiling for any single JS evaluation/call. A per-frame clock/visualiser script runs in
+    /// microseconds; 0.25 s is far above that yet aborts an infinite loop well within one frame's budget.
+    public static let executionTimeLimitSeconds = 0.25
 
     private let context: JSContext
     private var updateFn: JSValue?
@@ -38,6 +43,12 @@ public final class SceneScriptRuntime {
         guard let context = JSContext() else { return nil }
         self.context = context
         context.exceptionHandler = { _, _ in }   // swallow; loaded stays false / results are nil
+        // Watchdog: a hostile or buggy `.pkg` could ship `while(true){}` in init()/update(), which runs
+        // synchronously on the render thread (clock strings, audio-bar transforms). Bound every JS evaluation
+        // and call so JavaScriptCore aborts a runaway one (raising an exception the handler above swallows →
+        // the script just yields no value, the static fallback stays). The limit is generous vs any real
+        // per-frame script yet trips a spin loop in a fraction of a frame.
+        lumora_set_js_execution_time_limit(context.jsGlobalContextRef, Self.executionTimeLimitSeconds)
 
         let prelude = """
         function Vec2(x, y) { this.x = x || 0; this.y = (y === undefined ? (x || 0) : y); }

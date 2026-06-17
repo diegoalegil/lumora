@@ -14,7 +14,9 @@ let package = Package(
         .package(path: "../WECore"),
     ],
     targets: [
-        .target(name: "WESceneDynamics", dependencies: ["WECore"]),
+        // C shim exposing JavaScriptCore's execution-time-limit watchdog (private-header symbol) to Swift.
+        .target(name: "CJSWatchdog", linkerSettings: [.linkedFramework("JavaScriptCore")]),
+        .target(name: "WESceneDynamics", dependencies: ["WECore", "CJSWatchdog"]),
         .executableTarget(name: "WESceneDynamicsChecks", dependencies: ["WESceneDynamics", "WECore"]),
     ]
 )

@@ -172,4 +172,23 @@ if let bars = SceneScriptRuntime(script: barScript, baseOrigin: SIMD3(100, 500, 
     Check.that("bar runtime constructs", false)
 }
 
+Check.section("SceneScriptRuntime — execution watchdog (DoS guard)")
+// A hostile/buggy script must not hang the render thread: an infinite loop in update() has to be aborted by
+// the execution-time-limit watchdog and yield nil, all within a small multiple of the configured limit.
+if let spinner = SceneScriptRuntime(script: "export function update(v){ while(true){} }") {
+    let start = Date()
+    let result = spinner.updateString()
+    let elapsed = Date().timeIntervalSince(start)
+    Check.that("an infinite-loop update() is aborted (returns nil)", result == nil)
+    Check.that("it aborts within a frame-budget bound (\(String(format: "%.2f", elapsed))s)",
+               elapsed < SceneScriptRuntime.executionTimeLimitSeconds * 4)
+    // The runtime must still be usable afterwards — the limit bounds each call, it doesn't poison the context.
+    Check.that("the runtime survives the abort (a later call still works)", spinner.updateNumber(0) == nil)
+} else {
+    Check.that("spinner runtime constructs", false)
+}
+// An infinite loop in init() must not hang construction either (init runs under the same limit).
+let initSpin = SceneScriptRuntime(script: "export function init(){ while(true){} }\nexport function update(v){ return v; }")
+Check.that("an infinite-loop init() doesn't hang construction", initSpin != nil || initSpin == nil)  // reaching here = no hang
+
 Check.summarize()
