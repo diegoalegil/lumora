@@ -5,8 +5,9 @@ import Foundation
 import Metal
 import WEShaderKit
 
-// Dev mode: a .frag file lists its uniforms; a directory measures transpiler coverage (how many real
-// shaders transpile to MSL that Metal accepts).
+// Dev mode: a .frag file lists its uniforms (or, with a trailing `msl` argument, prints the transpiled
+// Metal source with line numbers); a directory measures transpiler coverage (how many real shaders
+// transpile to MSL that Metal accepts).
 if CommandLine.arguments.count > 1 {
     let path = CommandLine.arguments[1]
     var isDirectory: ObjCBool = false
@@ -42,6 +43,13 @@ if CommandLine.arguments.count > 1 {
         print("transpiler coverage: \(compiled)/\(compiled + failed) compile to MSL; \(empty) have an EMPTY body (lost)")
         for e in sampleErrors { print("  compile error: \(e)") }
         for e in emptyBodies { print("  empty body: \(e)") }
+        exit(0)
+    }
+    if let real = try? String(contentsOfFile: path, encoding: .utf8), CommandLine.arguments.contains("msl") {
+        let transpiled = path.hasSuffix(".vert") ? WEShaderTranspiler.vertexToMSL(real) : WEShaderTranspiler.fragmentToMSL(real)
+        for (i, line) in transpiled.split(separator: "\n", omittingEmptySubsequences: false).enumerated() {
+            print(String(format: "%4d  %@", i + 1, String(line)))
+        }
         exit(0)
     }
     if let real = try? String(contentsOfFile: path, encoding: .utf8) {
@@ -202,6 +210,25 @@ Check.that("a vecN function name is not mistaken for a vecN variable", {
     """)
     return m.contains("float scaled = k * u.g_Multiply") && !m.contains("(k * u.g_Multiply)")
 }())
+
+// A texture sample is a float4; WE assigns it straight to a scalar opacity mask and relies on implicit
+// truncation (`float mask = texSample2D(...)`). Truncate to the target's width.
+let maskShader = """
+varying vec4 v_TexCoord;
+uniform sampler2D g_Texture0;
+uniform sampler2D g_Texture1;
+void main() {
+    float4 albedo = texSample2D(g_Texture0, v_TexCoord.xy);
+    float mask = texSample2D(g_Texture1, v_TexCoord.xy);
+    gl_FragColor = albedo * mask;
+}
+"""
+let maskMSL = WEShaderTranspiler.fragmentToMSL(maskShader)
+Check.that("truncates a texture sample assigned to a scalar mask", maskMSL.contains("float mask = g_Texture1.sample(g_Texture1_smp, in.v_TexCoord.xy).x"))
+Check.that("leaves a sample assigned to a float4 alone", maskMSL.contains("float4 albedo = g_Texture0.sample(g_Texture0_smp, in.v_TexCoord.xy);"))
+if let device = MTLCreateSystemDefaultDevice() {
+    Check.that("scalar-mask sample MSL compiles via Metal", (try? device.makeLibrary(source: maskMSL, options: nil))?.makeFunction(name: "we_fragment") != nil)
+}
 
 // GLSL lets a local shadow a varying of the same name (chromatic aberration recomputes `bValue` over the
 // interpolated one). The local owns the name inside main, so it must NOT be qualified to in.bValue —

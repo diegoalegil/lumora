@@ -250,6 +250,16 @@ public enum WEShaderTranspiler {
             if head.contains("4") { return 4 }; if head.contains("3") { return 3 }; if head.contains("2") { return 2 }
             return 1   // float(...)
         }
+        // A complete (balanced) `tex.sample(…)` yields a float4 — WE shaders assign it straight to a float/vec2
+        // opacity mask and rely on implicit truncation (`float mask = texSample2D(…)`). A trailing swizzle
+        // (`.sample(…).rgb`) keeps the parens un-terminal so this doesn't match; that case is already typed.
+        if t.range(of: #"^[A-Za-z_]\w*\.sample\s*\("#, options: .regularExpression) != nil, t.hasSuffix(")") {
+            var depth = 0, balancedAtEnd = false
+            for (i, ch) in t.enumerated() {
+                if ch == "(" { depth += 1 } else if ch == ")" { depth -= 1; balancedAtEnd = (depth == 0 && i == t.count - 1) }
+            }
+            if balancedAtEnd { return 4 }
+        }
         guard t.range(of: #"^[A-Za-z_]\w*(\.[xyzwrgba]+)?$"#, options: .regularExpression) != nil else { return nil }
         if let dot = t.firstIndex(of: ".") { return t.distance(from: t.index(after: dot), to: t.endIndex) }   // swizzle
         return dims[t]
