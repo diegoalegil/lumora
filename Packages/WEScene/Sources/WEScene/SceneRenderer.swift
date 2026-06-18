@@ -1160,6 +1160,19 @@ public final class SceneRenderer {
                 posX += rx / dist * push
                 posY += ry / dist * push
             }
+            // vortex: orbit the particle about the centre. Tangential speed blends inner→outer by radius; the
+            // angular speed ω = v/r is clamped so a large WE speed near the centre can't strobe. Rotation
+            // preserves radius, so it can't explode — we add the rotated-minus-original offset to the position.
+            if let v = s.vortex {
+                let ox = spawnX - (s.origin.x + v.offset.x), oy = spawnY - (s.origin.y + v.offset.y)
+                let dist = max(1, (ox * ox + oy * oy).squareRoot())
+                let rt = max(0, min(1, (dist - v.distanceInner) / (v.distanceOuter - v.distanceInner)))
+                let tangential = lerp(v.speedInner, v.speedOuter, rt)
+                let omega = max(-6, min(6, tangential / dist))   // rad/s, clamped against strobing
+                let a = omega * age, ca = cos(a), sa = sin(a)
+                posX += (ox * ca - oy * sa) - ox
+                posY += (ox * sa + oy * ca) - oy
+            }
             // turbulence: a stateless curl-noise drift. A two-octave sum-of-sines flow field sampled at the
             // spawn position (·scale) and age (·timescale) gives a coherent wander that neighbours share then
             // peel away from; ∝age keeps it bounded, and the result is clamped so a bad scale/speed can't fling

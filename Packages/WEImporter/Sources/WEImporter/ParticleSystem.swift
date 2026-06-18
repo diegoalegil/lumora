@@ -14,6 +14,21 @@ public struct ParticleSystem: Sendable, Equatable {
         public init(min: SceneVec3, max: SceneVec3) { self.min = min; self.max = max }
     }
 
+    /// The vortex operator: orbits particles tangentially about a centre (emitter origin + offset). The
+    /// tangential speed blends from `speedInner` to `speedOuter` between the inner/outer radii; the renderer
+    /// turns it into an angular sweep and rotates the particle about the centre (radius-preserving).
+    public struct Vortex: Sendable, Equatable {
+        public var offset: SceneVec3
+        public var distanceInner: Double
+        public var distanceOuter: Double
+        public var speedInner: Double
+        public var speedOuter: Double
+        public init(offset: SceneVec3, distanceInner: Double, distanceOuter: Double, speedInner: Double, speedOuter: Double) {
+            self.offset = offset; self.distanceInner = distanceInner; self.distanceOuter = distanceOuter
+            self.speedInner = speedInner; self.speedOuter = speedOuter
+        }
+    }
+
     /// The turbulence operator: a noise flow-field that drifts particles. Approximated statelessly as a
     /// closed-form positional displacement sampled at (spawn position · `scale`, age · `timescale`), so it
     /// preserves the (seed, age) → state invariant. `mask` selects axes; `speed` scales the drift.
@@ -95,6 +110,7 @@ public struct ParticleSystem: Sendable, Equatable {
     public var cpScale: Double
     public var cpThreshold: Double
     public var cpOffset: SceneVec3
+    public var vortex: Vortex?   // vortex operator: orbit particles about a centre (nil = none)
 
     /// Parse a particle system from its JSON object, or nil if it lacks an emitter we can drive.
     public static func parse(_ json: [String: Any], materialOverride: String? = nil) -> ParticleSystem? {
@@ -128,7 +144,7 @@ public struct ParticleSystem: Sendable, Equatable {
             turbVelScale: 0, turbVelOffset: 0, turbVelSpeed: 0 ... 0,
             hasColorChange: false, colorChangeStart: SceneVec3(x: 1, y: 1, z: 1),
             colorChangeEnd: SceneVec3(x: 1, y: 1, z: 1), colorChangeStartTime: 0, colorChangeEndTime: 1,
-            turbulence: nil, cpScale: 0, cpThreshold: 0, cpOffset: SceneVec3(x: 0, y: 0, z: 0))
+            turbulence: nil, cpScale: 0, cpThreshold: 0, cpOffset: SceneVec3(x: 0, y: 0, z: 0), vortex: nil)
 
         for initializer in (json["initializer"] as? [[String: Any]]) ?? [] {
             let name = (initializer["name"] as? String) ?? ""
@@ -176,6 +192,14 @@ public struct ParticleSystem: Sendable, Equatable {
             case "oscillatealpha":    system.oscillateAlpha = oscillator(op, scaleDefault: (1, 1))
             case "oscillatesize":     system.oscillateSize = oscillator(op, scaleDefault: (1, 1))
             case "oscillateposition": system.oscillatePosition = oscillator(op, scaleDefault: (0, 0))
+            case "vortex", "vortex_v2":
+                func num(_ k: String, _ f: Double) -> Double { (op[k] as? NSNumber)?.doubleValue ?? f }
+                system.vortex = Vortex(
+                    offset: vec3(op["offset"]),
+                    distanceInner: num("distanceinner", 0),
+                    distanceOuter: max(num("distanceinner", 0) + 1, num("distanceouter", 1)),
+                    speedInner: num("speedinner", 0),
+                    speedOuter: num("speedouter", 0))
             case "controlpointattract":
                 let cpId = (op["controlpoint"] as? NSNumber)?.intValue ?? 1
                 let cps = json["controlpoint"] as? [[String: Any]] ?? []

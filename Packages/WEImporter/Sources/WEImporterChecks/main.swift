@@ -799,6 +799,15 @@ if let cp = ParticleSystem.parse(["emitter": [["name": "boxrandom", "rate": 20]]
     Check.that("controlpointattract parses scale/threshold and the CP offset",
                cp.cpScale == -5000 && cp.cpThreshold == 64 && cp.cpOffset.x == 100 && cp.cpOffset.y == 50)
 }
+// vortex (operator): orbit radii/speeds; distanceouter is forced above distanceinner.
+if let vx = ParticleSystem.parse(["emitter": [["name": "boxrandom", "rate": 20]],
+        "operator": [["name": "vortex", "offset": "10 20 0", "distanceinner": 100, "distanceouter": 600, "speedinner": 172, "speedouter": 30]]]) {
+    Check.that("vortex parses offset/radii/speeds",
+               vx.vortex?.offset.x == 10 && vx.vortex?.distanceInner == 100 && vx.vortex?.distanceOuter == 600 && vx.vortex?.speedInner == 172)
+}
+if let plain5 = ParticleSystem.parse(boxParticle) {
+    Check.that("a system without vortex/controlpoint leaves them empty", plain5.vortex == nil && plain5.cpScale == 0)
+}
 
 // MARK: - Done
 
