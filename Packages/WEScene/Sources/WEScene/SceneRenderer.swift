@@ -1090,16 +1090,18 @@ public final class SceneRenderer {
             var posX = spawnX + velX * travel + 0.5 * s.gravity.x * age * age
             var posY = spawnY + velY * travel + 0.5 * s.gravity.y * age * age
             let lifeFrac = age / life
-            // Alpha over life: the system's explicit alphafade (fade in over [0,fadeIn], out over [fadeOut,1])
-            // when it ships one, else a generic gentle fade so a system without the operator still eases in/out.
-            var fade: Float
+            // Alpha over life. A universal birth/death envelope softens every sprite at spawn and death — this
+            // is what keeps dense additive crowds from saturating to a flat wash. A system's explicit alphafade
+            // (fade in over [0,fadeIn], out over [fadeOut,1]) multiplies ON TOP of that envelope; a system
+            // without one gets just the envelope (unchanged). Note an alphafade of (0,1) means "no fade" — the
+            // envelope must still apply, or the crowd washes out (regression guard).
+            let env = Float(smoothstep(0, 0.15, lifeFrac) * (1 - smoothstep(0.85, 1, lifeFrac)))
+            var fade: Float = env
             if s.hasAlphaFade {
                 var a = 1.0
                 if s.fadeInTime > 0, lifeFrac < s.fadeInTime { a = lifeFrac / s.fadeInTime }
                 if s.fadeOutTime < 1, lifeFrac > s.fadeOutTime { a = min(a, (1 - lifeFrac) / max(1e-4, 1 - s.fadeOutTime)) }
-                fade = Float(max(0, a))
-            } else {
-                fade = Float(smoothstep(0, 0.15, lifeFrac) * (1 - smoothstep(0.85, 1, lifeFrac)))
+                fade = Float(max(0, a)) * env
             }
             // Size over life (sizechange): ramp the multiplier between its start/end across the configured
             // life-fraction span, holding flat outside it. Default ramp (1→1) leaves the size unchanged.
