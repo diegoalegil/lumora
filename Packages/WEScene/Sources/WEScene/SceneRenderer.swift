@@ -1148,6 +1148,20 @@ public final class SceneRenderer {
                 posX += o.mask.x * disp
                 posY += o.mask.y * disp
             }
+            // turbulence: a stateless curl-noise drift. A two-octave sum-of-sines flow field sampled at the
+            // spawn position (·scale) and age (·timescale) gives a coherent wander that neighbours share then
+            // peel away from; ∝age keeps it bounded, and the result is clamped so a bad scale/speed can't fling
+            // sprites off-screen. Closed-form in (seed, age), so it stays deterministic like the rest of the sim.
+            if let t = s.turbulence {
+                let phase = rand(seed, 33) * (t.phaseMax > 0 ? t.phaseMax : 1)
+                let tt = age * t.timescale + phase
+                let spd = lerp(t.speed.lowerBound, t.speed.upperBound, rand(seed, 34))
+                let fx = spawnX * t.scale, fy = spawnY * t.scale
+                let dx = sin(fy + 0.9 * tt) + 0.5 * sin(2.1 * fy - 1.3 * tt + 1.7)
+                let dy = cos(fx - 1.1 * tt) + 0.5 * cos(1.9 * fx + 1.2 * tt + 0.4)
+                posX += max(-orthoW, min(orthoW, t.mask.x * spd * dx * age))
+                posY += max(-orthoH, min(orthoH, t.mask.y * spd * dy * age))
+            }
             // colorchange: animate the tint from start→end (0…1) across [startTime, endTime] of life. Multiply
             // (rather than replace) so it composes with any colorrandom base; a white base makes it a replace.
             if s.hasColorChange {

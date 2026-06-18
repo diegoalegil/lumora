@@ -783,6 +783,13 @@ if let cc = ParticleSystem.parse(["emitter": [["name": "boxrandom", "rate": 20]]
 if let plain4 = ParticleSystem.parse(boxParticle) {
     Check.that("a system without these has no turb-vel and no colorchange",
                plain4.turbVelScale == 0 && plain4.hasColorChange == false)
+    Check.that("a system without turbulence leaves it nil", plain4.turbulence == nil)
+}
+// turbulence (operator): a noise drift; scale clamps to [0,1], timescale to [0,100].
+if let tb = ParticleSystem.parse(["emitter": [["name": "boxrandom", "rate": 20]],
+        "operator": [["name": "turbulence", "mask": "1 0 0", "speedmin": 25, "speedmax": 50, "scale": 0.005, "timescale": 5]]]) {
+    Check.that("turbulence parses mask/speed/scale/timescale",
+               tb.turbulence?.mask.x == 1 && tb.turbulence?.speed == 25...50 && tb.turbulence?.timescale == 5)
 }
 
 // MARK: - Done

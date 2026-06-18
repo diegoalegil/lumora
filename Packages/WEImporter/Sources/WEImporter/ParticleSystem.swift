@@ -14,6 +14,20 @@ public struct ParticleSystem: Sendable, Equatable {
         public init(min: SceneVec3, max: SceneVec3) { self.min = min; self.max = max }
     }
 
+    /// The turbulence operator: a noise flow-field that drifts particles. Approximated statelessly as a
+    /// closed-form positional displacement sampled at (spawn position · `scale`, age · `timescale`), so it
+    /// preserves the (seed, age) → state invariant. `mask` selects axes; `speed` scales the drift.
+    public struct Turbulence: Sendable, Equatable {
+        public var mask: SceneVec3
+        public var speed: ClosedRange<Double>
+        public var scale: Double
+        public var phaseMax: Double
+        public var timescale: Double
+        public init(mask: SceneVec3, speed: ClosedRange<Double>, scale: Double, phaseMax: Double, timescale: Double) {
+            self.mask = mask; self.speed = speed; self.scale = scale; self.phaseMax = phaseMax; self.timescale = timescale
+        }
+    }
+
     /// A sinusoidal modulator (oscillatealpha / oscillatesize / oscillateposition). Each particle picks a
     /// frequency in `freq` (Hz) and a phase in `phase` (cycles). For alpha/size the 0…1 sine envelope is
     /// mapped into the `scale` multiplier range; for position `scale` is the displacement amplitude and `mask`
@@ -75,6 +89,7 @@ public struct ParticleSystem: Sendable, Equatable {
     public var colorChangeEnd: SceneVec3
     public var colorChangeStartTime: Double
     public var colorChangeEndTime: Double
+    public var turbulence: Turbulence?   // turbulence operator: a noise flow-field drift (nil = none)
 
     /// Parse a particle system from its JSON object, or nil if it lacks an emitter we can drive.
     public static func parse(_ json: [String: Any], materialOverride: String? = nil) -> ParticleSystem? {
@@ -107,7 +122,8 @@ public struct ParticleSystem: Sendable, Equatable {
             oscillateAlpha: nil, oscillateSize: nil, oscillatePosition: nil,
             turbVelScale: 0, turbVelOffset: 0, turbVelSpeed: 0 ... 0,
             hasColorChange: false, colorChangeStart: SceneVec3(x: 1, y: 1, z: 1),
-            colorChangeEnd: SceneVec3(x: 1, y: 1, z: 1), colorChangeStartTime: 0, colorChangeEndTime: 1)
+            colorChangeEnd: SceneVec3(x: 1, y: 1, z: 1), colorChangeStartTime: 0, colorChangeEndTime: 1,
+            turbulence: nil)
 
         for initializer in (json["initializer"] as? [[String: Any]]) ?? [] {
             let name = (initializer["name"] as? String) ?? ""
@@ -155,6 +171,15 @@ public struct ParticleSystem: Sendable, Equatable {
             case "oscillatealpha":    system.oscillateAlpha = oscillator(op, scaleDefault: (1, 1))
             case "oscillatesize":     system.oscillateSize = oscillator(op, scaleDefault: (1, 1))
             case "oscillateposition": system.oscillatePosition = oscillator(op, scaleDefault: (0, 0))
+            case "turbulence":
+                func num(_ k: String, _ f: Double) -> Double { (op[k] as? NSNumber)?.doubleValue ?? f }
+                let sp = scalarRange(op, fallback: 0, keys: ("speedmin", "speedmax"))
+                system.turbulence = Turbulence(
+                    mask: vec3(op["mask"], default: 1),
+                    speed: sp,
+                    scale: min(1, max(0, num("scale", 0.005))),
+                    phaseMax: max(0, num("phasemax", 1)),
+                    timescale: min(100, max(0, num("timescale", 1))))
             case "colorchange":
                 // The tint animates from startvalue to endvalue (0…1 colours) across [starttime, endtime].
                 system.hasColorChange = true
