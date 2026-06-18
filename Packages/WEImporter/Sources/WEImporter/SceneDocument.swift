@@ -275,26 +275,36 @@ public enum SceneGraph {
         var particleSystems: [ParticleSystem] = []
         var usesPuppet = false
 
-        // WE objects form a transform hierarchy: a child carries a `parent` (object id) and its `origin` is
-        // relative to the parent's world position. Flattening each object with its local origin as absolute
-        // would scatter every parented layer (a character anchored to an off-screen holder lands off-screen).
-        // Index objects by id and resolve world origins up the parent chain — translation plus the parent's
-        // scale applied to the child offset (parent rotation is rare on the anchor/holder objects that get
-        // parented, so it's left for a later refinement). A depth cap guards against cyclic `parent` ids.
+        // WE objects form a transform hierarchy: a child carries a `parent` (object id) and its origin/scale/
+        // angle are relative to the parent's world transform. Flattening each object with its local transform
+        // as absolute would scatter every parented layer (a character anchored to an off-screen holder lands
+        // off-screen). Index objects by id and compose the full 2-D world transform up the parent chain — the
+        // child offset is scaled then rotated into the parent's frame, and the parent's scale/angle compound
+        // into the child's. A depth cap guards against cyclic `parent` ids. Unparented objects return their
+        // local transform unchanged (byte-identical to before).
         let objects = root["objects"] as? [[String: Any]] ?? []
         var objectsByID: [Int: [String: Any]] = [:]
         for object in objects where (object["id"] as? NSNumber) != nil {
             objectsByID[(object["id"] as! NSNumber).intValue] = object
         }
-        func worldOrigin(_ object: [String: Any], _ depth: Int) -> SceneVec3 {
-            let local = originVec(object["origin"])
+        func worldTransform(_ object: [String: Any], _ depth: Int)
+            -> (origin: SceneVec3, angle: Double, scale: SceneVec3) {
+            let localOrigin = originVec(object["origin"])
+            let localAngle = vec(object["angles"]).z   // screen-plane rotation (radians)
+            let localScale = vec(object["scale"], default: SceneVec3(x: 1, y: 1, z: 1))
             guard depth < 16, let pid = (object["parent"] as? NSNumber)?.intValue,
                   pid != (object["id"] as? NSNumber)?.intValue, let parent = objectsByID[pid]
-            else { return local }
-            let pw = worldOrigin(parent, depth + 1)
-            let ps = vec(parent["scale"], default: SceneVec3(x: 1, y: 1, z: 1))
-            return SceneVec3(x: pw.x + ps.x * local.x, y: pw.y + ps.y * local.y, z: pw.z + ps.z * local.z)
+            else { return (localOrigin, localAngle, localScale) }
+            let p = worldTransform(parent, depth + 1)
+            let sx = p.scale.x * localOrigin.x, sy = p.scale.y * localOrigin.y
+            let ca = cos(p.angle), sa = sin(p.angle)
+            let origin = SceneVec3(x: p.origin.x + (sx * ca - sy * sa),
+                                   y: p.origin.y + (sx * sa + sy * ca),
+                                   z: p.origin.z + p.scale.z * localOrigin.z)
+            let scale = SceneVec3(x: p.scale.x * localScale.x, y: p.scale.y * localScale.y, z: p.scale.z * localScale.z)
+            return (origin, p.angle + localAngle, scale)
         }
+        func worldOrigin(_ object: [String: Any], _ depth: Int) -> SceneVec3 { worldTransform(object, depth).origin }
 
         for object in objects {
             // A particle object spawns sprites instead of drawing an image; collect it and move on.
@@ -347,14 +357,18 @@ public enum SceneGraph {
             // it casts to a String path. A variant-shaped reference that failed the cast would otherwise drop
             // the preview fallback and leave the renderer drawing the raw atlas as scattered parts.
             if object["puppet"] != nil || modelJSON?["puppet"] != nil { usesPuppet = true }
+            // Compose the full world transform so a parented image inherits its parent's placement, scale and
+            // rotation (the child's own angle x/y are kept; only the screen-plane z is compounded).
+            let wt = worldTransform(object, 0)
+            let localAngles = vec(object["angles"])
             layers.append(SceneLayer(
                 name: object["name"] as? String ?? "",
                 texturePath: material.texture,
                 isSolidLayer: imagePath.contains("solidlayer"),
-                origin: worldOrigin(object, 0),
-                scale: vec(object["scale"], default: SceneVec3(x: 1, y: 1, z: 1)),
+                origin: wt.origin,
+                scale: wt.scale,
                 size: (object["size"] as? String).map(SceneVec3.init(parsing:)),
-                angles: vec(object["angles"]),
+                angles: SceneVec3(x: localAngles.x, y: localAngles.y, z: wt.angle),
                 alpha: alphaValue(object["alpha"]),
                 color: vec(object["color"], default: SceneVec3(x: 1, y: 1, z: 1)),
                 alphaAnimation: alphaAnimation(object["alpha"]),

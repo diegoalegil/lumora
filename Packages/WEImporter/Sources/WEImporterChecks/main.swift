@@ -575,6 +575,21 @@ if let pkg = try? ScenePackage.read(parentPkg), let doc = try? SceneGraph.load(f
                child?.origin.x == 1020 && child?.origin.y == 540)
     Check.that("an unparented object is unchanged", root?.origin.x == 640 && root?.origin.y == 360)
 }
+// Full compounding: a child under a parent rotated 90° and scaled 2× has its offset scaled+rotated into the
+// parent's frame and inherits the parent's scale/angle. Parent (1000,500) scale 2 angle π/2, child local
+// origin (10,20) scale (3,3) angle 0.1 → world origin (960,520), scale (6,6), angle π/2+0.1.
+let rotScene = #"{"objects":[{"id":1,"name":"holder","image":"models/m.json","origin":"1000 500 0","scale":"2 2 1","angles":"0 0 1.5707963"},{"id":2,"name":"child","image":"models/m.json","parent":1,"origin":"10 20 0","scale":"3 3 1","angles":"0 0 0.1"}]}"#
+let rotPkg = buildPKG(version: "PKGV0009", files: [
+    ("scene.json", Data(rotScene.utf8)), ("models/m.json", modelJSON),
+    ("materials/mat.json", materialJSON), ("materials/mytex.tex", Data("x".utf8)),
+])
+if let pkg = try? ScenePackage.read(rotPkg), let doc = try? SceneGraph.load(from: pkg),
+   let child = doc.layers.first(where: { $0.name == "child" }) {
+    Check.that("a rotated/scaled parent rotates the child offset",
+               abs(child.origin.x - 960) < 0.5 && abs(child.origin.y - 520) < 0.5)
+    Check.that("the parent's scale compounds into the child", abs(child.scale.x - 6) < 1e-4)
+    Check.that("the parent's angle compounds into the child", abs(child.angles.z - (1.5707963 + 0.1)) < 1e-4)
+}
 
 // PuppetModel.parseMesh consumes an untrusted binary `.mdl`. Its bounds guards must reject malformed input
 // with nil — never crash, read out of bounds, or hang — so a hostile package can't exploit the parser. (The
