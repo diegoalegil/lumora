@@ -1104,7 +1104,8 @@ public final class SceneRenderer {
             // particle's age (radians). Clamp the rate defensively so no malformed value can strobe.
             let angle0 = lerp(s.initialRotation.lowerBound, s.initialRotation.upperBound, rand(seed, 13))
             let spin = max(-12, min(12, lerp(s.angularVelocity.lowerBound, s.angularVelocity.upperBound, rand(seed, 14))))
-            let angle = Float(angle0 + spin * age)
+            // angularmovement adds a constant angular acceleration: θ = θ₀ + ω·age + ½·force·age².
+            let angle = Float(angle0 + spin * age + 0.5 * s.angularForce * age * age)
             dst[n] = ParticleInstance(
                 center: SIMD2(Float(posX / orthoW * 2 - 1), Float(posY / orthoH * 2 - 1)),
                 halfExtent: SIMD2(Float(size / orthoW), Float(size / orthoH)),

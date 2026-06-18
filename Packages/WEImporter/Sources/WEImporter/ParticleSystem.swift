@@ -32,6 +32,7 @@ public struct ParticleSystem: Sendable, Equatable {
     public var drag: Double             // velocity damping 1/s (movement operator's `drag`); 0 = no damping
     public var initialRotation: ClosedRange<Double>   // radians; a random starting orientation (rotationrandom)
     public var angularVelocity: ClosedRange<Double>   // radians/s about z (angularvelocityrandom's z component)
+    public var angularForce: Double                   // radians/s² about z (angularmovement's z force); 0 = none
     // Size-over-life (sizechange operator): the size multiplier ramps from `sizeStart` to `sizeEnd` between
     // `sizeStartTime` and `sizeEndTime` (life fractions 0…1), holding flat outside that span. Defaults to a
     // constant 1 (no change), so a system without the operator renders exactly as before.
@@ -71,7 +72,7 @@ public struct ParticleSystem: Sendable, Equatable {
             directions: vec3(emitter["directions"]),
             color: Range3(min: SceneVec3(x: 255, y: 255, z: 255), max: SceneVec3(x: 255, y: 255, z: 255)),
             alpha: 1 ... 1, gravity: SceneVec3(x: 0, y: 0, z: 0), drag: 0,
-            initialRotation: 0 ... 0, angularVelocity: 0 ... 0,
+            initialRotation: 0 ... 0, angularVelocity: 0 ... 0, angularForce: 0,
             sizeStart: 1, sizeEnd: 1, sizeStartTime: 0, sizeEndTime: 1,
             hasAlphaFade: false, fadeInTime: 0, fadeOutTime: 1)
 
@@ -110,6 +111,9 @@ public struct ParticleSystem: Sendable, Equatable {
                 system.hasAlphaFade = true
                 system.fadeInTime = (op["fadeintime"] as? NSNumber)?.doubleValue ?? 0
                 system.fadeOutTime = (op["fadeouttime"] as? NSNumber)?.doubleValue ?? 1
+            case "angularmovement":
+                // Angular acceleration about z (the screen-plane spin); clamped like the spin rate.
+                system.angularForce = min(12, max(-12, vec3(op["force"]).z))
             default: break
             }
         }

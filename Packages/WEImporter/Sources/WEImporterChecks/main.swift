@@ -708,6 +708,14 @@ if let bigDrag = ParticleSystem.parse(["emitter": [["name": "boxrandom", "rate":
                                        "operator": [["name": "movement", "drag": 9999]]]) {
     Check.that("an out-of-range drag is clamped", bigDrag.drag == 50)
 }
+// angularmovement: angular acceleration (z of force), clamped; absent → 0.
+if let am = ParticleSystem.parse(["emitter": [["name": "boxrandom", "rate": 20]],
+                                  "operator": [["name": "angularmovement", "force": "0 0 -1.5"]]]) {
+    Check.that("angularmovement parses the z force", am.angularForce == -1.5)
+}
+if let plain2 = ParticleSystem.parse(boxParticle) {
+    Check.that("a system without angularmovement has no angular force", plain2.angularForce == 0)
+}
 
 // MARK: - Done
 
