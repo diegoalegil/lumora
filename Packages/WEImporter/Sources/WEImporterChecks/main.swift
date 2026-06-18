@@ -696,6 +696,18 @@ if let fade = ParticleSystem.parse(fadeParticle) {
     Check.that("alphafade parses its fade-in/out fractions",
                fade.hasAlphaFade && fade.fadeInTime == 0.1 && fade.fadeOutTime == 0.8)
 }
+// movement drag: velocity damping in 1/s, clamped to [0,50]; absent → 0 (no damping).
+if let drag = ParticleSystem.parse(["emitter": [["name": "boxrandom", "rate": 20]],
+                                    "operator": [["name": "movement", "gravity": "0 -50 0", "drag": 2.5]]]) {
+    Check.that("movement drag is parsed", drag.drag == 2.5 && drag.gravity.y == -50)
+}
+if let noDrag = ParticleSystem.parse(boxParticle) {
+    Check.that("a system without a drag field has zero drag", noDrag.drag == 0)
+}
+if let bigDrag = ParticleSystem.parse(["emitter": [["name": "boxrandom", "rate": 20]],
+                                       "operator": [["name": "movement", "drag": 9999]]]) {
+    Check.that("an out-of-range drag is clamped", bigDrag.drag == 50)
+}
 
 // MARK: - Done
 

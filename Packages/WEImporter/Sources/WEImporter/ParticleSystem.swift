@@ -29,6 +29,7 @@ public struct ParticleSystem: Sendable, Equatable {
     public var color: Range3            // 0–255 per channel
     public var alpha: ClosedRange<Double>
     public var gravity: SceneVec3       // scene units / s²
+    public var drag: Double             // velocity damping 1/s (movement operator's `drag`); 0 = no damping
     public var initialRotation: ClosedRange<Double>   // radians; a random starting orientation (rotationrandom)
     public var angularVelocity: ClosedRange<Double>   // radians/s about z (angularvelocityrandom's z component)
     // Size-over-life (sizechange operator): the size multiplier ramps from `sizeStart` to `sizeEnd` between
@@ -69,7 +70,7 @@ public struct ParticleSystem: Sendable, Equatable {
             speed: scalarRange(emitter, fallback: 0, keys: ("speedmin", "speedmax")),
             directions: vec3(emitter["directions"]),
             color: Range3(min: SceneVec3(x: 255, y: 255, z: 255), max: SceneVec3(x: 255, y: 255, z: 255)),
-            alpha: 1 ... 1, gravity: SceneVec3(x: 0, y: 0, z: 0),
+            alpha: 1 ... 1, gravity: SceneVec3(x: 0, y: 0, z: 0), drag: 0,
             initialRotation: 0 ... 0, angularVelocity: 0 ... 0,
             sizeStart: 1, sizeEnd: 1, sizeStartTime: 0, sizeEndTime: 1,
             hasAlphaFade: false, fadeInTime: 0, fadeOutTime: 1)
@@ -98,6 +99,7 @@ public struct ParticleSystem: Sendable, Equatable {
             switch op["name"] as? String {
             case "movement":
                 system.gravity = vec3(op["gravity"])
+                system.drag = min(50, max(0, (op["drag"] as? NSNumber)?.doubleValue ?? 0))
             case "sizechange":
                 func num(_ key: String, _ fallback: Double) -> Double { (op[key] as? NSNumber)?.doubleValue ?? fallback }
                 system.sizeStart = num("startvalue", 1)

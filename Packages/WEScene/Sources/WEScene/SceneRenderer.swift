@@ -1077,8 +1077,12 @@ public final class SceneRenderer {
                                      Float(lerp(s.color.min.y, s.color.max.y, rand(seed, 8)) / 255),
                                      Float(lerp(s.color.min.z, s.color.max.z, rand(seed, 9)) / 255))
 
-            let posX = spawnX + velX * age + 0.5 * s.gravity.x * age * age
-            let posY = spawnY + velY * age + 0.5 * s.gravity.y * age * age
+            // Drag (movement operator) damps the initial velocity exponentially: the distance travelled from
+            // velocity over `age` is ∫v₀e^(-drag·t)dt = v₀·(1-e^(-drag·age))/drag, falling back to v₀·age when
+            // there's no drag (the limit as drag→0), so an undragged system is byte-identical.
+            let travel = s.drag > 0 ? (1 - exp(-s.drag * age)) / s.drag : age
+            let posX = spawnX + velX * travel + 0.5 * s.gravity.x * age * age
+            let posY = spawnY + velY * travel + 0.5 * s.gravity.y * age * age
             let lifeFrac = age / life
             // Alpha over life: the system's explicit alphafade (fade in over [0,fadeIn], out over [fadeOut,1])
             // when it ships one, else a generic gentle fade so a system without the operator still eases in/out.
