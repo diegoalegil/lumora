@@ -466,10 +466,14 @@ public enum SceneGraph {
                   let effect = json(package.entry(named: file)),
                   let effectPasses = effect["passes"] as? [[String: Any]], !effectPasses.isEmpty else { continue }
 
+            // Constant overrides (e.g. a local-contrast effect's `strength`) live on the instance pass that
+            // uses them — often a LATER combine pass, not the first — and a pass's packer only applies the
+            // constants its own shader declares, so gather them across every instance pass.
             var constants: [String: String] = [:]
-            if let pass = (entry["passes"] as? [[String: Any]])?.first,
-               let values = pass["constantshadervalues"] as? [String: Any] {
-                for (key, value) in values where constantString(value) != nil { constants[key] = constantString(value) }
+            for instancePass in (entry["passes"] as? [[String: Any]]) ?? [] {
+                if let values = instancePass["constantshadervalues"] as? [String: Any] {
+                    for (key, value) in values where constantString(value) != nil { constants[key] = constantString(value) }
+                }
             }
             // The user's combo overrides (e.g. the blend mode the wallpaper picked) apply across all passes.
             var entryCombos: [String: Int] = [:]
