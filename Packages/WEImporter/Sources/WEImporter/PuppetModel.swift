@@ -180,6 +180,18 @@ public enum PuppetModel {
         let boneCount = Int(u32(mdls + 13))
         guard boneCount >= 1, boneCount <= 1024 else { return false }
 
+        // Wallpaper Engine's newer puppet skeletons (MDLS version ≥ 3 — the MDLV0021/0023 models) store the
+        // mesh ALREADY in assembled bind-pose model space; the matrix array that follows is animation
+        // keyframes, not a rest layout to fold in. Skinning such a mesh with that array deforms a correct
+        // figure into scattered parts (the cause of the long-standing "v3/v4 rigs mis-pose" gap). So draw
+        // these positions as-is — the caller's torn-mesh guard still rejects any rig whose vertices aren't
+        // actually a composed figure, so a mis-parsed mesh falls back to the preview. (The older MDLS0002
+        // form below stores a flat sprite atlas that genuinely needs the bind→pose skin to assemble.)
+        let mdlsVersion = Int(String(bytes: (mdls + 4 ..< mdls + 8).map { raw[$0] }, encoding: .ascii) ?? "0") ?? 0
+        if mdlsVersion >= 3 {
+            return positions.allSatisfy { $0.x.isFinite && $0.y.isFinite }
+        }
+
         // Bind poses: one record per bone, `[u8 flag][u32=1][i32 parent@+5][u32 matsize=64@+9][64-B matrix@+13]`
         // then a variable trailer (empty in some versions, a null-terminated JSON metadata blob in others), so
         // the record stride isn't fixed — read the fixed head + matrix, then skip to the trailer's null.
