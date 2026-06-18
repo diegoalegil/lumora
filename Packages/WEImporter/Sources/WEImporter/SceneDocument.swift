@@ -558,8 +558,15 @@ public enum SceneGraph {
         guard let entry else { return nil }
         return (try? JSONSerialization.jsonObject(with: entry.data)) as? [String: Any]
     }
+    /// A vector property that may be a plain `"x y z"` string or a `{ "value": "x y z", "script"/"animation": … }`
+    /// binding — take the base value either way (the script/animation drives it on top at render time). Without
+    /// the dict case, a scripted scale/colour/angle would silently fall back to the default.
     private static func vec(_ value: Any?, default fallback: SceneVec3 = SceneVec3(x: 0, y: 0, z: 0)) -> SceneVec3 {
-        (value as? String).map(SceneVec3.init(parsing:)) ?? fallback
+        if let string = value as? String { return SceneVec3(parsing: string) }
+        if let object = value as? [String: Any], let string = object["value"] as? String {
+            return SceneVec3(parsing: string)
+        }
+        return fallback
     }
     private static func int(_ value: Any?) -> Int {
         (value as? NSNumber)?.intValue ?? 0

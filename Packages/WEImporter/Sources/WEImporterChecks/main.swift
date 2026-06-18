@@ -536,6 +536,17 @@ let alignPkg = buildPKG(version: "PKGV0009", files: [
 if let pkg = try? ScenePackage.read(alignPkg), let doc = try? SceneGraph.load(from: pkg) {
     Check.that("a layer's alignment is parsed", doc.layers.first?.alignment == "bottomleft")
 }
+// A scripted/animated vector property is `{ "value": "x y z", "script": … }` — the base value must survive
+// (it would otherwise fall back to the default, giving the layer the wrong scale/colour/rotation).
+let scriptedVecScene = #"{"objects":[{"name":"v","image":"models/m.json","scale":{"value":"2 3 1","script":"s.js"},"color":{"value":"0.5 0.25 0.1"}}]}"#
+let scriptedVecPkg = buildPKG(version: "PKGV0009", files: [
+    ("scene.json", Data(scriptedVecScene.utf8)), ("models/m.json", modelJSON),
+    ("materials/mat.json", materialJSON), ("materials/mytex.tex", Data("x".utf8)),
+])
+if let pkg = try? ScenePackage.read(scriptedVecPkg), let doc = try? SceneGraph.load(from: pkg), let l = doc.layers.first {
+    Check.that("a {value,script} scale uses its base value", l.scale.x == 2 && l.scale.y == 3)
+    Check.that("a {value} colour uses its base value", l.color.x == 0.5 && l.color.y == 0.25)
+}
 
 // PuppetModel.parseMesh consumes an untrusted binary `.mdl`. Its bounds guards must reject malformed input
 // with nil — never crash, read out of bounds, or hang — so a hostile package can't exploit the parser. (The
