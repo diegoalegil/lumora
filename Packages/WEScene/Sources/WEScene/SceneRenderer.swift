@@ -533,6 +533,10 @@ public final class SceneRenderer {
     /// Decode and upload every visible layer's texture once into a `PreparedScene`, so the render loop
     /// can redraw every frame without touching the disk. Placement is resolution-independent (NDC).
     public func prepare(_ document: RenderableScene, package: ScenePackage) -> PreparedScene {
+        // Aux textures (masks, normal maps, ramps) are cached by name only, so a renderer reused across scenes
+        // could hand a later package a same-named texture from an earlier one. Clear the cache per scene — it
+        // is rebuilt from `package` below, and prepare() runs once per load, not per frame.
+        auxCache.removeAll(keepingCapacity: true)
         let orthoW = Double(document.orthoWidth > 0 ? document.orthoWidth : 1920)
         let orthoH = Double(document.orthoHeight > 0 ? document.orthoHeight : 1080)
         var prepared: [PreparedLayer] = []
