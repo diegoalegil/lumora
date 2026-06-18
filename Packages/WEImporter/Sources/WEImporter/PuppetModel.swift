@@ -47,23 +47,31 @@ public enum PuppetModel {
             func f32(_ o: Int) -> Float { Float(bitPattern: u32(o)) }
             // "MDLV" magic.
             guard u32(0) == 0x564c444d else { return nil }
-            // Material path is a null-terminated string at 0x15; the vertex section's `0f 00 80 01` marker
-            // follows it (after some padding). Anchor the search past the material so a coincidental match
-            // inside the float data isn't picked up.
+            // Material path is a null-terminated string at 0x15; the vertex section follows it (after some
+            // padding), tagged by a `<fmt> 00 80 01` marker whose first byte selects the vertex layout:
+            // 0x0f is the common 80-byte vertex; 0x09 is a compact 52-byte vertex (the MDLV0016 form) that
+            // carries the same fields (position, four bone indices + four blend weights, atlas UV) at tighter
+            // offsets and drops the normal/tangent block. Anchor the search past the material so a coincidental
+            // match inside the float data isn't picked up.
             var p = 0x15
             while p < n, raw[p] != 0 { p += 1 }
-            let markerBytes: UInt32 = 0x0180000f   // bytes 0f 00 80 01, little-endian
             var marker = -1
+            var fmt: UInt8 = 0
             var s = p
             while s + 4 <= min(n, p + 96) {
-                if u32(s) == markerBytes { marker = s; break }
+                if raw[s + 1] == 0, raw[s + 2] == 0x80, raw[s + 3] == 0x01, raw[s] == 0x0f || raw[s] == 0x09 {
+                    marker = s; fmt = raw[s]; break
+                }
                 s += 1
             }
             // marker + 8 <= n so the vertex-block size read below stays in bounds (the search only guaranteed
             // the 4 marker bytes fit; this .mdl is untrusted input).
             guard marker >= 0, marker + 8 <= n else { return nil }
 
-            let stride = 80
+            // Per-layout field offsets within one vertex (position is at 0/4 in both).
+            let stride: Int, uvOff: Int, boneOff: Int, weightOff: Int
+            if fmt == 0x09 { stride = 52; uvOff = 44; boneOff = 12; weightOff = 28 }
+            else           { stride = 80; uvOff = 72; boneOff = 40; weightOff = 56 }
             let vertexBytes = Int(u32(marker + 4))
             let vertexBase = marker + 8
             guard vertexBytes > 0, vertexBytes % stride == 0, vertexBase + vertexBytes + 4 <= n else { return nil }
@@ -82,9 +90,9 @@ public enum PuppetModel {
             for v in 0 ..< vertexCount {
                 let o = vertexBase + v * stride
                 positions.append(SIMD2(f32(o), f32(o + 4)))
-                uvs.append(SIMD2(f32(o + 72), f32(o + 76)))
-                boneIdx.append(SIMD4(u32(o + 40), u32(o + 44), u32(o + 48), u32(o + 52)))
-                weights.append(SIMD4(f32(o + 56), f32(o + 60), f32(o + 64), f32(o + 68)))
+                uvs.append(SIMD2(f32(o + uvOff), f32(o + uvOff + 4)))
+                boneIdx.append(SIMD4(u32(o + boneOff), u32(o + boneOff + 4), u32(o + boneOff + 8), u32(o + boneOff + 12)))
+                weights.append(SIMD4(f32(o + weightOff), f32(o + weightOff + 4), f32(o + weightOff + 8), f32(o + weightOff + 12)))
             }
             var indices = [UInt32](); indices.reserveCapacity(indexCount)
             for i in 0 ..< indexCount {
