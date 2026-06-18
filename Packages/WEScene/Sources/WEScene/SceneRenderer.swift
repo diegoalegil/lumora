@@ -1148,6 +1148,18 @@ public final class SceneRenderer {
                 posX += o.mask.x * disp
                 posY += o.mask.y * disp
             }
+            // controlpointattract: drift toward (or, for a negative scale, away from) the control point at the
+            // emitter origin + offset. Modelled as a first-order relaxation — displacement = direction · force ·
+            // (1-e^(-age)) — so it eases to a bounded terminal offset instead of integrating to an explosion;
+            // the force falls off with distance past the threshold. Clamped to half the ortho for safety.
+            if s.cpScale != 0 {
+                let rx = spawnX - (s.origin.x + s.cpOffset.x), ry = spawnY - (s.origin.y + s.cpOffset.y)
+                let dist = max(1, (rx * rx + ry * ry).squareRoot())
+                let strength = s.cpScale / (1 + dist * dist / (s.cpThreshold * s.cpThreshold))
+                let push = max(-orthoW * 0.5, min(orthoW * 0.5, strength * (1 - exp(-age)) * 0.02))
+                posX += rx / dist * push
+                posY += ry / dist * push
+            }
             // turbulence: a stateless curl-noise drift. A two-octave sum-of-sines flow field sampled at the
             // spawn position (·scale) and age (·timescale) gives a coherent wander that neighbours share then
             // peel away from; ∝age keeps it bounded, and the result is clamped so a bad scale/speed can't fling

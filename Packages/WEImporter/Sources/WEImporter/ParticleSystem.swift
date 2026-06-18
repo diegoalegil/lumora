@@ -90,6 +90,11 @@ public struct ParticleSystem: Sendable, Equatable {
     public var colorChangeStartTime: Double
     public var colorChangeEndTime: Double
     public var turbulence: Turbulence?   // turbulence operator: a noise flow-field drift (nil = none)
+    // controlpointattract: pull/push particles toward a control point (≈ emitter origin + offset). `cpScale`
+    // is the force (negative = repel); `cpThreshold` its falloff radius. 0 scale = no operator.
+    public var cpScale: Double
+    public var cpThreshold: Double
+    public var cpOffset: SceneVec3
 
     /// Parse a particle system from its JSON object, or nil if it lacks an emitter we can drive.
     public static func parse(_ json: [String: Any], materialOverride: String? = nil) -> ParticleSystem? {
@@ -123,7 +128,7 @@ public struct ParticleSystem: Sendable, Equatable {
             turbVelScale: 0, turbVelOffset: 0, turbVelSpeed: 0 ... 0,
             hasColorChange: false, colorChangeStart: SceneVec3(x: 1, y: 1, z: 1),
             colorChangeEnd: SceneVec3(x: 1, y: 1, z: 1), colorChangeStartTime: 0, colorChangeEndTime: 1,
-            turbulence: nil)
+            turbulence: nil, cpScale: 0, cpThreshold: 0, cpOffset: SceneVec3(x: 0, y: 0, z: 0))
 
         for initializer in (json["initializer"] as? [[String: Any]]) ?? [] {
             let name = (initializer["name"] as? String) ?? ""
@@ -171,6 +176,13 @@ public struct ParticleSystem: Sendable, Equatable {
             case "oscillatealpha":    system.oscillateAlpha = oscillator(op, scaleDefault: (1, 1))
             case "oscillatesize":     system.oscillateSize = oscillator(op, scaleDefault: (1, 1))
             case "oscillateposition": system.oscillatePosition = oscillator(op, scaleDefault: (0, 0))
+            case "controlpointattract":
+                let cpId = (op["controlpoint"] as? NSNumber)?.intValue ?? 1
+                let cps = json["controlpoint"] as? [[String: Any]] ?? []
+                let cp = cps.first { ($0["id"] as? NSNumber)?.intValue == cpId }
+                system.cpScale = min(20000, max(-20000, (op["scale"] as? NSNumber)?.doubleValue ?? 0))
+                system.cpThreshold = max(1, (op["threshold"] as? NSNumber)?.doubleValue ?? 64)
+                system.cpOffset = vec3(cp?["offset"])
             case "turbulence":
                 func num(_ k: String, _ f: Double) -> Double { (op[k] as? NSNumber)?.doubleValue ?? f }
                 let sp = scalarRange(op, fallback: 0, keys: ("speedmin", "speedmax"))

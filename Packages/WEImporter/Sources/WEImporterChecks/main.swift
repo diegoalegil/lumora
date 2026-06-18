@@ -791,6 +791,14 @@ if let tb = ParticleSystem.parse(["emitter": [["name": "boxrandom", "rate": 20]]
     Check.that("turbulence parses mask/speed/scale/timescale",
                tb.turbulence?.mask.x == 1 && tb.turbulence?.speed == 25...50 && tb.turbulence?.timescale == 5)
 }
+// controlpointattract (operator): resolves the control point's offset from the particle JSON's controlpoint
+// array and parses the force/threshold.
+if let cp = ParticleSystem.parse(["emitter": [["name": "boxrandom", "rate": 20]],
+        "controlpoint": [["id": 1, "flags": 1, "offset": "100 50 0"]],
+        "operator": [["name": "controlpointattract", "controlpoint": 1, "scale": -5000, "threshold": 64]]]) {
+    Check.that("controlpointattract parses scale/threshold and the CP offset",
+               cp.cpScale == -5000 && cp.cpThreshold == 64 && cp.cpOffset.x == 100 && cp.cpOffset.y == 50)
+}
 
 // MARK: - Done
 
