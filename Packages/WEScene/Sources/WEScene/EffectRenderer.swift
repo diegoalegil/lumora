@@ -256,7 +256,10 @@ public final class EffectRenderer {
         let scalars = ShaderUniforms.parse(resolved).filter { !$0.type.hasPrefix("sampler") }
         let fragmentBuffer = UniformPacker.pack(scalars, values: effect.constants)
         let samplerCount = ShaderUniforms.parse(resolved).filter { $0.type.hasPrefix("sampler") }.count
-        let aux = Array(repeating: auxTexture, count: max(0, samplerCount - 1))
+        // `samplerCount` is parsed from untrusted shader source; cap the extra-sampler array so a shader that
+        // declares an absurd number of samplers can't drive a wildly oversized allocation. Metal binds far
+        // fewer than this per stage, and every real WE effect uses only a handful, so it's a no-op for them.
+        let aux = Array(repeating: auxTexture, count: min(32, max(0, samplerCount - 1)))
 
         return apply(pipeline: pipeline, to: input, auxTextures: aux,
                      fragmentUniforms: fragmentBuffer.isEmpty ? nil : fragmentBuffer, width: width, height: height)
@@ -264,6 +267,10 @@ public final class EffectRenderer {
 
     /// Upload tightly-packed RGBA8 bytes into a shader-readable texture (for an effect's input).
     public func makeTexture(rgba: Data, width: Int, height: Int) -> MTLTexture? {
+        // Dimensions can originate from untrusted scene data; bound them to Metal's max and require the
+        // pixel buffer to actually hold `width*height*4` bytes. Otherwise `replace(region:…)` below would
+        // read past the end of `rgba`, and an oversized request could try a multi-gigabyte texture.
+        guard width > 0, height > 0, width <= 16384, height <= 16384, rgba.count >= width * height * 4 else { return nil }
         let descriptor = MTLTextureDescriptor.texture2DDescriptor(
             pixelFormat: .rgba8Unorm, width: width, height: height, mipmapped: false)
         descriptor.usage = [.shaderRead]

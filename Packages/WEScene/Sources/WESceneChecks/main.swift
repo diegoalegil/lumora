@@ -357,6 +357,17 @@ if let upright = renderRoll("0 0 0"), let rolled = renderRoll("0 0 3.14159") {
 // Effect pass machinery: a tint effect (transpiled WE shaders) halves the input texture.
 if let effectRenderer = EffectRenderer(device: renderer.device) {
     Check.section("EffectRenderer")
+    // makeTexture's width/height can come from untrusted data; it must reject out-of-range or non-positive
+    // dimensions and a pixel buffer too small for them (which would read past the end of `rgba`), while a
+    // correctly sized buffer still uploads.
+    Check.that("makeTexture rejects oversized dimensions",
+               effectRenderer.makeTexture(rgba: Data(count: 16), width: 1_000_000, height: 1_000_000) == nil)
+    Check.that("makeTexture rejects a pixel buffer too small for its dimensions",
+               effectRenderer.makeTexture(rgba: Data(count: 4), width: 100, height: 100) == nil)
+    Check.that("makeTexture rejects non-positive dimensions",
+               effectRenderer.makeTexture(rgba: Data(count: 4), width: 0, height: 4) == nil)
+    Check.that("makeTexture accepts a correctly sized buffer",
+               effectRenderer.makeTexture(rgba: Data(count: 2 * 2 * 4), width: 2, height: 2) != nil)
     let effectFragment = """
     varying vec4 v_TexCoord;
     uniform sampler2D g_Texture0;
