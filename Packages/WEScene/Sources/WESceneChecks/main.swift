@@ -307,12 +307,27 @@ if let package = try? ScenePackage.read(pkgData),
     Check.that("end-to-end scene renders its texture (blue)", near(r, 0) && near(g, 0) && near(b, 255))
     let prepared = renderer.prepare(document, package: package)
     Check.that("prepare yields one layer", prepared.layerCount == 1)
+    // A fully static scene (one image, no parallax/keyframes/effects/particles/video/script) must report no
+    // animation, so the player renders it once and parks the loop instead of re-compositing every frame.
+    Check.that("a static single-image scene reports no animation", prepared.hasAnimation == false)
     if let still = renderer.render(prepared, width: 8, height: 8, time: 0) {
         let (pr, pg, pb) = centerRGB(still)
         Check.that("prepared still render (t=0) matches the composite (blue)", near(pr, 0) && near(pg, 0) && near(pb, 255))
     }
 } else {
     Check.that("end-to-end scene produced a frame", false)
+}
+
+// Conversely, a scene whose layer carries parallax depth DOES animate (the camera sway moves it over time),
+// so it must report animation and keep its render loop running.
+let parallaxJSON = Data(#"{"general":{"orthogonalprojection":{"width":8,"height":8},"clearcolor":"1 0 0"},"objects":[{"name":"base","image":"models/m.json","origin":"4 4 0","alpha":1,"parallaxDepth":"0.5 0.5"}]}"#.utf8)
+let parallaxPkg = buildPKG([
+    ("scene.json", parallaxJSON), ("models/m.json", modelJSON),
+    ("materials/mat.json", materialJSON), ("materials/t.tex", blueTex),
+])
+if let package = try? ScenePackage.read(parallaxPkg), let document = try? SceneGraph.load(from: package) {
+    Check.that("a parallax-depth scene reports animation (keeps the loop running)",
+               renderer.prepare(document, package: package).hasAnimation == true)
 }
 
 // Graceful degradation: an effect that blanks the layer is dropped at prepare, so the layer keeps its
