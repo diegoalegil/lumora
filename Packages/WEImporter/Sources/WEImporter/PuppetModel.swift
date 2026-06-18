@@ -12,9 +12,10 @@ public struct PuppetMesh: Sendable, Equatable {
     public let positions: [SIMD2<Float>]   // model-space x, y per vertex
     public let uvs: [SIMD2<Float>]         // atlas texcoord per vertex
     public let indices: [UInt32]           // triangle list
-    /// True when the skeleton assembled the flat atlas parts into a sane, composed figure (matrices finite,
-    /// bounds didn't blow up). False means the bone data didn't decode cleanly — the caller should keep the
-    /// static preview rather than draw scattered/exploded parts. Only verified-good puppets set this.
+    /// True when the mesh forms a sane, composed figure — either the skeleton skinned the flat atlas into
+    /// shape, or the atlas was already its own figure (a pre-assembled / near-rigid rig) and its triangles
+    /// don't tear. False means the parts didn't compose into a coherent character — the caller should keep
+    /// the static preview rather than draw scattered/exploded parts.
     public let assembled: Bool
 
     public init(positions: [SIMD2<Float>], uvs: [SIMD2<Float>], indices: [UInt32], assembled: Bool) {
@@ -48,10 +49,7 @@ public enum PuppetModel {
             // "MDLV" magic.
             guard u32(0) == 0x564c444d else { return nil }
             // Material path is a null-terminated string at 0x15; the vertex section follows it (after some
-            // padding), tagged by a `<fmt> 00 80 01` marker whose first byte selects the vertex layout:
-            // 0x0f is the common 80-byte vertex; 0x09 is a compact 52-byte vertex (the MDLV0016 form) that
-            // carries the same fields (position, four bone indices + four blend weights, atlas UV) at tighter
-            // offsets and drops the normal/tangent block. Anchor the search past the material so a coincidental
+            // padding), tagged by a vertex marker. Anchor the search past the material so a coincidental
             // match inside the float data isn't picked up.
             var p = 0x15
             while p < n, raw[p] != 0 { p += 1 }
@@ -59,8 +57,13 @@ public enum PuppetModel {
             var fmt: UInt8 = 0
             var s = p
             while s + 4 <= min(n, p + 96) {
-                if raw[s + 1] == 0, raw[s + 2] == 0x80, raw[s + 3] == 0x01, raw[s] == 0x0f || raw[s] == 0x09 {
-                    marker = s; fmt = raw[s]; break
+                // Three vertex markers seen across versions, all `<lead> 00 <kind> 01`: `0f 00 80 01` = the
+                // 80-byte vertex, `09 00 80 01` and `0e 00 81 01` = the compact 52-byte vertex (same fields,
+                // tighter offsets). A bad stride is still caught by the `vertexBytes % stride` guard below.
+                let lead = raw[s]
+                if raw[s + 1] == 0, raw[s + 3] == 0x01,
+                   (raw[s + 2] == 0x80 && (lead == 0x0f || lead == 0x09)) || (raw[s + 2] == 0x81 && lead == 0x0e) {
+                    marker = s; fmt = lead; break
                 }
                 s += 1
             }
@@ -68,10 +71,11 @@ public enum PuppetModel {
             // the 4 marker bytes fit; this .mdl is untrusted input).
             guard marker >= 0, marker + 8 <= n else { return nil }
 
-            // Per-layout field offsets within one vertex (position is at 0/4 in both).
+            // Per-layout field offsets within one vertex (position is at 0/4 in every layout). The 0x09 and
+            // 0x0e markers are the compact 52-byte vertex; 0x0f is the full 80-byte vertex.
             let stride: Int, uvOff: Int, boneOff: Int, weightOff: Int
-            if fmt == 0x09 { stride = 52; uvOff = 44; boneOff = 12; weightOff = 28 }
-            else           { stride = 80; uvOff = 72; boneOff = 40; weightOff = 56 }
+            if fmt == 0x09 || fmt == 0x0e { stride = 52; uvOff = 44; boneOff = 12; weightOff = 28 }
+            else                          { stride = 80; uvOff = 72; boneOff = 40; weightOff = 56 }
             let vertexBytes = Int(u32(marker + 4))
             let vertexBase = marker + 8
             guard vertexBytes > 0, vertexBytes % stride == 0, vertexBase + vertexBytes + 4 <= n else { return nil }
@@ -107,19 +111,22 @@ public enum PuppetModel {
                 indices.append(idx)
             }
 
-            // Deform the flat atlas into the assembled figure with linear-blend skinning: each vertex is
-            // moved by its bones' `pose ∘ bind⁻¹` transforms, weighted. If the skeleton doesn't decode to a
-            // sane result, `assemble` leaves the positions untouched and reports false so the caller keeps
-            // the static preview.
-            var ok = assemble(&positions, boneIdx: boneIdx, weights: weights, data: raw, count: n)
-            // Torn-mesh guard. A correctly composed figure keeps its triangles roughly atlas-proportioned; a
-            // mis-parsed/mis-skinned mesh leaves parts at their original spots so MANY triangles stretch
-            // across the whole figure. Counting the FRACTION of triangles whose longest edge spans over half
-            // the bounds separates the two: a coherent rig has only a stray few (a thin staff, a power line,
-            // a balloon string), a scatter has a large share. Reject only when a substantial number AND
-            // fraction are stretched — so one thin prop no longer sinks an otherwise-composed character (the
-            // old "max single edge" test rejected valid rigs that merely held a spear or trailed a wire).
-            if ok, positions.count > 2 {
+            // Skin the flat atlas into the assembled figure where the skeleton decodes; where it doesn't, the
+            // positions are left as the flat atlas — a pre-assembled or near-rigid rig is already its own
+            // figure. assemble's own result is advisory: the FINAL arbiter is the torn-mesh guard below, run on
+            // whatever positions we ended with (skinned or flat). This is what lets a near-rigid rig whose pose
+            // array we can't locate still render — its flat atlas already IS the character — while a scatter
+            // (parts packed far apart that genuinely needed a skin) is still rejected by the same guard.
+            assemble(&positions, boneIdx: boneIdx, weights: weights, data: raw, count: n)
+            // Torn-mesh guard (the sole "is this a coherent figure?" test). A correctly composed figure keeps
+            // its triangles roughly proportioned; a scatter leaves MANY triangles stretching across the whole
+            // bounds. Counting the FRACTION of triangles whose longest edge spans over half the bounds
+            // separates the two: a coherent rig has only a stray few (a thin staff, a power line, a balloon
+            // string), a scatter has a large share. Reject only when a substantial number AND fraction are
+            // stretched — so one thin prop doesn't sink an otherwise-composed character. A rejected mesh → the
+            // caller keeps the static preview.
+            var ok = positions.count > 2 && indices.count >= 3
+            if ok {
                 var lo = positions[0], hi = positions[0]
                 for p in positions { lo = SIMD2(min(lo.x, p.x), min(lo.y, p.y)); hi = SIMD2(max(hi.x, p.x), max(hi.y, p.y)) }
                 let diag = max(1, ((hi.x - lo.x) * (hi.x - lo.x) + (hi.y - lo.y) * (hi.y - lo.y)).squareRoot())
@@ -162,8 +169,8 @@ public enum PuppetModel {
     /// atlas position) and a POSE (its assembled frame); a vertex's skin transform is `pose ∘ bind⁻¹` — the
     /// bind⁻¹ takes the part from its atlas spot to the bone's local frame, the pose places it in the figure.
     /// Each vertex carries up to four (bone, weight) pairs, so the assembled position is the weighted blend
-    /// (linear-blend skinning). Rigid puppets like Toga simply weight every vertex 100% to one bone; soft
-    /// rigs blend across bones. (The stored layout shares the bind/pose Y convention, so no flip is needed.)
+    /// (linear-blend skinning). Returns true if it committed a skinned result; false (positions left as the
+    /// flat atlas) if the skeleton didn't decode — the caller then judges the flat atlas with the torn guard.
     @discardableResult
     private static func assemble(_ positions: inout [SIMD2<Float>], boneIdx: [SIMD4<UInt32>],
                                  weights: [SIMD4<Float>], data raw: UnsafeRawBufferPointer, count n: Int) -> Bool {

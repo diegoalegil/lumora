@@ -687,6 +687,51 @@ for trial in 0 ..< 200 {
 }
 Check.that("200 fuzzed .mdl buffers parse without crashing", true)
 
+// The torn-mesh guard is the sole arbiter of whether a mesh composes: a coherent figure (skinned, or a
+// near-rigid / pre-assembled flat atlas whose parts are already in place) assembles even with no decodable
+// skeleton, while a scatter (parts packed far apart) is rejected so the caller keeps the preview. Build a
+// minimal 80-byte-vertex .mdl with NO skeleton from explicit positions + triangles to exercise both.
+@MainActor func f32bytes(_ v: Float) -> Data { withUnsafeBytes(of: v.bitPattern.littleEndian) { Data($0) } }
+@MainActor func u16bytes(_ v: Int) -> Data { withUnsafeBytes(of: UInt16(v).littleEndian) { Data($0) } }
+@MainActor func flatPuppetMDL(_ verts: [SIMD2<Float>], _ tris: [(Int, Int, Int)],
+                              marker: [UInt8] = [0x0f, 0x00, 0x80, 0x01], stride: Int = 80, uvOff: Int = 72) -> Data {
+    var d = Data("MDLV0099".utf8)
+    while d.count < 0x15 { d.append(0) }
+    d.append(0)                                   // 0x15: empty material (null terminator)
+    d.append(Data(marker))                        // vertex marker
+    d.append(le32(verts.count * stride))
+    for v in verts {
+        var vb = f32bytes(v.x); vb.append(f32bytes(v.y))     // position at byte 0/4
+        while vb.count < uvOff { vb.append(0) }
+        vb.append(f32bytes(0)); vb.append(f32bytes(0))       // UV at uvOff
+        while vb.count < stride { vb.append(0) }
+        d.append(vb)
+    }
+    d.append(le32(tris.count * 3 * 2))
+    for (a, b, c) in tris { d.append(u16bytes(a)); d.append(u16bytes(b)); d.append(u16bytes(c)) }
+    return d
+}
+// A compact 5×4 grid (every triangle short relative to the figure) — a coherent figure.
+var gridVerts: [SIMD2<Float>] = []
+for r in 0 ..< 4 { for c in 0 ..< 5 { gridVerts.append(SIMD2(Float(c * 10), Float(r * 10))) } }
+var gridTris: [(Int, Int, Int)] = []
+for r in 0 ..< 3 { for c in 0 ..< 4 { let i = r * 5 + c; gridTris.append((i, i + 1, i + 5)); gridTris.append((i + 1, i + 6, i + 5)) } }
+Check.that("a coherent flat atlas with no skeleton assembles (drawn as-is)",
+           PuppetModel.parseMesh(flatPuppetMDL(gridVerts, gridTris))?.assembled == true)
+// Two tight clusters 10000 apart, every triangle bridging them — a scatter the torn guard must reject.
+let scatterVerts: [SIMD2<Float>] = [
+    SIMD2(0, 0), SIMD2(10, 0), SIMD2(0, 10), SIMD2(10, 10),
+    SIMD2(10000, 0), SIMD2(10010, 0), SIMD2(10000, 10), SIMD2(10010, 10),
+]
+var scatterTris: [(Int, Int, Int)] = []
+for k in 0 ..< 12 { scatterTris.append((k % 4, 4 + (k % 4), (k + 1) % 4)) }
+Check.that("a scattered atlas (parts packed far apart) is rejected as torn",
+           PuppetModel.parseMesh(flatPuppetMDL(scatterVerts, scatterTris))?.assembled == false)
+// The compact 52-byte vertex also ships under a `0e 00 81 01` marker (not only `09 00 80 01`); both decode
+// the same way (position at 0/4, UV at 44). A coherent grid in that form must parse and compose.
+Check.that("the 0e 00 81 01 compact-vertex marker is recognised (52-byte stride)",
+           PuppetModel.parseMesh(flatPuppetMDL(gridVerts, gridTris, marker: [0x0e, 0x00, 0x81, 0x01], stride: 52, uvOff: 44))?.assembled == true)
+
 Check.that("SceneVec3 parses a partial string", {
     let v = SceneVec3(parsing: "1.5 2"); return v.x == 1.5 && v.y == 2 && v.z == 0
 }())
