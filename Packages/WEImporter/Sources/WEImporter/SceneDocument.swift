@@ -475,11 +475,6 @@ public enum SceneGraph {
                     for (key, value) in values where constantString(value) != nil { constants[key] = constantString(value) }
                 }
             }
-            // The user's combo overrides (e.g. the blend mode the wallpaper picked) apply across all passes.
-            var entryCombos: [String: Int] = [:]
-            if let source = (entry["passes"] as? [[String: Any]])?.first?["combos"] as? [String: Any] {
-                for (key, value) in source { if let i = (value as? NSNumber)?.intValue { entryCombos[key] = i } }
-            }
             // The instance can override each material pass's texture slots — most importantly the opacity
             // mask that confines an effect to a region. The instance's `passes` mirror the effect's material
             // passes 1:1 by index, and the mask often sits on a LATER pass (a blur or local-contrast effect
@@ -495,7 +490,12 @@ public enum SceneGraph {
                       let material = json(package.entry(named: materialPath)),
                       let materialPass = (material["passes"] as? [[String: Any]])?.first,
                       let shader = materialPass["shader"] as? String else { continue }
-                var combos = entryCombos   // the material's own combos (e.g. VERTICAL on the y-pass) override
+                // This pass's instance combo overrides (the wallpaper's blend mode, a per-pass VERTICAL on a
+                // separable blur), read from its matching instance pass; the material's own combos override.
+                var combos: [String: Int] = [:]
+                if let source = (passIndex < instancePasses.count ? (instancePasses[passIndex]["combos"] as? [String: Any]) : nil) {
+                    for (key, value) in source { if let i = (value as? NSNumber)?.intValue { combos[key] = i } }
+                }
                 if let materialCombos = materialPass["combos"] as? [String: Any] {
                     for (key, value) in materialCombos { if let i = (value as? NSNumber)?.intValue { combos[key] = i } }
                 }
