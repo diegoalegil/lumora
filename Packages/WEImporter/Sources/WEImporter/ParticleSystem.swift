@@ -64,6 +64,17 @@ public struct ParticleSystem: Sendable, Equatable {
     public var oscillateAlpha: Oscillator?      // oscillatealpha: sine on alpha
     public var oscillateSize: Oscillator?       // oscillatesize: sine on size
     public var oscillatePosition: Oscillator?   // oscillateposition: sine displacement along `mask`
+    // turbulentvelocityrandom: a noise-seeded kick added to the spawn velocity. 0 scale ⇒ no kick.
+    public var turbVelScale: Double
+    public var turbVelOffset: Double
+    public var turbVelSpeed: ClosedRange<Double>
+    // colorchange: the tint multiplies from `colorChangeStart` to `colorChangeEnd` (0…1 colours) across the
+    // [startTime, endTime] life-fraction span. `hasColorChange` false ⇒ tint unchanged.
+    public var hasColorChange: Bool
+    public var colorChangeStart: SceneVec3
+    public var colorChangeEnd: SceneVec3
+    public var colorChangeStartTime: Double
+    public var colorChangeEndTime: Double
 
     /// Parse a particle system from its JSON object, or nil if it lacks an emitter we can drive.
     public static func parse(_ json: [String: Any], materialOverride: String? = nil) -> ParticleSystem? {
@@ -93,7 +104,10 @@ public struct ParticleSystem: Sendable, Equatable {
             initialRotation: 0 ... 0, angularVelocity: 0 ... 0, angularForce: 0,
             sizeStart: 1, sizeEnd: 1, sizeStartTime: 0, sizeEndTime: 1,
             hasAlphaFade: false, fadeInTime: 0, fadeOutTime: 1,
-            oscillateAlpha: nil, oscillateSize: nil, oscillatePosition: nil)
+            oscillateAlpha: nil, oscillateSize: nil, oscillatePosition: nil,
+            turbVelScale: 0, turbVelOffset: 0, turbVelSpeed: 0 ... 0,
+            hasColorChange: false, colorChangeStart: SceneVec3(x: 1, y: 1, z: 1),
+            colorChangeEnd: SceneVec3(x: 1, y: 1, z: 1), colorChangeStartTime: 0, colorChangeEndTime: 1)
 
         for initializer in (json["initializer"] as? [[String: Any]]) ?? [] {
             let name = (initializer["name"] as? String) ?? ""
@@ -112,6 +126,11 @@ public struct ParticleSystem: Sendable, Equatable {
                 // Per-axis spin; for a flat sprite only the z component (the screen-plane spin, rad/s) matters.
                 let lo = vec3(initializer["min"]).z, hi = vec3(initializer["max"]).z
                 system.angularVelocity = min(lo, hi) ... max(lo, hi)
+            case "turbulentvelocityrandom":
+                // A noise-seeded kick added to the spawn velocity. Scale clamped so it can't fling sprites.
+                system.turbVelScale = min(100, max(-100, (initializer["scale"] as? NSNumber)?.doubleValue ?? 0))
+                system.turbVelOffset = (initializer["offset"] as? NSNumber)?.doubleValue ?? 0
+                system.turbVelSpeed = scalarRange(initializer, fallback: 0, keys: ("speedmin", "speedmax"))
             default: break
             }
         }
@@ -136,6 +155,13 @@ public struct ParticleSystem: Sendable, Equatable {
             case "oscillatealpha":    system.oscillateAlpha = oscillator(op, scaleDefault: (1, 1))
             case "oscillatesize":     system.oscillateSize = oscillator(op, scaleDefault: (1, 1))
             case "oscillateposition": system.oscillatePosition = oscillator(op, scaleDefault: (0, 0))
+            case "colorchange":
+                // The tint animates from startvalue to endvalue (0…1 colours) across [starttime, endtime].
+                system.hasColorChange = true
+                system.colorChangeStart = vec3(op["startvalue"], default: 1)
+                system.colorChangeEnd = vec3(op["endvalue"], default: 1)
+                system.colorChangeStartTime = (op["starttime"] as? NSNumber)?.doubleValue ?? 0
+                system.colorChangeEndTime = (op["endtime"] as? NSNumber)?.doubleValue ?? 1
             default: break
             }
         }

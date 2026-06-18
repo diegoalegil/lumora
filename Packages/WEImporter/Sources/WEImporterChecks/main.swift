@@ -729,6 +729,22 @@ if let plain3 = ParticleSystem.parse(boxParticle) {
     Check.that("a system without oscillators leaves them nil",
                plain3.oscillateAlpha == nil && plain3.oscillateSize == nil && plain3.oscillatePosition == nil)
 }
+// turbulentvelocityrandom (initializer): a spawn-velocity kick; scale clamped to ±100. colorchange (operator):
+// tint animates start→end over a life span.
+if let tv = ParticleSystem.parse(["emitter": [["name": "boxrandom", "rate": 20]],
+        "initializer": [["name": "turbulentvelocityrandom", "offset": -0.5, "scale": 0.1, "speedmin": 0, "speedmax": 50]]]) {
+    Check.that("turbulentvelocityrandom parses scale/offset/speed",
+               tv.turbVelScale == 0.1 && tv.turbVelOffset == -0.5 && tv.turbVelSpeed == 0...50)
+}
+if let cc = ParticleSystem.parse(["emitter": [["name": "boxrandom", "rate": 20]],
+        "operator": [["name": "colorchange", "startvalue": "1 0.75 0", "endtime": 0.8, "endvalue": "1 0 0"]]]) {
+    Check.that("colorchange parses 0..1 start/end colours + endtime",
+               cc.hasColorChange && cc.colorChangeStart.y == 0.75 && cc.colorChangeEnd.x == 1 && cc.colorChangeEndTime == 0.8)
+}
+if let plain4 = ParticleSystem.parse(boxParticle) {
+    Check.that("a system without these has no turb-vel and no colorchange",
+               plain4.turbVelScale == 0 && plain4.hasColorChange == false)
+}
 
 // MARK: - Done
 

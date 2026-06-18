@@ -1071,9 +1071,15 @@ public final class SceneRenderer {
                     velY += dy / len * speed
                 }
             }
+            // turbulentvelocityrandom: a noise-seeded kick on the spawn velocity (a per-particle constant).
+            if s.turbVelScale != 0 {
+                let spd = s.turbVelSpeed.upperBound > 0 ? lerp(s.turbVelSpeed.lowerBound, s.turbVelSpeed.upperBound, rand(seed, 30)) : 100
+                velX += (rand(seed, 31) * 2 - 1 + s.turbVelOffset) * s.turbVelScale * spd
+                velY += (rand(seed, 32) * 2 - 1 + s.turbVelOffset) * s.turbVelScale * spd
+            }
             let baseSize = lerp(s.size.lowerBound, s.size.upperBound, rand(seed, 5))
             let alpha0 = lerp(s.alpha.lowerBound, s.alpha.upperBound, rand(seed, 6))
-            let color = SIMD3<Float>(Float(lerp(s.color.min.x, s.color.max.x, rand(seed, 7)) / 255),
+            var color = SIMD3<Float>(Float(lerp(s.color.min.x, s.color.max.x, rand(seed, 7)) / 255),
                                      Float(lerp(s.color.min.y, s.color.max.y, rand(seed, 8)) / 255),
                                      Float(lerp(s.color.min.z, s.color.max.z, rand(seed, 9)) / 255))
 
@@ -1121,6 +1127,15 @@ public final class SceneRenderer {
                 let disp = amp * Double(sin(oscPhase(o, 24, 25)))
                 posX += o.mask.x * disp
                 posY += o.mask.y * disp
+            }
+            // colorchange: animate the tint from start→end (0…1) across [startTime, endTime] of life. Multiply
+            // (rather than replace) so it composes with any colorrandom base; a white base makes it a replace.
+            if s.hasColorChange {
+                let ct = s.colorChangeEndTime > s.colorChangeStartTime
+                    ? max(0, min(1, (lifeFrac - s.colorChangeStartTime) / (s.colorChangeEndTime - s.colorChangeStartTime))) : 1
+                color = SIMD3(color.x * Float(lerp(s.colorChangeStart.x, s.colorChangeEnd.x, ct)),
+                              color.y * Float(lerp(s.colorChangeStart.y, s.colorChangeEnd.y, ct)),
+                              color.z * Float(lerp(s.colorChangeStart.z, s.colorChangeEnd.z, ct)))
             }
             // Screen-plane spin: a random starting orientation plus a constant angular velocity over the
             // particle's age (radians). Clamp the rate defensively so no malformed value can strobe.
