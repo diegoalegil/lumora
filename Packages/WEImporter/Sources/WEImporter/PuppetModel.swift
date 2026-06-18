@@ -94,6 +94,12 @@ public enum PuppetModel {
                 boneIdx.append(SIMD4(u32(o + boneOff), u32(o + boneOff + 4), u32(o + boneOff + 8), u32(o + boneOff + 12)))
                 weights.append(SIMD4(f32(o + weightOff), f32(o + weightOff + 4), f32(o + weightOff + 8), f32(o + weightOff + 12)))
             }
+            // The vertex block is untrusted bytes; a corrupt or variant `.mdl` can carry non-finite floats
+            // (NaN/Inf bit patterns) in the position or UV fields. Refuse such a mesh cleanly so the caller
+            // keeps the static preview instead of letting a NaN position reach the renderer.
+            guard positions.allSatisfy({ $0.x.isFinite && $0.y.isFinite }),
+                  uvs.allSatisfy({ $0.x.isFinite && $0.y.isFinite }) else { return nil }
+
             var indices = [UInt32](); indices.reserveCapacity(indexCount)
             for i in 0 ..< indexCount {
                 let idx = UInt32(raw.loadUnaligned(fromByteOffset: indexBase + i * 2, as: UInt16.self))

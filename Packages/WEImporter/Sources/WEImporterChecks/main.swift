@@ -649,6 +649,15 @@ badSize.append(Data([0x0f, 0x00, 0x80, 0x01]))                 // vertex marker
 badSize.append(Data([0xff, 0xff, 0xff, 0x7f]))                 // vertexBytes ≈ 2 GB
 badSize.append(Data(repeating: 0xab, count: 64))
 Check.that("MDLV with an out-of-range vertex size → nil (no over-read)", PuppetModel.parseMesh(badSize) == nil)
+// A structurally valid 80-byte-vertex .mdl whose single vertex position is a NaN bit pattern must be
+// rejected (nil): a non-finite vertex would otherwise scatter/NaN its way into the renderer.
+var nanMDL = Data(count: 0x74)
+nanMDL[0] = 0x4d; nanMDL[1] = 0x44; nanMDL[2] = 0x4c; nanMDL[3] = 0x56          // "MDLV"
+nanMDL[0x16] = 0x0f; nanMDL[0x17] = 0x00; nanMDL[0x18] = 0x80; nanMDL[0x19] = 0x01   // vertex marker
+nanMDL.replaceSubrange(0x1a ..< 0x1e, with: le32(80))                          // one 80-byte vertex
+nanMDL[0x1e] = 0x00; nanMDL[0x1f] = 0x00; nanMDL[0x20] = 0xc0; nanMDL[0x21] = 0x7f   // position.x = NaN
+nanMDL.replaceSubrange(0x6e ..< 0x72, with: le32(2))                           // one u16 index (value 0)
+Check.that("a .mdl with a NaN vertex position → nil", PuppetModel.parseMesh(nanMDL) == nil)
 // Fuzz: deterministic pseudo-random buffers, half of them MDLV-prefixed, must all parse without crashing —
 // reaching the assertion after the loop IS the test (an OOB/crash would abort the process before it).
 var seed: UInt64 = 0x1234_5678
