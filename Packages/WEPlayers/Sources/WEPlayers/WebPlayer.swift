@@ -61,6 +61,11 @@ public final class WebPlayer: WallpaperRenderer {
         configuration.userContentController.addUserScript(
             WKUserScript(source: Self.disableWebRTCScript, injectionTime: .atDocumentStart, forMainFrameOnly: false)
         )
+        // Make the wallpaper's animation loop pausable so an occluded/asleep web wallpaper stops spinning its
+        // requestAnimationFrame (canvas/WebGL/JS) loop at full rate instead of only muting <video>/<audio>.
+        configuration.userContentController.addUserScript(
+            WKUserScript(source: WEWebBridge.animationSuspendScript, injectionTime: .atDocumentStart, forMainFrameOnly: true)
+        )
         webView = WKWebView(frame: .zero, configuration: configuration)
         // Let the desktop show through any transparent regions instead of an opaque white page.
         webView.underPageBackgroundColor = .clear
@@ -106,13 +111,28 @@ public final class WebPlayer: WallpaperRenderer {
         }
     }
 
-    public func resume() { webView.setAllMediaPlaybackSuspended(false, completionHandler: nil) }
+    public func resume() {
+        webView.setAllMediaPlaybackSuspended(false, completionHandler: nil)
+        setAnimationPaused(false)
+    }
 
-    public func pause() { webView.setAllMediaPlaybackSuspended(true, completionHandler: nil) }
+    public func pause() {
+        webView.setAllMediaPlaybackSuspended(true, completionHandler: nil)
+        setAnimationPaused(true)
+    }
+
+    /// Toggle the injected requestAnimationFrame gate (see `WEWebBridge.animationSuspendScript`) so an
+    /// occluded wallpaper's canvas/WebGL/JS loop stops, not just its media. Guarded so it's a no-op if the
+    /// page hasn't installed the hook yet (it runs at document-start, so it's present once anything loads).
+    private func setAnimationPaused(_ paused: Bool) {
+        webView.evaluateJavaScript(
+            "window.__lumoraSetAnimationPaused && window.__lumoraSetAnimationPaused(\(paused));",
+            completionHandler: nil)
+    }
 
     public func apply(_ directive: PlaybackDirective) {
-        // Best-effort: this pauses/resumes <video>/<audio>. Throttling JS/canvas animation needs the
-        // WE JS bridge and lands with it.
+        // Pauses/resumes <video>/<audio> AND the page's requestAnimationFrame animation loop, so an
+        // occluded/asleep web wallpaper stops consuming CPU/GPU instead of spinning invisibly.
         if directive.renderingEnabled { resume() } else { pause() }
     }
 

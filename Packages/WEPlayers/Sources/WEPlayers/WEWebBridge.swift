@@ -26,4 +26,35 @@ public enum WEWebBridge {
       window.wallpaperRequestRandomFileForProperty = noop;
     })();
     """
+
+    /// Injected before the wallpaper's own scripts (document-start) to make its animation loop pausable.
+    /// It wraps `requestAnimationFrame` so that while paused — i.e. when the wallpaper is occluded/asleep —
+    /// callbacks are queued instead of scheduled, which stops the page's rAF-driven canvas/WebGL/JS loop
+    /// (just as browsers throttle rAF for a hidden tab). The host toggles it through
+    /// `window.__lumoraSetAnimationPaused(bool)`; on resume the queued callbacks are flushed to the real
+    /// `requestAnimationFrame`, restarting each loop exactly where it left off. When not paused, calls pass
+    /// straight through, so visible playback is byte-for-byte unchanged.
+    public static let animationSuspendScript: String = """
+    (function () {
+      "use strict";
+      var realRAF = window.requestAnimationFrame ? window.requestAnimationFrame.bind(window) : null;
+      if (!realRAF) { window.__lumoraSetAnimationPaused = function () {}; return; }
+      var paused = false;
+      var pending = [];
+      window.requestAnimationFrame = function (cb) {
+        if (paused) { pending.push(cb); return 0; }
+        return realRAF(cb);
+      };
+      window.__lumoraSetAnimationPaused = function (p) {
+        p = !!p;
+        if (p === paused) { return; }
+        paused = p;
+        if (!paused && pending.length) {
+          var queued = pending;
+          pending = [];
+          for (var i = 0; i < queued.length; i++) { realRAF(queued[i]); }
+        }
+      };
+    })();
+    """
 }

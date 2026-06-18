@@ -2,6 +2,7 @@
 // Provenance: clean-room verification of WEPlayers headless logic (CLT-only equivalent of unit
 // tests). The AVKit/AppKit rendering path is validated by running LumoraApp.
 import Foundation
+import JavaScriptCore
 import WECore
 import WEPlayers
 
@@ -76,6 +77,28 @@ Check.that("defines a media listener hook", WEWebBridge.bootstrapScript.contains
 Check.that("defines the random-file hook", WEWebBridge.bootstrapScript.contains("wallpaperRequestRandomFileForProperty"))
 Check.that("does not define wallpaperPropertyListener (the wallpaper owns it)",
            !WEWebBridge.bootstrapScript.contains("window.wallpaperPropertyListener ="))
+
+// The animation-suspend shim must gate requestAnimationFrame: pass through when running, queue while paused,
+// and flush the queue to the real rAF on resume — so an occluded web wallpaper's loop stops, then restarts
+// exactly where it left off with no visible change when running. Verified deterministically in JSContext.
+if let ctx = JSContext() {
+    ctx.evaluateScript("var __sched = 0; var window = {}; window.requestAnimationFrame = function (cb) { __sched++; };")
+    ctx.evaluateScript(WEWebBridge.animationSuspendScript)
+    ctx.evaluateScript("window.requestAnimationFrame(function () {});")          // running → passes through
+    Check.that("rAF passes through to the real scheduler while running",
+               ctx.evaluateScript("__sched").toInt32() == 1)
+    ctx.evaluateScript("window.__lumoraSetAnimationPaused(true); window.requestAnimationFrame(function () {}); window.requestAnimationFrame(function () {});")
+    Check.that("rAF is queued (not scheduled) while paused",
+               ctx.evaluateScript("__sched").toInt32() == 1)
+    ctx.evaluateScript("window.__lumoraSetAnimationPaused(false);")
+    Check.that("queued frames flush to the real scheduler on resume",
+               ctx.evaluateScript("__sched").toInt32() == 3)
+    ctx.evaluateScript("window.requestAnimationFrame(function () {});")          // resumed → passes through again
+    Check.that("rAF passes through again after resume",
+               ctx.evaluateScript("__sched").toInt32() == 4)
+} else {
+    Check.that("a JSContext is available to verify the animation-suspend shim", false)
+}
 
 Check.section("WebPlayer hardening")
 // The URL-scheme content rule can't block WebRTC, so the page hardening script must neuter the peer-connection
