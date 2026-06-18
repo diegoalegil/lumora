@@ -823,6 +823,14 @@ if let vx = ParticleSystem.parse(["emitter": [["name": "boxrandom", "rate": 20]]
 if let plain5 = ParticleSystem.parse(boxParticle) {
     Check.that("a system without vortex/controlpoint leaves them empty", plain5.vortex == nil && plain5.cpScale == 0)
 }
+// Hardening: malformed/out-of-range numbers from an untrusted .pkg are clamped, never propagated.
+if let hard = ParticleSystem.parse(["emitter": [["name": "boxrandom", "rate": 20, "speedmin": 0, "speedmax": 1e400]],
+        "initializer": [["name": "turbulentvelocityrandom", "scale": 99999, "offset": -50]],
+        "operator": [["name": "alphafade", "fadeintime": -3, "fadeouttime": 9]]]) {
+    Check.that("a non-finite speed is sanitised (finite range)", hard.speed.upperBound.isFinite)
+    Check.that("an out-of-range turb-vel scale/offset is clamped", hard.turbVelScale == 100 && hard.turbVelOffset == -10)
+    Check.that("fade in/out times clamp to [0,1]", hard.fadeInTime == 0 && hard.fadeOutTime == 1)
+}
 
 // MARK: - Done
 

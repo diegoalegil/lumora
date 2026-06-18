@@ -165,8 +165,8 @@ public struct ParticleSystem: Sendable, Equatable {
                 system.angularVelocity = min(lo, hi) ... max(lo, hi)
             case "turbulentvelocityrandom":
                 // A noise-seeded kick added to the spawn velocity. Scale clamped so it can't fling sprites.
-                system.turbVelScale = min(100, max(-100, (initializer["scale"] as? NSNumber)?.doubleValue ?? 0))
-                system.turbVelOffset = (initializer["offset"] as? NSNumber)?.doubleValue ?? 0
+                system.turbVelScale = clampFinite((initializer["scale"] as? NSNumber)?.doubleValue ?? 0, -100, 100, 0)
+                system.turbVelOffset = clampFinite((initializer["offset"] as? NSNumber)?.doubleValue ?? 0, -10, 10, 0)
                 system.turbVelSpeed = scalarRange(initializer, fallback: 0, keys: ("speedmin", "speedmax"))
             default: break
             }
@@ -184,8 +184,8 @@ public struct ParticleSystem: Sendable, Equatable {
                 system.sizeEndTime = num("endtime", 1)
             case "alphafade":
                 system.hasAlphaFade = true
-                system.fadeInTime = (op["fadeintime"] as? NSNumber)?.doubleValue ?? 0
-                system.fadeOutTime = (op["fadeouttime"] as? NSNumber)?.doubleValue ?? 1
+                system.fadeInTime = clampFinite((op["fadeintime"] as? NSNumber)?.doubleValue ?? 0, 0, 1, 0)
+                system.fadeOutTime = clampFinite((op["fadeouttime"] as? NSNumber)?.doubleValue ?? 1, 0, 1, 1)
             case "angularmovement":
                 // Angular acceleration about z (the screen-plane spin); clamped like the spin rate.
                 system.angularForce = min(12, max(-12, vec3(op["force"]).z))
@@ -243,6 +243,12 @@ public struct ParticleSystem: Sendable, Equatable {
                           mask: vec3(op["mask"], default: 1))
     }
 
+    /// Clamp an untrusted scalar to `[lo, hi]`, mapping a non-finite value (inf/NaN from a malformed .pkg) to
+    /// `fallback` so it can never propagate into the simulation.
+    private static func clampFinite(_ v: Double, _ lo: Double, _ hi: Double, _ fallback: Double) -> Double {
+        v.isFinite ? min(hi, max(lo, v)) : fallback
+    }
+
     /// Parse a `"x y z"` string (or a missing value → `fallback` on each axis).
     private static func vec3(_ value: Any?, default fallback: Double = 0) -> SceneVec3 {
         if let string = value as? String, !string.isEmpty { return SceneVec3(parsing: string) }
@@ -251,8 +257,11 @@ public struct ParticleSystem: Sendable, Equatable {
 
     private static func scalarRange(_ d: [String: Any], fallback: Double,
                                     keys: (String, String) = ("min", "max")) -> ClosedRange<Double> {
-        let lo = (d[keys.0] as? NSNumber)?.doubleValue ?? fallback
-        let hi = (d[keys.1] as? NSNumber)?.doubleValue ?? lo
+        // Sanitise untrusted .pkg numbers: a non-finite value (e.g. "1e400" → inf) becomes the fallback, and
+        // the magnitude is clamped so a malformed lifetime/size/speed can't propagate inf/NaN into the sim.
+        func clean(_ v: Double) -> Double { v.isFinite ? min(1_000_000, max(-1_000_000, v)) : fallback }
+        let lo = clean((d[keys.0] as? NSNumber)?.doubleValue ?? fallback)
+        let hi = clean((d[keys.1] as? NSNumber)?.doubleValue ?? lo)
         return min(lo, hi) ... max(lo, hi)
     }
 }
