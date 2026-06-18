@@ -919,6 +919,13 @@ Check.that("an object-macro reduplication stays bounded", objectBomb.utf8.count 
 let bigValue = String(repeating: "X", count: 200_000)
 let singlePassBomb = ShaderPreprocessor.resolve("#define BIG \(bigValue)\ncode \(String(repeating: "BIG ", count: 100));", combos: [:])
 Check.that("a large macro value used many times expands within bounds", singlePassBomb.utf8.count < 2_000_000)
+// A crafted shader can nest #if hundreds deep; the conditional resolver is stack-based (a frame array), so
+// it must handle this without overflowing the call stack. Reaching the assertion proves it returned; with
+// the combo true every branch is active, so the guarded body survives.
+let deepIf = String(repeating: "#if A\n", count: 2000) + "kept\n" + String(repeating: "#endif\n", count: 2000)
+Check.that("deeply nested #if resolves without crashing", ShaderPreprocessor.resolve(deepIf, combos: ["A": 1]).contains("kept"))
+// Unbalanced conditionals (a stray #endif / #else with no open #if) must be tolerated, not trap.
+Check.that("a stray #endif is tolerated", ShaderPreprocessor.resolve("#endif\nkept", combos: [:]).contains("kept"))
 // An out-of-range numeric default in a uniform's JSON annotation must not trap String(Int(_:)).
 let bigDefault = ShaderUniforms.parse("uniform float g_X; // {\"default\":1e20}")
 Check.that("an out-of-range numeric default parses without trapping", bigDefault.first?.defaultValue != nil)

@@ -599,6 +599,19 @@ if let pkg = try? ScenePackage.read(parentPkg), let doc = try? SceneGraph.load(f
                child?.origin.x == 1020 && child?.origin.y == 540)
     Check.that("an unparented object is unchanged", root?.origin.x == 640 && root?.origin.y == 360)
 }
+// A crafted scene.json can declare a PARENT CYCLE (1→2→1). The world-transform walk must terminate (its
+// depth cap stops the recursion) and still place finite origins, not spin forever or overflow the stack.
+let cycleScene = #"{"objects":[{"id":1,"name":"a","image":"models/m.json","parent":2,"origin":"10 0 0"},{"id":2,"name":"b","image":"models/m.json","parent":1,"origin":"0 10 0"}]}"#
+let cyclePkg = buildPKG(version: "PKGV0009", files: [
+    ("scene.json", Data(cycleScene.utf8)), ("models/m.json", modelJSON),
+    ("materials/mat.json", materialJSON), ("materials/mytex.tex", Data("x".utf8)),
+])
+if let pkg = try? ScenePackage.read(cyclePkg), let doc = try? SceneGraph.load(from: pkg) {
+    Check.that("a cyclic parent chain loads without hanging and yields finite origins",
+               doc.layers.allSatisfy { $0.origin.x.isFinite && $0.origin.y.isFinite })
+} else {
+    Check.that("a cyclic parent scene still loads", false)
+}
 // Full compounding: a child under a parent rotated 90° and scaled 2× has its offset scaled+rotated into the
 // parent's frame and inherits the parent's scale/angle. Parent (1000,500) scale 2 angle π/2, child local
 // origin (10,20) scale (3,3) angle 0.1 → world origin (960,520), scale (6,6), angle π/2+0.1.
