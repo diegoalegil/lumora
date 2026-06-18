@@ -338,6 +338,11 @@ public enum SceneGraph {
                 let value = (textField as? [String: Any])?["value"] as? String ?? (textField as? String)
                 let script = (textField as? [String: Any])?["script"] as? String
                 if value != nil || script != nil {
+                    // The point size comes straight from untrusted scene.json; a non-finite value (e.g.
+                    // an overflowing `1e400`) or a wild one would make the text layer's glyph quads vanish
+                    // or balloon. Keep it finite and within a sane range, defaulting like a missing field.
+                    let rawPointSize = (object["pointsize"] as? NSNumber)?.doubleValue ?? 32
+                    let pointSize = rawPointSize.isFinite ? min(4096, max(0, rawPointSize)) : 32
                     layers.append(SceneLayer(
                         name: object["name"] as? String ?? "",
                         texturePath: nil, isSolidLayer: false,
@@ -354,7 +359,7 @@ public enum SceneGraph {
                         blending: nil, shader: nil, effects: [],
                         textValue: value, textScript: script,
                         fontPath: object["font"] as? String,
-                        pointSize: (object["pointsize"] as? NSNumber)?.doubleValue ?? 32,
+                        pointSize: pointSize,
                         horizontalAlign: object["horizontalalign"] as? String))
                     continue
                 }
