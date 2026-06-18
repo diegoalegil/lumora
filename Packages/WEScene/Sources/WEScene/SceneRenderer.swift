@@ -219,7 +219,7 @@ public final class PreparedScene {
         !particles.isEmpty || layers.contains {
             $0.parallaxDepth != SIMD2<Float>(0, 0) || $0.alphaAnimation != nil
                 || $0.originAnimation != nil || !$0.effects.isEmpty || $0.videoTrack != nil
-                || $0.scriptGroup != nil
+                || $0.scriptGroup != nil || ($0.text?.isDynamic == true)
         }
     }
 }

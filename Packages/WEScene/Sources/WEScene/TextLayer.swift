@@ -38,6 +38,10 @@ final class PreparedTextLayer {
         self.horizontalAlign = horizontalAlign
     }
 
+    /// True when a SceneScript drives this text (a clock/counter), so the scene must run a render loop to
+    /// re-evaluate it; a static label has no runtime and never changes.
+    var isDynamic: Bool { runtime != nil }
+
     /// The current string (script-driven if scripted, else the static value).
     private func currentString() -> String { runtime?.updateString(staticText) ?? staticText }
 
