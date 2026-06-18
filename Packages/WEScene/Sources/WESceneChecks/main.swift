@@ -171,6 +171,22 @@ if CommandLine.arguments.count > 1 {
         }
         exit(0)
     }
+    if CommandLine.arguments.count > 2, CommandLine.arguments[2] == "mdldump" {   // dev: inspect puppet .mdl headers
+        for layer in document.layers where layer.puppetPath != nil {
+            guard let e = package.entry(named: layer.puppetPath!) else { continue }
+            let d = [UInt8](e.data); let n = d.count
+            func u32(_ o: Int) -> Int { o + 4 <= n ? Int(d[o]) | Int(d[o+1]) << 8 | Int(d[o+2]) << 16 | Int(d[o+3]) << 24 : -1 }
+            func ascii(_ o: Int, _ len: Int) -> String { o + len <= n ? (String(bytes: d[o..<o+len], encoding: .ascii) ?? "?") : "?" }
+            var mdls = -1
+            if n >= 4 { for i in stride(from: n - 4, through: 0, by: -1) where d[i] == 0x4d && d[i+1] == 0x44 && d[i+2] == 0x4c && d[i+3] == 0x53 { mdls = i; break } }
+            print("\(layer.puppetPath!): size=\(n) magic=\(ascii(0, 8)) mdls@\(mdls) ver=\(mdls >= 0 ? ascii(mdls+4, 4) : "-") bones=\(mdls >= 0 ? u32(mdls+13) : -1)")
+            if mdls >= 0, mdls + 17 + 80 <= n {
+                let s = mdls + 17
+                print("   bind@\(s): " + (s..<s+80).map { String(format: "%02x", d[$0]) }.joined(separator: " "))
+            }
+        }
+        exit(0)
+    }
     if CommandLine.arguments.count > 2, CommandLine.arguments[2] == "layers" {   // dev: dump layer placement
         print("ortho \(Int(document.orthoWidth))x\(Int(document.orthoHeight)), \(document.layers.count) layers, usesPuppet=\(document.usesPuppet):")
         for (i, l) in document.layers.enumerated() {
