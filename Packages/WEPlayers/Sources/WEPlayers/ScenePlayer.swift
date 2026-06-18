@@ -72,14 +72,19 @@ public final class ScenePlayer: WallpaperRenderer {
         previewImage = Self.loadPreview(besides: wallpaper.mainFileURL)
     }
 
-    /// Whether the scene's shaders read the audio spectrum (so we should capture system audio for it). A
-    /// substring scan of the packaged shader sources for the WE audio globals — cheap, done once on load,
-    /// and keeps the Screen Recording permission prompt off wallpapers that don't react to sound.
+    /// Whether the scene reacts to audio (so we should capture system audio for it). A cheap substring scan,
+    /// done once on load, that keeps the Screen Recording permission prompt off wallpapers that don't react to
+    /// sound. Two paths react: shaders that read the `g_AudioSpectrum` globals, and JS SceneScript visualisers
+    /// (audio-bar clones) that pull the spectrum through the audio-buffer API — the latter live inline in
+    /// scene.json or in a `scripts/*.js` file, not in a shader.
     private static func usesAudio(_ package: ScenePackage) -> Bool {
-        for entry in package.entries where entry.path.hasSuffix(".frag") || entry.path.hasSuffix(".vert") {
-            if let text = String(data: entry.data, encoding: .utf8),
-               text.contains("g_AudioSpectrum") || text.contains("audioprocessing") {
-                return true
+        for entry in package.entries {
+            guard let text = String(data: entry.data, encoding: .utf8) else { continue }
+            let path = entry.path
+            if path.hasSuffix(".frag") || path.hasSuffix(".vert") {
+                if text.contains("g_AudioSpectrum") || text.contains("audioprocessing") { return true }
+            } else if path.hasSuffix(".js") || path == "scene.json" {
+                if text.contains("registerAudioBuffers") || text.contains("AUDIO_RESOLUTION") { return true }
             }
         }
         return false
