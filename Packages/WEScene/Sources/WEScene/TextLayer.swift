@@ -74,6 +74,12 @@ final class PreparedTextLayer {
         let line = CTLineCreateWithAttributedString(attributed)
         var ascent: CGFloat = 0, descent: CGFloat = 0, leading: CGFloat = 0
         let width = CTLineGetTypographicBounds(line, &ascent, &descent, &leading)
+        // These metrics come from CoreText measuring an UNTRUSTED packaged font: a crafted .ttf (e.g. one
+        // with unitsPerEm 0 that CGFont still accepts) can yield non-finite or absurd advances, and the
+        // `Int(...)` conversions below trap on a non-finite or out-of-range value. Reject such a font here so
+        // the layer simply draws nothing instead of crashing the renderer.
+        guard width.isFinite, ascent.isFinite, descent.isFinite,
+              width >= 0, width < 1_000_000, (ascent + descent) >= 0, (ascent + descent) < 1_000_000 else { return nil }
         let pad = 6
         let w = max(1, Int(width.rounded(.up))) + pad * 2                  // logical (scene-unit) size for the quad
         let h = max(1, Int((ascent + descent).rounded(.up))) + pad * 2

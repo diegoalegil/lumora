@@ -333,6 +333,19 @@ if let package = try? ScenePackage.read(degradePkg), let document = try? SceneGr
                near(r, 0) && near(g, 0) && near(b, 255))
 }
 
+// A text layer's font comes from the untrusted package. Garbage font bytes must fall back to a system font,
+// and a font that measures to non-finite/absurd glyph metrics is rejected (the text draws nothing) rather
+// than trapping the Int conversions in the rasteriser — either way the scene still renders a frame.
+let textJSON = Data(#"{"general":{"orthogonalprojection":{"width":64,"height":64},"clearcolor":"0 0 0"},"objects":[{"name":"clock","text":"12:00","font":"fonts/bad.ttf","pointsize":24,"origin":"32 32 0","alpha":1,"visible":true,"color":"1 1 1"}]}"#.utf8)
+let textPkg = buildPKG([
+    ("scene.json", textJSON),
+    ("fonts/bad.ttf", Data([0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09])),
+])
+if let package = try? ScenePackage.read(textPkg), let document = try? SceneGraph.load(from: package) {
+    Check.that("a text scene with a garbage font renders without crashing",
+               renderer.render(document, package: package, width: 64, height: 64) != nil)
+}
+
 // A layer's roll angle (angles.z) must be honoured — it was ignored, so rolled layers drew axis-aligned.
 // A full-frame texture that's red on top and blue on the bottom, rolled 180°, must swap: the top reads blue.
 var splitPixels = Data()
