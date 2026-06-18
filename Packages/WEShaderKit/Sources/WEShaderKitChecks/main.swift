@@ -67,7 +67,7 @@ let source = """
 varying vec4 v_TexCoord;
 
 uniform sampler2D g_Texture0; // {"material":"ui_editor_properties_framebuffer","hidden":true}
-uniform sampler2D g_Texture1; // {"material":"ui_editor_properties_opacity_mask","mode":"opacitymask","default":"util/white"}
+uniform sampler2D g_Texture1; // {"material":"ui_editor_properties_opacity_mask","mode":"opacitymask","combo":"MASK","default":"util/white"}
 uniform float g_Threshold; // {"material":"ui_editor_properties_ray_threshold","default":0.5,"range":[0, 1]}
 uniform vec3 g_Color; // {"material":"ui_editor_properties_color","default":"1 0.5 0.25"}
 uniform mat4 g_ModelViewProjectionMatrix;
@@ -85,6 +85,8 @@ Check.that("finds all five uniforms", uniforms.count == 5)
 Check.that("first is sampler2D g_Texture0", uniforms[0].type == "sampler2D" && uniforms[0].name == "g_Texture0")
 Check.that("captures the material label", uniforms[0].material == "ui_editor_properties_framebuffer")
 Check.that("captures a string (asset path) default", uniforms[1].defaultValue == "util/white")
+Check.that("captures a sampler's combo annotation", uniforms[1].combo == "MASK")
+Check.that("a sampler with no combo annotation has nil combo", uniforms[0].combo == nil)
 Check.that("captures a numeric default", uniforms[2].defaultValue == "0.5")
 Check.that("captures a [min,max] range", uniforms[2].range == [0, 1])
 Check.that("captures a vector default", uniforms[3].defaultValue == "1 0.5 0.25")

@@ -12,15 +12,18 @@ public struct ShaderUniform: Sendable, Equatable {
     public let defaultValue: String?   // default as a string (number, asset path, or vector)
     public let range: [Double]?        // [min, max] from the annotation
     public let arrayCount: Int?        // N for `uniform float g_Name[N];` (e.g. audio spectra), else nil
+    public let combo: String?          // a sampler's `"combo"` — WE turns it on when a texture is bound here
 
     public init(type: String, name: String, material: String? = nil,
-                defaultValue: String? = nil, range: [Double]? = nil, arrayCount: Int? = nil) {
+                defaultValue: String? = nil, range: [Double]? = nil, arrayCount: Int? = nil,
+                combo: String? = nil) {
         self.type = type
         self.name = name
         self.material = material
         self.defaultValue = defaultValue
         self.range = range
         self.arrayCount = arrayCount
+        self.combo = combo
     }
 }
 
@@ -45,18 +48,20 @@ public enum ShaderUniforms {
             var defaultValue: String?
             var range: [Double]?
             var arrayCount: Int?
+            var combo: String?
             if let arrayRange = Range(match.range(at: 3), in: line) { arrayCount = Int(line[arrayRange]) }
             if let jsonRange = Range(match.range(at: 4), in: line),
                let json = (try? JSONSerialization.jsonObject(with: Data(line[jsonRange].utf8))) as? [String: Any] {
                 material = json["material"] as? String
                 defaultValue = stringify(json["default"])
+                combo = json["combo"] as? String
                 if let raw = json["range"] as? [Any] {
                     range = raw.compactMap { ($0 as? NSNumber)?.doubleValue }
                 }
             }
             uniforms.append(ShaderUniform(type: String(line[typeRange]), name: String(line[nameRange]),
                                           material: material, defaultValue: defaultValue, range: range,
-                                          arrayCount: arrayCount))
+                                          arrayCount: arrayCount, combo: combo))
         }
         return uniforms
     }

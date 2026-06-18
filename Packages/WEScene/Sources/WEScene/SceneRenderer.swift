@@ -912,6 +912,20 @@ public final class SceneRenderer {
                 // defaults, with the effect instance's explicit combos winning.
                 var combos = ShaderPreprocessor.comboDefaults(fragmentSource)
                 if let vertexSource { combos.merge(ShaderPreprocessor.comboDefaults(vertexSource)) { a, _ in a } }
+                // WE turns a combo ON when a texture is bound to the sampler annotated with it — e.g. an
+                // opacity-mask sampler `// {"combo":"MASK"}` enables the shader's `#if MASK` masked branch so a
+                // water/displacement effect only distorts the masked region instead of the whole layer. The
+                // scene rarely lists these combos explicitly, so derive them: for each sampler declaration with
+                // a combo whose g_Texture<n> has a non-null bound texture, force the combo on. The explicit
+                // pass combos still win (merged last).
+                let samplerDecls = (ShaderUniforms.parse(fragmentSource)
+                    + (vertexSource.map(ShaderUniforms.parse) ?? [])).filter { $0.type.hasPrefix("sampler") }
+                for decl in samplerDecls {
+                    guard let combo = decl.combo, !combo.isEmpty else { continue }
+                    let number = Int(decl.name.dropFirst("g_Texture".count)) ?? -1
+                    let bound = number == 0 || (number > 0 && number < pass.textures.count && pass.textures[number] != nil)
+                    if bound { combos[combo] = 1 }
+                }
                 combos.merge(pass.combos) { _, b in b }
 
                 var pipeline: MTLRenderPipelineState?
