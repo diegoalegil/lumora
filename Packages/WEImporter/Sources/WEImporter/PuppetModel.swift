@@ -98,22 +98,28 @@ public enum PuppetModel {
             // sane result, `assemble` leaves the positions untouched and reports false so the caller keeps
             // the static preview.
             var ok = assemble(&positions, boneIdx: boneIdx, weights: weights, data: raw, count: n)
-            // Torn-mesh guard. A correct skin keeps each triangle roughly atlas-proportioned; a mis-parsed
-            // skeleton (wrong stride for this .mdl version) leaves parts at their flat-atlas spots so the
-            // triangles bridging them stretch across the whole figure. Reject when the longest edge spans a
-            // large fraction of the assembled bounds — that's a scatter, not a character.
+            // Torn-mesh guard. A correctly composed figure keeps its triangles roughly atlas-proportioned; a
+            // mis-parsed/mis-skinned mesh leaves parts at their original spots so MANY triangles stretch
+            // across the whole figure. Counting the FRACTION of triangles whose longest edge spans over half
+            // the bounds separates the two: a coherent rig has only a stray few (a thin staff, a power line,
+            // a balloon string), a scatter has a large share. Reject only when a substantial number AND
+            // fraction are stretched — so one thin prop no longer sinks an otherwise-composed character (the
+            // old "max single edge" test rejected valid rigs that merely held a spear or trailed a wire).
             if ok, positions.count > 2 {
                 var lo = positions[0], hi = positions[0]
                 for p in positions { lo = SIMD2(min(lo.x, p.x), min(lo.y, p.y)); hi = SIMD2(max(hi.x, p.x), max(hi.y, p.y)) }
                 let diag = max(1, ((hi.x - lo.x) * (hi.x - lo.x) + (hi.y - lo.y) * (hi.y - lo.y)).squareRoot())
-                var maxEdge: Float = 0
+                var longTris = 0, totalTris = 0
                 var i = 0
                 while i + 2 < indices.count {
                     let a = Int(indices[i]), b = Int(indices[i + 1]), c = Int(indices[i + 2]); i += 3
-                    func edge(_ u: Int, _ v: Int) { let d = positions[u] - positions[v]; maxEdge = max(maxEdge, (d.x * d.x + d.y * d.y).squareRoot()) }
+                    var triMax: Float = 0
+                    func edge(_ u: Int, _ v: Int) { let d = positions[u] - positions[v]; triMax = max(triMax, (d.x * d.x + d.y * d.y).squareRoot()) }
                     edge(a, b); edge(b, c); edge(c, a)
+                    totalTris += 1
+                    if triMax / diag > 0.5 { longTris += 1 }
                 }
-                if maxEdge / diag > 0.5 { ok = false }   // longest edge spans half the figure → a scatter
+                if longTris > 8, Float(longTris) > Float(totalTris) * 0.1 { ok = false }   // many stretched triangles → a scatter
             }
 
             return PuppetMesh(positions: positions, uvs: uvs, indices: indices, assembled: ok)
