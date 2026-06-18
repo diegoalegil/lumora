@@ -767,6 +767,31 @@ if let sphere = ParticleSystem.parse(sphereParticle) {
 Check.that("rejects a system with no emitter", ParticleSystem.parse(["maxcount": 10]) == nil)
 Check.that("rejects a system with a zero spawn rate",
            ParticleSystem.parse(["emitter": [["name": "boxrandom", "rate": 0]]]) == nil)
+// Format coverage: an unknown initializer/operator name (a future or unseen WE feature) must be skipped,
+// not break parsing — the rest of the system still loads and the emitter still spawns.
+let unknownOpParticle: [String: Any] = [
+    "emitter": [["name": "boxrandom", "rate": 20]],
+    "initializer": [["name": "somefutureinitializer", "min": 1, "max": 2], ["name": "sizerandom", "min": 5, "max": 6]],
+    "operator": [["name": "somefutureoperator", "x": 1], ["name": "movement", "gravity": "0 -9 0"]],
+]
+if let sys = ParticleSystem.parse(unknownOpParticle) {
+    Check.that("an unknown initializer/operator is skipped, the system still parses", sys.rate == 20)
+    Check.that("a known operator beside an unknown one still applies", sys.gravity.y == -9 && sys.size == 5 ... 6)
+}
+// An oscillate* operator's phase/scale come from untrusted JSON. A non-finite value (inf) must be clamped
+// at parse so sin(phase) can't go NaN and fling a sprite to a non-finite position — i.e. never a scatter.
+let infOscParticle: [String: Any] = [
+    "emitter": [["name": "boxrandom", "rate": 20]],
+    "operator": [["name": "oscillateposition", "phasemin": Double.infinity, "phasemax": Double.infinity,
+                  "scalemin": -Double.infinity, "scalemax": Double.infinity, "frequencymax": Double.infinity, "mask": "1 1 0"]],
+]
+if let osc = ParticleSystem.parse(infOscParticle), let o = osc.oscillatePosition {
+    Check.that("a non-finite oscillator phase is clamped finite", o.phase.lowerBound.isFinite && o.phase.upperBound.isFinite)
+    Check.that("a non-finite oscillator scale is clamped finite", o.scale.lowerBound.isFinite && o.scale.upperBound.isFinite)
+    Check.that("a non-finite oscillator frequency is clamped finite", o.freq.lowerBound.isFinite && o.freq.upperBound.isFinite)
+} else {
+    Check.that("an oscillateposition system parses", false)
+}
 // Rotation: rotationrandom gives a full-circle starting orientation; angularvelocityrandom's z is the
 // screen-plane spin rate (rad/s). A system with neither leaves both ranges at zero (no spin).
 let spinParticle: [String: Any] = [

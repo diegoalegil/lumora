@@ -234,9 +234,14 @@ public struct ParticleSystem: Sendable, Equatable {
     private static func oscillator(_ op: [String: Any], scaleDefault: (Double, Double)) -> Oscillator {
         func num(_ k: String, _ f: Double) -> Double { (op[k] as? NSNumber)?.doubleValue ?? f }
         let fmin = num("frequencymin", 1), fmax = num("frequencymax", fmin)
-        let smin = num("scalemin", scaleDefault.0), smax = num("scalemax", scaleDefault.1)
-        let pmin = num("phasemin", 0), pmax = num("phasemax", 1)
-        func clampF(_ v: Double) -> Double { max(0, min(30, v)) }
+        // Scale and phase come from untrusted .pkg JSON; a non-finite value (e.g. `1e400` → inf) would make
+        // sin(phase) NaN downstream and fling a sprite to a non-finite position (a scatter). Sanitise both to
+        // finite, generous bounds — a no-op for real values (small multipliers / a handful of cycles).
+        let smin = clampFinite(num("scalemin", scaleDefault.0), -100_000, 100_000, scaleDefault.0)
+        let smax = clampFinite(num("scalemax", scaleDefault.1), -100_000, 100_000, scaleDefault.1)
+        let pmin = clampFinite(num("phasemin", 0), -1024, 1024, 0)
+        let pmax = clampFinite(num("phasemax", 1), -1024, 1024, 1)
+        func clampF(_ v: Double) -> Double { v.isFinite ? max(0, min(30, v)) : 1 }
         return Oscillator(freq: clampF(min(fmin, fmax)) ... clampF(max(fmin, fmax)),
                           scale: min(smin, smax) ... max(smin, smax),
                           phase: min(pmin, pmax) ... max(pmin, pmax),
