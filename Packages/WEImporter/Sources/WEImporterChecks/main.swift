@@ -204,6 +204,20 @@ Check.that("a packaged scene with only scene.pkg resolves to the package", {
     return false
 }())
 
+// An extracted scene folder that ships BOTH the loose scene.json and the package must still resolve to the
+// package (ScenePlayer reads PKGV, not loose JSON) — preferring scene.pkg whenever it exists.
+let bothScene = tmpRoot.appendingPathComponent("both_scene", isDirectory: true)
+makeDir(bothScene)
+write(#"{"type":"scene","file":"scene.json","title":"Both"}"#, to: bothScene.appendingPathComponent("project.json"))
+write("{}", to: bothScene.appendingPathComponent("scene.json"))
+write("PKG", to: bothScene.appendingPathComponent("scene.pkg"))
+Check.that("a scene folder with both scene.json and scene.pkg prefers the package", {
+    if case .success(let w) = scanner.scan(folderURL: bothScene) {
+        return w.mainFileURL.lastPathComponent == "scene.pkg"
+    }
+    return false
+}())
+
 // A scene with neither the named source nor a package is still a missing asset.
 let emptyScene = tmpRoot.appendingPathComponent("empty_scene", isDirectory: true)
 makeDir(emptyScene)

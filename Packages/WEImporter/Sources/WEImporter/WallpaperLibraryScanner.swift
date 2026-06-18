@@ -42,11 +42,12 @@ public struct WallpaperLibraryScanner: Sendable {
         let ref = WallpaperRef(folderURL: folderURL, manifest: manifest)
         do {
             var resolved = try router.resolve(ref: ref, manifest: manifest)
-            // A scene wallpaper's manifest names its unpacked source (`scene.json`), but Workshop content
-            // ships the scene packaged as `scene.pkg` with no loose `scene.json`. When the named file is
-            // absent, fall back to the packaged scene — which is what ScenePlayer actually reads — so a
-            // perfectly playable scene isn't skipped as a missing asset.
-            if resolved.type == .scene, !FileManager.default.fileExists(atPath: resolved.mainFileURL.path) {
+            // A scene wallpaper's manifest names its unpacked source (`scene.json`), but ScenePlayer reads the
+            // packaged `scene.pkg` (a PKGV container). PREFER scene.pkg whenever it exists — not only when the
+            // loose scene.json is absent: an extracted folder shipping BOTH would otherwise resolve to the
+            // loose scene.json, which ScenePlayer can't read as PKGV, marking the scene playable then failing
+            // to a fallback fill. Workshop content (pkg only) is unaffected.
+            if resolved.type == .scene {
                 let packaged = folderURL.appendingPathComponent("scene.pkg")
                 if FileManager.default.fileExists(atPath: packaged.path) {
                     resolved = ResolvedWallpaper(ref: ref, type: .scene, manifest: manifest, mainFileURL: packaged)
