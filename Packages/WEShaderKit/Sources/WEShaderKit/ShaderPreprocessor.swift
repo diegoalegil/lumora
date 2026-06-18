@@ -205,9 +205,17 @@ public enum ShaderPreprocessor {
         let pattern = "(?<![\\w.])\(NSRegularExpression.escapedPattern(for: word))(?![\\w])"
         guard let regex = try? NSRegularExpression(pattern: pattern) else { return text }
         var out = text
+        let grow = max(0, replacement.utf8.count - word.utf8.count)
         for _ in 0..<8 {
-            guard out.range(of: pattern, options: .regularExpression) != nil else { break }
-            let replaced = regex.stringByReplacingMatches(in: out, range: NSRange(out.startIndex..., in: out),
+            let range = NSRange(out.startIndex..., in: out)
+            let matches = regex.numberOfMatches(in: out, range: range)
+            guard matches > 0 else { break }
+            // A single `stringByReplacingMatches` expands EVERY occurrence in one allocation, so a macro
+            // whose value is large and occurs many times could allocate gigabytes before the post-pass size
+            // check below ever runs. Project the resulting size first and stop early if it would blow past
+            // the cap — leaving the text un-substituted (graceful) rather than risking an out-of-memory abort.
+            guard out.utf8.count + matches * grow <= maxExpansionBytes else { break }
+            let replaced = regex.stringByReplacingMatches(in: out, range: range,
                                                           withTemplate: NSRegularExpression.escapedTemplate(for: replacement))
             if replaced == out { break }
             out = replaced

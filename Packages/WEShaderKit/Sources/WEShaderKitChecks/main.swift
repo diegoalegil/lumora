@@ -914,6 +914,11 @@ Check.that("a reduplicating macro expansion stays bounded", macroBomb.utf8.count
 // be size-bounded too, not only the outer pass loop.
 let objectBomb = ShaderPreprocessor.resolve("#define X X X\nv = X;", combos: [:])
 Check.that("an object-macro reduplication stays bounded", objectBomb.utf8.count < 5_000_000)
+// A different shape: ONE macro whose value is large, used many times on a line — a single substitution
+// expands every occurrence in one allocation, so the projected-size guard must stop it before it balloons.
+let bigValue = String(repeating: "X", count: 200_000)
+let singlePassBomb = ShaderPreprocessor.resolve("#define BIG \(bigValue)\ncode \(String(repeating: "BIG ", count: 100));", combos: [:])
+Check.that("a large macro value used many times expands within bounds", singlePassBomb.utf8.count < 2_000_000)
 // An out-of-range numeric default in a uniform's JSON annotation must not trap String(Int(_:)).
 let bigDefault = ShaderUniforms.parse("uniform float g_X; // {\"default\":1e20}")
 Check.that("an out-of-range numeric default parses without trapping", bigDefault.first?.defaultValue != nil)
