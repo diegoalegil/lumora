@@ -547,6 +547,20 @@ if let pkg = try? ScenePackage.read(scriptedVecPkg), let doc = try? SceneGraph.l
     Check.that("a {value,script} scale uses its base value", l.scale.x == 2 && l.scale.y == 3)
     Check.that("a {value} colour uses its base value", l.color.x == 0.5 && l.color.y == 0.25)
 }
+// Parent hierarchy: a child's origin is relative to its parent's world position (plus the parent's scale on
+// the offset). A parent at (1000,500) scale 2 with a child at local (10,20) → world (1020,540).
+let parentScene = #"{"objects":[{"id":1,"name":"holder","image":"models/m.json","origin":"1000 500 0","scale":"2 2 1"},{"id":2,"name":"child","image":"models/m.json","parent":1,"origin":"10 20 0"},{"id":3,"name":"root","image":"models/m.json","origin":"640 360 0"}]}"#
+let parentPkg = buildPKG(version: "PKGV0009", files: [
+    ("scene.json", Data(parentScene.utf8)), ("models/m.json", modelJSON),
+    ("materials/mat.json", materialJSON), ("materials/mytex.tex", Data("x".utf8)),
+])
+if let pkg = try? ScenePackage.read(parentPkg), let doc = try? SceneGraph.load(from: pkg) {
+    let child = doc.layers.first { $0.name == "child" }
+    let root = doc.layers.first { $0.name == "root" }
+    Check.that("a parented child resolves to its parent's world origin + scaled offset",
+               child?.origin.x == 1020 && child?.origin.y == 540)
+    Check.that("an unparented object is unchanged", root?.origin.x == 640 && root?.origin.y == 360)
+}
 
 // PuppetModel.parseMesh consumes an untrusted binary `.mdl`. Its bounds guards must reject malformed input
 // with nil — never crash, read out of bounds, or hang — so a hostile package can't exploit the parser. (The

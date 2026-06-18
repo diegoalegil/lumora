@@ -274,13 +274,35 @@ public enum SceneGraph {
         var layers: [SceneLayer] = []
         var particleSystems: [ParticleSystem] = []
         var usesPuppet = false
-        for object in root["objects"] as? [[String: Any]] ?? [] {
+
+        // WE objects form a transform hierarchy: a child carries a `parent` (object id) and its `origin` is
+        // relative to the parent's world position. Flattening each object with its local origin as absolute
+        // would scatter every parented layer (a character anchored to an off-screen holder lands off-screen).
+        // Index objects by id and resolve world origins up the parent chain — translation plus the parent's
+        // scale applied to the child offset (parent rotation is rare on the anchor/holder objects that get
+        // parented, so it's left for a later refinement). A depth cap guards against cyclic `parent` ids.
+        let objects = root["objects"] as? [[String: Any]] ?? []
+        var objectsByID: [Int: [String: Any]] = [:]
+        for object in objects where (object["id"] as? NSNumber) != nil {
+            objectsByID[(object["id"] as! NSNumber).intValue] = object
+        }
+        func worldOrigin(_ object: [String: Any], _ depth: Int) -> SceneVec3 {
+            let local = originVec(object["origin"])
+            guard depth < 16, let pid = (object["parent"] as? NSNumber)?.intValue,
+                  pid != (object["id"] as? NSNumber)?.intValue, let parent = objectsByID[pid]
+            else { return local }
+            let pw = worldOrigin(parent, depth + 1)
+            let ps = vec(parent["scale"], default: SceneVec3(x: 1, y: 1, z: 1))
+            return SceneVec3(x: pw.x + ps.x * local.x, y: pw.y + ps.y * local.y, z: pw.z + ps.z * local.z)
+        }
+
+        for object in objects {
             // A particle object spawns sprites instead of drawing an image; collect it and move on.
             if let particlePath = object["particle"] as? String,
                isVisible(object["visible"]),
                let particleJSON = json(package.entry(named: particlePath)),
                var system = ParticleSystem.parse(particleJSON) {
-                let objectOrigin = originVec(object["origin"])
+                let objectOrigin = worldOrigin(object, 0)
                 system.origin = SceneVec3(x: system.origin.x + objectOrigin.x,
                                           y: system.origin.y + objectOrigin.y,
                                           z: system.origin.z + objectOrigin.z)
@@ -296,7 +318,7 @@ public enum SceneGraph {
                     layers.append(SceneLayer(
                         name: object["name"] as? String ?? "",
                         texturePath: nil, isSolidLayer: false,
-                        origin: originVec(object["origin"]),
+                        origin: worldOrigin(object, 0),
                         scale: vec(object["scale"], default: SceneVec3(x: 1, y: 1, z: 1)),
                         size: (object["size"] as? String).map(SceneVec3.init(parsing:)),
                         angles: vec(object["angles"]),
@@ -329,7 +351,7 @@ public enum SceneGraph {
                 name: object["name"] as? String ?? "",
                 texturePath: material.texture,
                 isSolidLayer: imagePath.contains("solidlayer"),
-                origin: originVec(object["origin"]),
+                origin: worldOrigin(object, 0),
                 scale: vec(object["scale"], default: SceneVec3(x: 1, y: 1, z: 1)),
                 size: (object["size"] as? String).map(SceneVec3.init(parsing:)),
                 angles: vec(object["angles"]),
