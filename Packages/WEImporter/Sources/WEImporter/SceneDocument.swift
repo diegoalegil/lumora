@@ -476,18 +476,17 @@ public enum SceneGraph {
             if let source = (entry["passes"] as? [[String: Any]])?.first?["combos"] as? [String: Any] {
                 for (key, value) in source { if let i = (value as? NSNumber)?.intValue { entryCombos[key] = i } }
             }
-            // The instance can override the material's texture slots — most importantly the opacity mask
-            // that confines a ripple/distortion to a region. The material often declares only the framebuffer
-            // and a normal map; without the instance's mask the effect would smear the whole layer.
-            var entryTextures: [String?] = []
-            if let pass = (entry["passes"] as? [[String: Any]])?.first, let t = pass["textures"] as? [Any] {
-                entryTextures = t.map { $0 as? String }
-            }
+            // The instance can override each material pass's texture slots — most importantly the opacity
+            // mask that confines an effect to a region. The instance's `passes` mirror the effect's material
+            // passes 1:1 by index, and the mask often sits on a LATER pass (a blur or local-contrast effect
+            // binds it on its combine pass, not the first), so the override must be read per-pass; reading
+            // only the first pass's slots drops the mask and the effect smears the whole layer.
+            let instancePasses = (entry["passes"] as? [[String: Any]]) ?? []
 
             var passes: [EffectPass] = []
             // Cap the pass count: effect.json is untrusted, and a real effect graph is small (a 4-pass blur is
             // the heaviest), so an unbounded list could only be an attempt to exhaust memory at prepare time.
-            for jsonPass in effectPasses.prefix(16) {
+            for (passIndex, jsonPass) in effectPasses.prefix(16).enumerated() {
                 guard let materialPath = jsonPass["material"] as? String,
                       let material = json(package.entry(named: materialPath)),
                       let materialPass = (material["passes"] as? [[String: Any]])?.first,
@@ -497,8 +496,10 @@ public enum SceneGraph {
                     for (key, value) in materialCombos { if let i = (value as? NSNumber)?.intValue { combos[key] = i } }
                 }
                 var textures = (materialPass["textures"] as? [Any])?.map { $0 as? String } ?? []
-                // Layer the instance's non-null texture overrides on top of the material defaults (a slot the
+                // Layer THIS pass's instance texture overrides on top of the material defaults (a slot the
                 // instance leaves null keeps the material's), extending the list for slots the material omits.
+                let entryTextures = (passIndex < instancePasses.count
+                    ? (instancePasses[passIndex]["textures"] as? [Any]) : nil)?.map { $0 as? String } ?? []
                 for (i, override) in entryTextures.enumerated() {
                     guard let override else { if i >= textures.count { textures.append(nil) }; continue }
                     if i < textures.count { textures[i] = override } else { textures.append(override) }
