@@ -716,6 +716,19 @@ if let am = ParticleSystem.parse(["emitter": [["name": "boxrandom", "rate": 20]]
 if let plain2 = ParticleSystem.parse(boxParticle) {
     Check.that("a system without angularmovement has no angular force", plain2.angularForce == 0)
 }
+// oscillate operators: a sine modulator on alpha / size / position. Frequencies clamp to ≤30 Hz.
+if let osc = ParticleSystem.parse(["emitter": [["name": "boxrandom", "rate": 20]], "operator": [
+        ["name": "oscillatealpha", "frequencymin": 3, "frequencymax": 7, "scalemin": 0.5, "scalemax": 0.8],
+        ["name": "oscillateposition", "mask": "1 0.5 0", "frequencymin": 1, "scalemin": 20, "scalemax": 35],
+        ["name": "oscillatesize", "frequencymin": 999, "scalemin": 0.9, "scalemax": 1.1]]]) {
+    Check.that("oscillatealpha parses freq + scale", osc.oscillateAlpha?.freq == 3...7 && osc.oscillateAlpha?.scale == 0.5...0.8)
+    Check.that("oscillateposition parses its mask", osc.oscillatePosition?.mask.x == 1 && osc.oscillatePosition?.mask.y == 0.5)
+    Check.that("an out-of-range oscillate frequency is clamped to 30", osc.oscillateSize?.freq.upperBound == 30)
+}
+if let plain3 = ParticleSystem.parse(boxParticle) {
+    Check.that("a system without oscillators leaves them nil",
+               plain3.oscillateAlpha == nil && plain3.oscillateSize == nil && plain3.oscillatePosition == nil)
+}
 
 // MARK: - Done
 

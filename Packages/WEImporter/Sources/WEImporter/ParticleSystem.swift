@@ -14,6 +14,21 @@ public struct ParticleSystem: Sendable, Equatable {
         public init(min: SceneVec3, max: SceneVec3) { self.min = min; self.max = max }
     }
 
+    /// A sinusoidal modulator (oscillatealpha / oscillatesize / oscillateposition). Each particle picks a
+    /// frequency in `freq` (Hz) and a phase in `phase` (cycles). For alpha/size the 0…1 sine envelope is
+    /// mapped into the `scale` multiplier range; for position `scale` is the displacement amplitude and `mask`
+    /// selects which axes move. nil ⇒ the operator is absent (no modulation), so unaffected systems are
+    /// byte-identical.
+    public struct Oscillator: Sendable, Equatable {
+        public var freq: ClosedRange<Double>
+        public var scale: ClosedRange<Double>
+        public var phase: ClosedRange<Double>
+        public var mask: SceneVec3
+        public init(freq: ClosedRange<Double>, scale: ClosedRange<Double>, phase: ClosedRange<Double>, mask: SceneVec3) {
+            self.freq = freq; self.scale = scale; self.phase = phase; self.mask = mask
+        }
+    }
+
     public var maxCount: Int            // live particle cap
     public var rate: Double             // particles spawned per second
     public var origin: SceneVec3        // emitter centre (scene units)
@@ -46,6 +61,9 @@ public struct ParticleSystem: Sendable, Equatable {
     public var hasAlphaFade: Bool
     public var fadeInTime: Double
     public var fadeOutTime: Double
+    public var oscillateAlpha: Oscillator?      // oscillatealpha: sine on alpha
+    public var oscillateSize: Oscillator?       // oscillatesize: sine on size
+    public var oscillatePosition: Oscillator?   // oscillateposition: sine displacement along `mask`
 
     /// Parse a particle system from its JSON object, or nil if it lacks an emitter we can drive.
     public static func parse(_ json: [String: Any], materialOverride: String? = nil) -> ParticleSystem? {
@@ -74,7 +92,8 @@ public struct ParticleSystem: Sendable, Equatable {
             alpha: 1 ... 1, gravity: SceneVec3(x: 0, y: 0, z: 0), drag: 0,
             initialRotation: 0 ... 0, angularVelocity: 0 ... 0, angularForce: 0,
             sizeStart: 1, sizeEnd: 1, sizeStartTime: 0, sizeEndTime: 1,
-            hasAlphaFade: false, fadeInTime: 0, fadeOutTime: 1)
+            hasAlphaFade: false, fadeInTime: 0, fadeOutTime: 1,
+            oscillateAlpha: nil, oscillateSize: nil, oscillatePosition: nil)
 
         for initializer in (json["initializer"] as? [[String: Any]]) ?? [] {
             let name = (initializer["name"] as? String) ?? ""
@@ -114,10 +133,27 @@ public struct ParticleSystem: Sendable, Equatable {
             case "angularmovement":
                 // Angular acceleration about z (the screen-plane spin); clamped like the spin rate.
                 system.angularForce = min(12, max(-12, vec3(op["force"]).z))
+            case "oscillatealpha":    system.oscillateAlpha = oscillator(op, scaleDefault: (1, 1))
+            case "oscillatesize":     system.oscillateSize = oscillator(op, scaleDefault: (1, 1))
+            case "oscillateposition": system.oscillatePosition = oscillator(op, scaleDefault: (0, 0))
             default: break
             }
         }
         return system.rate > 0 ? system : nil
+    }
+
+    /// Build an `Oscillator` from an oscillate* operator dict. Frequencies clamp to ≤30 Hz so a bad value
+    /// can't strobe; phase defaults to a 0…1 spread (so particles desync naturally) unless the op pins it.
+    private static func oscillator(_ op: [String: Any], scaleDefault: (Double, Double)) -> Oscillator {
+        func num(_ k: String, _ f: Double) -> Double { (op[k] as? NSNumber)?.doubleValue ?? f }
+        let fmin = num("frequencymin", 1), fmax = num("frequencymax", fmin)
+        let smin = num("scalemin", scaleDefault.0), smax = num("scalemax", scaleDefault.1)
+        let pmin = num("phasemin", 0), pmax = num("phasemax", 1)
+        func clampF(_ v: Double) -> Double { max(0, min(30, v)) }
+        return Oscillator(freq: clampF(min(fmin, fmax)) ... clampF(max(fmin, fmax)),
+                          scale: min(smin, smax) ... max(smin, smax),
+                          phase: min(pmin, pmax) ... max(pmin, pmax),
+                          mask: vec3(op["mask"], default: 1))
     }
 
     /// Parse a `"x y z"` string (or a missing value → `fallback` on each axis).

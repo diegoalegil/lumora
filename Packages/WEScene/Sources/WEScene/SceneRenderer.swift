@@ -1081,12 +1081,12 @@ public final class SceneRenderer {
             // velocity over `age` is ∫v₀e^(-drag·t)dt = v₀·(1-e^(-drag·age))/drag, falling back to v₀·age when
             // there's no drag (the limit as drag→0), so an undragged system is byte-identical.
             let travel = s.drag > 0 ? (1 - exp(-s.drag * age)) / s.drag : age
-            let posX = spawnX + velX * travel + 0.5 * s.gravity.x * age * age
-            let posY = spawnY + velY * travel + 0.5 * s.gravity.y * age * age
+            var posX = spawnX + velX * travel + 0.5 * s.gravity.x * age * age
+            var posY = spawnY + velY * travel + 0.5 * s.gravity.y * age * age
             let lifeFrac = age / life
             // Alpha over life: the system's explicit alphafade (fade in over [0,fadeIn], out over [fadeOut,1])
             // when it ships one, else a generic gentle fade so a system without the operator still eases in/out.
-            let fade: Float
+            var fade: Float
             if s.hasAlphaFade {
                 var a = 1.0
                 if s.fadeInTime > 0, lifeFrac < s.fadeInTime { a = lifeFrac / s.fadeInTime }
@@ -1099,7 +1099,29 @@ public final class SceneRenderer {
             // life-fraction span, holding flat outside it. Default ramp (1→1) leaves the size unchanged.
             let sizeT = s.sizeEndTime > s.sizeStartTime
                 ? max(0, min(1, (lifeFrac - s.sizeStartTime) / (s.sizeEndTime - s.sizeStartTime))) : 1
-            let size = baseSize * lerp(s.sizeStart, s.sizeEnd, sizeT)
+            var size = baseSize * lerp(s.sizeStart, s.sizeEnd, sizeT)
+            // Oscillators (oscillatealpha/size/position): a per-particle sine at frequency f, phase ph. Alpha
+            // and size map the 0…1 envelope into their multiplier range; position displaces along its mask by
+            // amp·sin. Each picks f/phase/amp from its parsed ranges via its own rand channels (20–26).
+            func oscPhase(_ o: ParticleSystem.Oscillator, _ fc: UInt32, _ pc: UInt32) -> Float {
+                let f = lerp(o.freq.lowerBound, o.freq.upperBound, rand(seed, fc))
+                let ph = 2 * .pi * lerp(o.phase.lowerBound, o.phase.upperBound, rand(seed, pc))
+                return Float(2 * .pi * f * age + ph)
+            }
+            if let o = s.oscillateAlpha {
+                let env = 0.5 + 0.5 * Double(sin(oscPhase(o, 20, 21)))
+                fade *= Float(max(0, min(4, lerp(o.scale.lowerBound, o.scale.upperBound, env))))
+            }
+            if let o = s.oscillateSize {
+                let env = 0.5 + 0.5 * Double(sin(oscPhase(o, 22, 23)))
+                size *= max(0, min(4, lerp(o.scale.lowerBound, o.scale.upperBound, env)))
+            }
+            if let o = s.oscillatePosition {
+                let amp = max(-5000, min(5000, lerp(o.scale.lowerBound, o.scale.upperBound, rand(seed, 26))))
+                let disp = amp * Double(sin(oscPhase(o, 24, 25)))
+                posX += o.mask.x * disp
+                posY += o.mask.y * disp
+            }
             // Screen-plane spin: a random starting orientation plus a constant angular velocity over the
             // particle's age (radians). Clamp the rate defensively so no malformed value can strobe.
             let angle0 = lerp(s.initialRotation.lowerBound, s.initialRotation.upperBound, rand(seed, 13))
