@@ -969,4 +969,11 @@ Check.that("packs a float[16] array uniform to 64 contiguous bytes", packedArr.c
 Check.that("array element values land at their float index",
            packedArr.withUnsafeBytes { $0.bindMemory(to: Float.self)[3] } == 0.75)
 
+// A hostile shader can declare an absurd array size. Packing it must stay bounded — never overflow the
+// `components * count` arithmetic or attempt a multi-gigabyte allocation — by capping the element count.
+let hugeArray = UniformPacker.pack([ShaderUniform(type: "float", name: "g_Big", arrayCount: 2_000_000_000)], values: [:])
+Check.that("a huge float[N] count is capped, not allocated wholesale", hugeArray.count <= 65536 * 4 + 16)
+let maxArray = UniformPacker.pack([ShaderUniform(type: "vec4", name: "g_Max", arrayCount: Int.max)], values: [:])
+Check.that("an Int.max array count packs without trapping the multiply", maxArray.count <= 65536 * 16 + 16)
+
 Check.summarize()

@@ -14,7 +14,11 @@ public enum UniformPacker {
         var maxAlignment = 4
         for uniform in uniforms {
             let info = layout(uniform.type)
-            let count = max(1, uniform.arrayCount ?? 1)   // N for `float g_Name[N]` (audio spectra), else 1
+            // `arrayCount` is the `[N]` from an untrusted shader. Cap it before the component arithmetic and
+            // buffer growth below: a hostile `g_X[2000000000]` (or one near Int.max) would otherwise overflow
+            // `components * count` or ask `fit` for a multi-gigabyte allocation. Real WE array uniforms (audio
+            // spectra, small tables) are orders of magnitude below this ceiling, so it's a no-op for them.
+            let count = min(65536, max(1, uniform.arrayCount ?? 1))
             maxAlignment = max(maxAlignment, info.alignment)
             buffer.pad(to: align(buffer.count, to: info.alignment))
             let components: [Float]
