@@ -234,15 +234,23 @@ public struct RenderableScene: Sendable, Equatable {
     /// needs skeletal mesh deformation the renderer doesn't do yet, so drawing its layer atlas raw shows
     /// scattered body parts — the player shows the static preview instead.
     public let usesPuppet: Bool
+    /// Scene-level bloom (`general.bloom`): strength scales the additive glow, threshold is the luma above
+    /// which a pixel blooms. Strength 0 (the default, and most scenes) means no bloom — the renderer skips the
+    /// extra pass entirely, so those scenes are unaffected.
+    public let bloomStrength: Double
+    public let bloomThreshold: Double
 
     public init(orthoWidth: Int, orthoHeight: Int, clearColor: SceneVec3,
-                layers: [SceneLayer], particleSystems: [ParticleSystem] = [], usesPuppet: Bool = false) {
+                layers: [SceneLayer], particleSystems: [ParticleSystem] = [], usesPuppet: Bool = false,
+                bloomStrength: Double = 0, bloomThreshold: Double = 0.8) {
         self.orthoWidth = orthoWidth
         self.orthoHeight = orthoHeight
         self.clearColor = clearColor
         self.layers = layers
         self.particleSystems = particleSystems
         self.usesPuppet = usesPuppet
+        self.bloomStrength = bloomStrength
+        self.bloomThreshold = bloomThreshold
     }
 }
 
@@ -270,6 +278,11 @@ public enum SceneGraph {
         let general = root["general"] as? [String: Any] ?? [:]
         let ortho = general["orthogonalprojection"] as? [String: Any] ?? [:]
         let clearColor = SceneVec3(parsing: general["clearcolor"] as? String ?? "0 0 0")
+        // Scene-level bloom: only when the flag is on AND the strength is meaningful (many scenes ship
+        // `bloom:true` with strength 0). Clamp both against malformed values.
+        let bloomOn = (general["bloom"] as? Bool) == true || (general["bloom"] as? NSNumber)?.boolValue == true
+        let bloomStrength = bloomOn ? min(8, max(0, (general["bloomstrength"] as? NSNumber)?.doubleValue ?? 0)) : 0
+        let bloomThreshold = min(1, max(0, (general["bloomthreshold"] as? NSNumber)?.doubleValue ?? 0.8))
 
         var layers: [SceneLayer] = []
         var particleSystems: [ParticleSystem] = []
@@ -389,7 +402,9 @@ public enum SceneGraph {
             clearColor: clearColor,
             layers: layers,
             particleSystems: particleSystems,
-            usesPuppet: usesPuppet
+            usesPuppet: usesPuppet,
+            bloomStrength: bloomStrength,
+            bloomThreshold: bloomThreshold
         )
     }
 

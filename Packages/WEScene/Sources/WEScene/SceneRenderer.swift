@@ -191,15 +191,20 @@ public final class PreparedScene {
     /// A puppet scene that isn't ready would draw its raw atlas as scattered parts, so the caller should show
     /// the static preview instead; a ready one can be rendered live like any other scene.
     public let puppetReady: Bool
+    fileprivate let bloomStrength: Float    // scene-level bloom; 0 = none (the extra pass is skipped entirely)
+    fileprivate let bloomThreshold: Float
 
     fileprivate init(layers: [PreparedLayer], clearColor: SceneVec3, particles: [PreparedParticles],
-                     orthoWidth: Double, orthoHeight: Double, puppetReady: Bool) {
+                     orthoWidth: Double, orthoHeight: Double, puppetReady: Bool,
+                     bloomStrength: Float, bloomThreshold: Float) {
         self.layers = layers
         self.clearColor = clearColor
         self.particles = particles
         self.orthoWidth = orthoWidth
         self.orthoHeight = orthoHeight
         self.puppetReady = puppetReady
+        self.bloomStrength = bloomStrength
+        self.bloomThreshold = bloomThreshold
     }
 
     /// How many layers will be drawn (0 means nothing resolved — the caller should show a fallback).
@@ -231,6 +236,7 @@ public final class SceneRenderer {
     private let queue: MTLCommandQueue
     private let pipelineOver: MTLRenderPipelineState
     private let pipelineAdditive: MTLRenderPipelineState
+    private let pipelineBloom: MTLRenderPipelineState   // scene-level bloom combine (composite + bright glow)
     private let particleAdditive: MTLRenderPipelineState   // instanced sprite draw, additive (glow)
     private let particleAlpha: MTLRenderPipelineState      // instanced sprite draw, alpha (solid sprites)
     private let particleRefract: MTLRenderPipelineState    // refractive droplets sampling the background
@@ -282,6 +288,25 @@ public final class SceneRenderer {
                                           constant float3 &tint [[buffer(1)]]) {
         float4 c = tex.sample(samp, in.uv);
         return float4(c.rgb * tint, c.a * layerAlpha);
+    }
+    // Scene-level bloom: box-blur the bright-pass (luma/colour above `params.x`) and add it back scaled by
+    // strength `params.y`. The base image is preserved; only highlights above the threshold glow, so the
+    // threshold keeps mid-tones (a character, a background) untouched. Composite is opaque, so alpha = 1.
+    fragment float4 lumora_scene_bloom(VOut in [[stage_in]],
+                                       texture2d<float> tex [[texture(0)]],
+                                       sampler samp [[sampler(0)]],
+                                       constant float2 &params [[buffer(0)]]) {
+        float3 base = tex.sample(samp, in.uv).rgb;
+        float2 texel = 1.0 / float2(tex.get_width(), tex.get_height());
+        float3 bloom = float3(0.0);
+        for (int dy = -3; dy <= 3; dy++) {
+            for (int dx = -3; dx <= 3; dx++) {
+                float3 s = tex.sample(samp, in.uv + float2(dx, dy) * texel * 3.0).rgb;
+                bloom += max(float3(0.0), s - params.x);
+            }
+        }
+        bloom /= 49.0;
+        return float4(base + bloom * params.y, 1.0);
     }
     // A puppet layer draws a real mesh (assembled from its sprite atlas) instead of a quad: each vertex is a
     // model-space position + atlas UV, placed into the scene by the object's origin/scale and the ortho.
@@ -360,13 +385,16 @@ public final class SceneRenderer {
                   let particleRefractPipe = Self.makeParticlePipeline(device: device, vertex: particleVertex,
                                                                       fragment: particleRefractFragment, additive: false),
                   let puppetVertex = library.makeFunction(name: "lumora_puppet_vertex"),
-                  let puppet = Self.makePuppetPipeline(device: device, vertex: puppetVertex, fragment: fragmentFunction) else { return nil }
+                  let puppet = Self.makePuppetPipeline(device: device, vertex: puppetVertex, fragment: fragmentFunction),
+                  let bloomFragment = library.makeFunction(name: "lumora_scene_bloom"),
+                  let bloom = Self.makePipeline(device: device, vertex: vertexFunction, fragment: bloomFragment, additive: false) else { return nil }
             self.pipelineOver = over
             self.pipelineAdditive = additive
             self.particleAdditive = particleAdd
             self.particleAlpha = particleOver
             self.particleRefract = particleRefractPipe
             self.pipelinePuppet = puppet
+            self.pipelineBloom = bloom
         } catch {
             return nil
         }
@@ -726,7 +754,8 @@ public final class SceneRenderer {
         }
         return PreparedScene(layers: prepared, clearColor: document.clearColor,
                              particles: preparedParticles, orthoWidth: orthoW, orthoHeight: orthoH,
-                             puppetReady: puppetLayerCount > 0 && puppetReadyCount == puppetLayerCount)
+                             puppetReady: puppetLayerCount > 0 && puppetReadyCount == puppetLayerCount,
+                             bloomStrength: Float(document.bloomStrength), bloomThreshold: Float(document.bloomThreshold))
     }
 
     /// The sprite a particle system draws — its material's first bound texture and blend mode
@@ -1308,6 +1337,23 @@ public final class SceneRenderer {
                     encoder.setFragmentBytes(&viewport, length: MemoryLayout<SIMD2<Float>>.stride, index: 0)
                     encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4, instanceCount: n)
                 }
+            }
+        } else if scene.bloomStrength > 0.1,
+                  let composite = renderBackground(scene, time: time, aspectScale: aspectScale,
+                                                   swayX: swayX, swayY: swayY, effectResult: effectResult,
+                                                   width: width, height: height) {
+            // Scene-level bloom: the scene is composited to a texture, then a final pass adds a blurred
+            // bright-pass glow over it. Only scenes whose `general.bloom` ships a real strength take this path;
+            // every other scene falls through to the single-pass branch below, unchanged.
+            var params = SIMD2<Float>(scene.bloomThreshold, scene.bloomStrength)
+            frame = withRenderPass(clearColor: scene.clearColor, width: width, height: height) { encoder in
+                var quad = QuadUniform(center: SIMD2(0, 0), halfExtent: SIMD2(1, 1), uvScale: SIMD2(1, 1))
+                encoder.setRenderPipelineState(pipelineBloom)
+                encoder.setVertexBytes(&quad, length: MemoryLayout<QuadUniform>.stride, index: 0)
+                encoder.setFragmentTexture(composite, index: 0)
+                encoder.setFragmentSamplerState(sampler, index: 0)
+                encoder.setFragmentBytes(&params, length: MemoryLayout<SIMD2<Float>>.stride, index: 0)
+                encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
             }
         } else {
             frame = withRenderPass(clearColor: scene.clearColor, width: width, height: height) { encoder in

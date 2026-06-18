@@ -590,6 +590,24 @@ if let pkg = try? ScenePackage.read(rotPkg), let doc = try? SceneGraph.load(from
     Check.that("the parent's scale compounds into the child", abs(child.scale.x - 6) < 1e-4)
     Check.that("the parent's angle compounds into the child", abs(child.angles.z - (1.5707963 + 0.1)) < 1e-4)
 }
+// Scene-level bloom: parsed only when the flag is on and the strength is meaningful (bloom:true with strength 0
+// is common and means off). Clamped against malformed values.
+let bloomScene = #"{"general":{"bloom":true,"bloomstrength":1.5,"bloomthreshold":0.85},"objects":[{"image":"models/m.json"}]}"#
+let bloomPkg = buildPKG(version: "PKGV0009", files: [
+    ("scene.json", Data(bloomScene.utf8)), ("models/m.json", modelJSON),
+    ("materials/mat.json", materialJSON), ("materials/mytex.tex", Data("x".utf8)),
+])
+if let pkg = try? ScenePackage.read(bloomPkg), let doc = try? SceneGraph.load(from: pkg) {
+    Check.that("scene bloom strength + threshold parse", doc.bloomStrength == 1.5 && doc.bloomThreshold == 0.85)
+}
+let noBloomScene = #"{"general":{"bloom":true,"bloomstrength":0.0},"objects":[{"image":"models/m.json"}]}"#
+let noBloomPkg = buildPKG(version: "PKGV0009", files: [
+    ("scene.json", Data(noBloomScene.utf8)), ("models/m.json", modelJSON),
+    ("materials/mat.json", materialJSON), ("materials/mytex.tex", Data("x".utf8)),
+])
+if let pkg = try? ScenePackage.read(noBloomPkg), let doc = try? SceneGraph.load(from: pkg) {
+    Check.that("bloom:true with strength 0 means no bloom", doc.bloomStrength == 0)
+}
 
 // PuppetModel.parseMesh consumes an untrusted binary `.mdl`. Its bounds guards must reject malformed input
 // with nil — never crash, read out of bounds, or hang — so a hostile package can't exploit the parser. (The
@@ -824,7 +842,7 @@ if let plain5 = ParticleSystem.parse(boxParticle) {
     Check.that("a system without vortex/controlpoint leaves them empty", plain5.vortex == nil && plain5.cpScale == 0)
 }
 // Hardening: malformed/out-of-range numbers from an untrusted .pkg are clamped, never propagated.
-if let hard = ParticleSystem.parse(["emitter": [["name": "boxrandom", "rate": 20, "speedmin": 0, "speedmax": 1e400]],
+if let hard = ParticleSystem.parse(["emitter": [["name": "boxrandom", "rate": 20, "speedmin": 0, "speedmax": Double.infinity]],
         "initializer": [["name": "turbulentvelocityrandom", "scale": 99999, "offset": -50]],
         "operator": [["name": "alphafade", "fadeintime": -3, "fadeouttime": 9]]]) {
     Check.that("a non-finite speed is sanitised (finite range)", hard.speed.upperBound.isFinite)
