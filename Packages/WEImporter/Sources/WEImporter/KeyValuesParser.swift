@@ -26,12 +26,14 @@ public enum KeyValuesError: Error, Equatable, Sendable, CustomStringConvertible 
     case unexpectedEnd
     case unexpectedToken(String)
     case unterminatedString
+    case nestingTooDeep
 
     public var description: String {
         switch self {
         case .unexpectedEnd:        return "Unexpected end of KeyValues input."
         case .unexpectedToken(let t): return "Unexpected token '\(t)' in KeyValues input."
         case .unterminatedString:   return "Unterminated quoted string in KeyValues input."
+        case .nestingTooDeep:       return "KeyValues input nests objects beyond the supported depth."
         }
     }
 }
@@ -40,14 +42,20 @@ public enum KeyValuesError: Error, Equatable, Sendable, CustomStringConvertible 
 /// configuration files. It is deliberately lenient about content (any string is a valid key or
 /// value) and strict only about structure (balanced braces, a value after every key).
 public enum KeyValuesParser {
+    /// The deepest object nesting the parser will follow. Real Steam/VDF files nest only a handful of
+    /// levels; a far higher ceiling still rejects a crafted file of thousands of `{` before the recursive
+    /// descent could exhaust the stack and crash the process.
+    private static let maxNestingDepth = 256
+
     /// Parse a KeyValues/VDF document into its top-level object node.
     public static func parse(_ text: String) throws -> KVNode {
         var tokenizer = Tokenizer(Array(text.unicodeScalars))
-        let pairs = try parsePairs(&tokenizer, expectClose: false)
+        let pairs = try parsePairs(&tokenizer, expectClose: false, depth: 0)
         return .object(pairs)
     }
 
-    private static func parsePairs(_ tokenizer: inout Tokenizer, expectClose: Bool) throws -> [KVPair] {
+    private static func parsePairs(_ tokenizer: inout Tokenizer, expectClose: Bool, depth: Int) throws -> [KVPair] {
+        guard depth <= maxNestingDepth else { throw KeyValuesError.nestingTooDeep }
         var pairs: [KVPair] = []
         while true {
             guard let token = try tokenizer.next() else {
@@ -64,7 +72,7 @@ public enum KeyValuesParser {
                 guard let valueToken = try tokenizer.next() else { throw KeyValuesError.unexpectedEnd }
                 switch valueToken {
                 case .open:
-                    let children = try parsePairs(&tokenizer, expectClose: true)
+                    let children = try parsePairs(&tokenizer, expectClose: true, depth: depth + 1)
                     pairs.append(KVPair(key: key, value: .object(children)))
                 case .string(let value):
                     pairs.append(KVPair(key: key, value: .value(value)))

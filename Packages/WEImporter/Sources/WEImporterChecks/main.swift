@@ -134,6 +134,16 @@ Check.that("case-insensitive key lookup",
            (try? KeyValuesParser.parse(#""Key" "v""#))?.first("KEY")?.stringValue == "v")
 Check.throwsError("unbalanced braces throw", { try KeyValuesParser.parse(#""a" {"#) })
 Check.throwsError("unterminated string throws", { try KeyValuesParser.parse("\"unterminated") })
+// A pathologically deep file (thousands of nested objects) must be rejected, not crash the process by
+// exhausting the recursion stack. A shallow file at the same shape still parses fine.
+let deepVDF = String(repeating: #""a" {"#, count: 5000) + String(repeating: "}", count: 5000)
+Check.throwsError("rejects pathologically deep nesting without crashing",
+                  { try KeyValuesParser.parse(deepVDF) },
+                  satisfies: { if case KeyValuesError.nestingTooDeep = $0 { return true }; return false })
+Check.that("a modestly nested file still parses", {
+    let nested = String(repeating: #""a" {"#, count: 64) + #""leaf" "v""# + String(repeating: "}", count: 64)
+    return (try? KeyValuesParser.parse(nested)) != nil
+}())
 
 // MARK: - SteamLibraryLocator
 
