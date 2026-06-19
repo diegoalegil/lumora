@@ -145,4 +145,45 @@ do {
     try? FileManager.default.removeItem(at: tmp.deletingLastPathComponent())
 }
 
+// MARK: DisplaySwitcher
+final class RecordingSurface: WallpaperSurface {
+    let reference: WallpaperReference
+    var opacity: Double = 1
+    var torndown = false
+    init(_ reference: WallpaperReference) { self.reference = reference }
+    func setOpacity(_ opacity: Double) { self.opacity = opacity }
+    func teardown() { torndown = true }
+}
+final class SurfaceRecorder { var made: [RecordingSurface] = [] }
+
+Check.section("DisplaySwitcher")
+do {
+    let rec = SurfaceRecorder()
+    let switcher = DisplaySwitcher { ref in let s = RecordingSurface(ref); rec.made.append(s); return s }
+    let a = WallpaperReference(id: "a"), b = WallpaperReference(id: "b"), c = WallpaperReference(id: "c")
+    let fade = TransitionSettings(kind: .crossfade, duration: 2)
+    // First wallpaper, nothing to fade from → instant, opaque.
+    switcher.apply(a, transition: fade, now: 0)
+    Check.that("the first wallpaper mounts instantly at full opacity",
+               switcher.currentReference == a && rec.made.count == 1 && rec.made[0].opacity == 1 && !switcher.isTransitioning)
+    // Cross-fade to b → both surfaces alive, incoming transparent.
+    switcher.apply(b, transition: fade, now: 10)
+    Check.that("a cross-fade keeps the outgoing surface alive", rec.made.count == 2 && !rec.made[0].torndown)
+    Check.that("the incoming surface starts transparent", rec.made[1].opacity == 0 && switcher.isTransitioning)
+    switcher.tick(now: 11)
+    Check.that("at the midpoint both surfaces are half faded",
+               abs(rec.made[0].opacity - 0.5) < 1e-9 && abs(rec.made[1].opacity - 0.5) < 1e-9)
+    switcher.tick(now: 12)
+    Check.that("the outgoing surface is torn down at the end", rec.made[0].torndown && !rec.made[1].torndown)
+    Check.that("the incoming surface becomes current at full opacity",
+               switcher.currentReference == b && rec.made[1].opacity == 1 && !switcher.isTransitioning)
+    // Re-applying the current wallpaper makes no new surface.
+    switcher.apply(b, transition: fade, now: 20)
+    Check.that("re-applying the current wallpaper is a no-op", rec.made.count == 2)
+    // A .none transition is an instant cut: the old surface is torn down immediately.
+    switcher.apply(c, transition: .init(kind: .none, duration: 2), now: 30)
+    Check.that("a .none transition is an instant cut",
+               rec.made.count == 3 && rec.made[1].torndown && switcher.currentReference == c && rec.made[2].opacity == 1)
+}
+
 Check.summarize()
