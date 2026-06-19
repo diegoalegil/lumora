@@ -190,4 +190,86 @@ Check.that("texel size derived", abs(fu.texelSize.x - 1.0/1920.0) < 1e-9)
 Check.that("audio16 len", fu.audioSpectrumLeft16.count == 16)
 Check.that("audio64 len", fu.audioSpectrumRight64.count == 64)
 
+// MARK: Playlist model
+Check.section("Playlist model")
+let refs = [WallpaperReference(id: "a"), WallpaperReference(id: "b"), WallpaperReference(id: "c"), WallpaperReference(id: "d")]
+let pl = Playlist(id: UUID(uuidString: "00000000-0000-0000-0000-0000000000AA")!, name: "Anime",
+                  items: refs, mode: .inOrder, rotationInterval: 300, transition: .init(kind: .crossfade, duration: 1.5))
+if let data = Check.noThrow("playlist encodes", { try JSONEncoder().encode(pl) }),
+   let back = Check.noThrow("playlist decodes", { try JSONDecoder().decode(Playlist.self, from: data) }) {
+    Check.that("playlist round-trips identically", back == pl)
+    Check.that("display target defaults to all", back.displayTarget == .all)
+}
+// resolvedOrder: in-order keeps the stored order; shuffle is a deterministic permutation of it.
+Check.that("inOrder keeps the stored order", pl.resolvedOrder(seed: 1) == refs)
+let shuffledPl = Playlist(name: "S", items: refs, mode: .shuffle)
+Check.that("shuffle is deterministic for a given seed", shuffledPl.resolvedOrder(seed: 42) == shuffledPl.resolvedOrder(seed: 42))
+Check.that("shuffle permutes (same multiset)", Set(shuffledPl.resolvedOrder(seed: 42)) == Set(refs))
+Check.that("a different seed can give a different order",
+           shuffledPl.resolvedOrder(seed: 1) != shuffledPl.resolvedOrder(seed: 999_999) || refs.count <= 1)
+// Robustness: a corrupt/hand-edited interval or duration is guarded into a safe value.
+Check.that("non-positive rotation interval reads as no auto-rotation",
+           Playlist(name: "x", rotationInterval: 0).effectiveRotationInterval == nil)
+Check.that("negative rotation interval reads as no auto-rotation",
+           Playlist(name: "x", rotationInterval: -5).effectiveRotationInterval == nil)
+Check.that("a positive rotation interval is honoured", Playlist(name: "x", rotationInterval: 60).effectiveRotationInterval == 60)
+Check.that("a negative transition duration clamps to 0", TransitionSettings(kind: .crossfade, duration: -3).effectiveDuration == 0)
+Check.that("a NaN transition duration clamps to 0", TransitionSettings(kind: .crossfade, duration: .nan).effectiveDuration == 0)
+
+// MARK: RotationScheduler
+Check.section("RotationScheduler")
+do {
+    let playlist = Playlist(name: "R", items: refs, mode: .inOrder, rotationInterval: 100)
+    var sched = RotationScheduler(playlist: playlist, seed: 7, now: 0)
+    Check.that("starts on the first item", sched.current == refs[0])
+    Check.that("no advance before the interval elapses", sched.tick(now: 50) == nil)
+    Check.that("still on the first item", sched.current == refs[0])
+    Check.that("advances at t = interval", sched.tick(now: 100) == refs[1])
+    Check.that("advances again at t = 2·interval", sched.tick(now: 200) == refs[2])
+    Check.that("advances again at t = 3·interval", sched.tick(now: 300) == refs[3])
+    Check.that("wraps back to the first item", sched.tick(now: 400) == refs[0])
+    Check.that("a too-soon tick after an advance does nothing", sched.tick(now: 450) == nil)
+}
+do {
+    // Manual next/previous jumps immediately and restarts the interval from now.
+    var sched = RotationScheduler(playlist: Playlist(name: "R", items: refs, mode: .inOrder, rotationInterval: 100), seed: 7, now: 0)
+    Check.that("manual next jumps to the second item", sched.next(now: 10) == refs[1])
+    Check.that("the interval restarts from the manual jump (no auto-advance at t=60)", sched.tick(now: 60) == nil)
+    Check.that("auto-advance resumes one interval after the jump", sched.tick(now: 110) == refs[2])
+    Check.that("manual previous goes back", sched.previous(now: 120) == refs[1])
+}
+do {
+    // Pause holds the elapsed time; resume continues from where it left off (no cut-short).
+    var sched = RotationScheduler(playlist: Playlist(name: "R", items: refs, mode: .inOrder, rotationInterval: 100), seed: 7, now: 0)
+    sched.pause(now: 40)                                    // 40 of 100 elapsed
+    Check.that("paused does not advance even past the interval", sched.tick(now: 500) == nil)
+    sched.resume(now: 500)                                  // 60 still to go
+    Check.that("does not advance immediately on resume", sched.tick(now: 540) == nil)
+    Check.that("advances once the remaining time elapses", sched.tick(now: 560) == refs[1])
+}
+do {
+    // randomNoImmediateRepeat never shows the same wallpaper twice in a row.
+    var sched = RotationScheduler(playlist: Playlist(name: "R", items: refs, mode: .randomNoImmediateRepeat, rotationInterval: 10), seed: 123, now: 0)
+    var prev = sched.current
+    var immediateRepeat = false
+    for k in 1 ... 200 {
+        if let next = sched.tick(now: Double(k) * 10) {
+            if next == prev { immediateRepeat = true }
+            prev = next
+        }
+    }
+    Check.that("randomNoImmediateRepeat never repeats back-to-back", !immediateRepeat)
+}
+do {
+    // Degenerate playlists never advance and never crash.
+    var empty = RotationScheduler(playlist: Playlist(name: "E", items: [], mode: .inOrder, rotationInterval: 10), seed: 1, now: 0)
+    Check.that("empty playlist has no current item", empty.current == nil)
+    Check.that("empty playlist never advances", empty.tick(now: 1000) == nil)
+    var single = RotationScheduler(playlist: Playlist(name: "1", items: [refs[0]], mode: .inOrder, rotationInterval: 10), seed: 1, now: 0)
+    Check.that("single-item playlist stays put", single.tick(now: 1000) == nil && single.current == refs[0])
+    var manual = RotationScheduler(playlist: Playlist(name: "M", items: refs, mode: .inOrder, rotationInterval: nil), seed: 1, now: 0)
+    Check.that("a playlist with no interval never auto-advances", manual.tick(now: 1_000_000) == nil)
+    Check.that("but manual next still works without an interval", manual.next(now: 0) == refs[1])
+}
+
 Check.summarize()
