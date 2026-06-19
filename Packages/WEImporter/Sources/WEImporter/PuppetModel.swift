@@ -58,10 +58,9 @@ public enum PuppetModel {
 
     /// Some older `.mdl` versions carry NO vertex-block marker; the vertex-bytes u32 sits right after the
     /// material padding (at `materialEnd + 5`, where marker versions place their 4-byte marker then the
-    /// vertex-bytes). This returns the layout for such a version, or nil. Gated behind `LUMORA_PUPPET_V13`
-    /// until the rigs it unlocks pass a visual sign-off, so the default build's behaviour is unchanged.
+    /// vertex-bytes). This returns the layout for such a version, or nil. The torn-mesh guard still has the
+    /// final say, so a version whose layout doesn't compose a coherent figure falls back to the preview.
     private static func markerlessLayout(version: Int) -> VertexLayout? {
-        guard ProcessInfo.processInfo.environment["LUMORA_PUPPET_V13"] != nil else { return nil }
         switch version {
         case 13: return VertexLayout(stride: 20, uvOff: 12, boneOff: nil, weightOff: nil)   // position xyz + uv, flat (no skin)
         default: return nil
