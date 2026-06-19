@@ -8,6 +8,7 @@ import WECore
 /// Binds a playlist's rotation schedule to a display's switcher. On each `tick` it advances the rotation clock
 /// and, when the scheduler moves to a new wallpaper, cross-fades the display to it using the playlist's
 /// transition. Manual `next`/`previous` and `pause`/`resume` flow through to the schedule.
+@MainActor
 public final class PlaylistPlaybackController {
     private var scheduler: RotationScheduler
     private let switcher: DisplaySwitcher

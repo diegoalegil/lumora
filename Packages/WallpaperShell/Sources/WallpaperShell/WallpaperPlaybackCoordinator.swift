@@ -9,6 +9,7 @@ import WECore
 
 /// Coordinates playlist playback across every connected display. Feed it a `PlaybackPlan` (which playlist runs
 /// where) and `tick` it on a timer; it owns the per-display controllers and reconciles them on each plan.
+@MainActor
 public final class WallpaperPlaybackCoordinator {
     private var controllers: [String: PlaylistPlaybackController] = [:]
     private var plan = PlaybackPlan()

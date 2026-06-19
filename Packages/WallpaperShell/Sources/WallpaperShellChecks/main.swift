@@ -146,7 +146,7 @@ do {
 }
 
 // MARK: DisplaySwitcher
-final class RecordingSurface: WallpaperSurface {
+@MainActor final class RecordingSurface: WallpaperSurface {
     let reference: WallpaperReference
     var opacity: Double = 1
     var torndown = false

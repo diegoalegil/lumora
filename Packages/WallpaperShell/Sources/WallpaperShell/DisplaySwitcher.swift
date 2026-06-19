@@ -22,7 +22,9 @@ public struct WallpaperRequest: Sendable, Equatable {
 }
 
 /// One wallpaper mounted on a display's surface. The real implementation owns an `NSWindow` + renderer; tests
-/// use a recording double. Opacity is what the cross-fade drives.
+/// use a recording double. Opacity is what the cross-fade drives. Main-actor isolated — the desktop is only
+/// ever updated on the main thread.
+@MainActor
 public protocol WallpaperSurface: AnyObject {
     var reference: WallpaperReference { get }
     /// Set the surface's opacity (0 = transparent, 1 = opaque) — the cross-fade ramps this.
@@ -34,6 +36,7 @@ public protocol WallpaperSurface: AnyObject {
 /// Switches the wallpaper on a single display. A cross-fade overlaps the outgoing and incoming surfaces and
 /// ramps their opacity to `duration`; anything else is an instant cut. The host calls `apply` to switch and
 /// `tick` on a timer to advance a fade. Pure orchestration over an injected surface factory + clock.
+@MainActor
 public final class DisplaySwitcher {
     private let makeSurface: (WallpaperReference) -> WallpaperSurface
     private var current: WallpaperSurface?
