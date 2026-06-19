@@ -392,4 +392,33 @@ do {
                rec.made[0].directives == [.paused] && rec.made[1].directives == [.paused])
 }
 
+// MARK: ScreenLayoutDiff (geometry-only change → resize in place, not rebuild)
+Check.section("ScreenLayoutDiff")
+do {
+    let r1 = CGRect(x: 0, y: 0, width: 1920, height: 1080)
+    let r2 = CGRect(x: 1920, y: 0, width: 2560, height: 1440)
+    let r1big = CGRect(x: 0, y: 0, width: 3840, height: 2160)
+
+    let same = ScreenLayoutDiff(from: [1: r1, 2: r2], to: [1: r1, 2: r2])
+    Check.that("identical layouts are all unchanged", same.unchanged == [1, 2] && same.isEmpty)
+
+    let resized = ScreenLayoutDiff(from: [1: r1, 2: r2], to: [1: r1big, 2: r2])
+    Check.that("a moved/resized display is 'resized', not added/removed", resized.resized == [1])
+    Check.that("the untouched display stays unchanged", resized.unchanged == [2])
+    Check.that("a resize is not empty (there is work to do)", !resized.isEmpty)
+
+    let added = ScreenLayoutDiff(from: [1: r1], to: [1: r1, 2: r2])
+    Check.that("a newly connected display is added", added.added == [2] && added.unchanged == [1])
+
+    let removed = ScreenLayoutDiff(from: [1: r1, 2: r2], to: [1: r1])
+    Check.that("a disconnected display is removed", removed.removed == [2] && removed.unchanged == [1])
+
+    let mixed = ScreenLayoutDiff(from: [1: r1, 2: r2], to: [1: r1big, 3: r2])
+    Check.that("a change can add, remove and resize at once",
+               mixed.added == [3] && mixed.removed == [2] && mixed.resized == [1] && mixed.unchanged.isEmpty)
+
+    let fromEmpty = ScreenLayoutDiff(from: [:], to: [1: r1])
+    Check.that("the initial build treats every display as added", fromEmpty.added == [1] && !fromEmpty.isEmpty)
+}
+
 Check.summarize()
