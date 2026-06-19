@@ -11,15 +11,33 @@ import WECore
 @Observable
 public final class PlaylistStore {
     public private(set) var library: PlaylistLibrary
-    public var selectedPlaylistID: UUID?
+    public var selectedPlaylistID: UUID? {
+        didSet {
+            guard selectedPlaylistID != oldValue else { return }
+            onSelectionChange?(selectedPlaylistID)
+        }
+    }
 
     @ObservationIgnored private let repository: PlaylistRepository
+    /// Fires whenever the selection actually changes (UI pick, add, remove) — the host persists it so the
+    /// chosen playlist is restored on the next launch. Not called for the initial load.
+    @ObservationIgnored public var onSelectionChange: ((UUID?) -> Void)?
 
-    public init(repository: PlaylistRepository) {
+    /// - Parameter initialSelection: a previously-persisted selected playlist id to restore; honoured only if
+    ///   it still exists in the loaded library, otherwise the first playlist is selected.
+    public init(repository: PlaylistRepository, initialSelection: UUID? = nil,
+                onSelectionChange: ((UUID?) -> Void)? = nil) {
         self.repository = repository
         let loaded = repository.load()
         self.library = loaded
-        self.selectedPlaylistID = loaded.playlists.first?.id
+        self.selectedPlaylistID = Self.resolveSelection(initialSelection, in: loaded)
+        self.onSelectionChange = onSelectionChange   // set after init so the initial load doesn't notify
+    }
+
+    /// Honour a requested selection when it still exists; otherwise fall back to the first playlist (or nil).
+    public static func resolveSelection(_ requested: UUID?, in library: PlaylistLibrary) -> UUID? {
+        if let requested, library.playlist(id: requested) != nil { return requested }
+        return library.playlists.first?.id
     }
 
     /// The currently selected playlist, if any.

@@ -325,6 +325,38 @@ do {
     Check.that("reordering persists", repo.load().playlists.map(\.name) == ["Second", "First"])
 }
 
+// MARK: PlaylistStore — persisted selection across launches
+Check.section("PlaylistStore selection persistence")
+do {
+    let first = Playlist(name: "First"), second = Playlist(name: "Second")
+    let repo = InMemoryPlaylistRepository(PlaylistLibrary([first, second]))
+
+    // resolveSelection: honour a valid id, fall back otherwise
+    Check.that("a valid persisted selection is honoured",
+               PlaylistStore.resolveSelection(second.id, in: repo.load()) == second.id)
+    Check.that("an unknown persisted selection falls back to the first",
+               PlaylistStore.resolveSelection(UUID(), in: repo.load()) == first.id)
+    Check.that("no persisted selection falls back to the first",
+               PlaylistStore.resolveSelection(nil, in: repo.load()) == first.id)
+
+    // a store restores the persisted selection instead of always the first
+    let restored = PlaylistStore(repository: repo, initialSelection: second.id)
+    Check.that("the store restores the persisted selection on launch", restored.selectedPlaylist?.name == "Second")
+
+    // selection changes notify (so the host can persist), the initial load does not, no-ops don't
+    final class Box { var ids: [UUID?] = [] }
+    let box = Box()
+    let store = PlaylistStore(repository: repo, initialSelection: second.id,
+                              onSelectionChange: { box.ids.append($0) })
+    Check.that("the initial load does not notify", box.ids.isEmpty)
+    store.selectedPlaylistID = first.id
+    Check.that("changing the selection notifies with the new id", box.ids == [first.id])
+    store.selectedPlaylistID = first.id
+    Check.that("re-selecting the same playlist does not notify", box.ids == [first.id])
+    let third = store.addPlaylist(name: "Third")
+    Check.that("adding a playlist notifies the new selection", box.ids == [first.id, third.id])
+}
+
 // MARK: WallpaperPlaybackCoordinator (whole desktop, per display)
 Check.section("WallpaperPlaybackCoordinator")
 do {

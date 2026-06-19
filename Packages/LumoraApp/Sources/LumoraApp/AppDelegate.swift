@@ -43,7 +43,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var appliedSelection: Playlist?
 
     // Product layer: the playlist library/store and live-applying preferences behind the settings window.
-    private let playlistStore = PlaylistStore(repository: JSONPlaylistRepository.standard())
     private lazy var preferences: PreferencesModel = {
         let model = PreferencesModel(Self.loadPreferences())
         model.onApply = { [weak self] prefs in
@@ -51,6 +50,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             Self.savePreferences(prefs)
         }
         return model
+    }()
+    /// The selected playlist is restored from (and persisted back to) `Preferences.activePlaylistID`, so the
+    /// chosen playlist survives a relaunch instead of always reverting to the first.
+    private lazy var playlistStore: PlaylistStore = {
+        PlaylistStore(repository: JSONPlaylistRepository.standard(),
+                      initialSelection: preferences.preferences.activePlaylistID,
+                      onSelectionChange: { [weak self] id in self?.preferences.activePlaylistID = id })
     }()
     private lazy var settingsController = SettingsWindowController(
         store: playlistStore, preferences: preferences,
