@@ -21,6 +21,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let loginItem = LoginItemService()
     private var isPaused = false
 
+    // Product layer: the playlist library/store and live-applying preferences behind the settings window.
+    private let playlistStore = PlaylistStore(repository: JSONPlaylistRepository.standard())
+    private lazy var preferences: PreferencesModel = {
+        let model = PreferencesModel(Self.loadPreferences())
+        model.onApply = { [weak self] prefs in
+            self?.applyPreferences(prefs)
+            Self.savePreferences(prefs)
+        }
+        return model
+    }()
+    private lazy var settingsController = SettingsWindowController(
+        store: playlistStore, preferences: preferences,
+        libraryItems: { [weak self] in self?.libraryItems() ?? [] })
+    private static let preferencesKey = "LumoraPreferences"
+
     /// The wallpaper to play, chosen at launch from the installed library (nil → solid fallback).
     private var activeWallpaper: ResolvedWallpaper?
     /// The playable wallpapers offered in the picker, and the user's saved choice.
@@ -44,6 +59,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         setupStatusItem()
+        // Restore the saved Dock-icon / login preference (main.swift starts as menu-bar-only by default).
+        applyPreferences(preferences.preferences)
 
         let source = SystemSignalSource(windowForDisplay: { [weak self] id in
             self?.screenManager.windows[id]
@@ -176,6 +193,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(wallpaperItem)
         wallpaperSubmenu = wallpaperItem.submenu
 
+        let settings = NSMenuItem(title: "Settings…", action: #selector(openSettings), keyEquivalent: ",")
+        settings.target = self
+        menu.addItem(settings)
+        menu.addItem(.separator())
+
         // The plain test picker is a development aid (driven by LUMORA_LIBRARY_DIR), not part of the shipping
         // UI — only surface it when that override is in use.
         if ProcessInfo.processInfo.environment["LUMORA_LIBRARY_DIR"] != nil {
@@ -303,5 +325,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func quit() {
         NSApp.terminate(nil)
+    }
+
+    @objc private func openSettings() {
+        settingsController.show()
+    }
+
+    /// The installed wallpapers as display items for the settings Library grid.
+    private func libraryItems() -> [WallpaperListItem] {
+        playableWallpapers.map { wallpaper in
+            WallpaperListItem(id: wallpaper.ref.id,
+                              title: WallpaperLibrary.displayTitle(wallpaper),
+                              thumbnailURL: wallpaper.ref.folderURL.appendingPathComponent("preview.jpg"))
+        }
+    }
+
+    /// Apply preferences live: the Dock icon (regular vs accessory) and the login item. Called on launch (to
+    /// restore the saved state) and whenever the settings UI changes them.
+    private func applyPreferences(_ prefs: Preferences) {
+        NSApp.setActivationPolicy(prefs.showDockIcon ? .regular : .accessory)
+        try? loginItem.setEnabled(prefs.launchAtLogin)
+        loginMenuItem?.state = loginItem.isEnabled ? .on : .off
+    }
+
+    private static func loadPreferences() -> Preferences {
+        guard let data = UserDefaults.standard.data(forKey: preferencesKey),
+              let prefs = try? JSONDecoder().decode(Preferences.self, from: data) else { return Preferences() }
+        return prefs
+    }
+
+    private static func savePreferences(_ prefs: Preferences) {
+        if let data = try? JSONEncoder().encode(prefs) { UserDefaults.standard.set(data, forKey: preferencesKey) }
     }
 }
