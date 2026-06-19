@@ -106,4 +106,43 @@ mock.fire()
 Check.that("user pause stops display 1", results[1]?.renderingEnabled == false)
 Check.that("user pause stops display 2", results[2]?.renderingEnabled == false)
 
+// MARK: PlaylistRepository
+Check.section("PlaylistRepository")
+do {
+    let tmp = FileManager.default.temporaryDirectory
+        .appendingPathComponent("lumora-test-\(UUID().uuidString)")
+        .appendingPathComponent("playlists.json")
+    let repo = JSONPlaylistRepository(fileURL: tmp)
+    Check.that("a missing store loads as an empty library", repo.load().isEmpty)
+    var lib = PlaylistLibrary([Playlist(name: "Anime", items: [WallpaperReference(id: "123")], mode: .shuffle, rotationInterval: 600),
+                               Playlist(name: "Chill", mode: .inOrder)])
+    Check.that("saving the library writes the store", { do { try repo.save(lib); return true } catch { return false } }())
+    Check.that("the store round-trips through disk", repo.load() == lib)
+    lib.upsert(Playlist(name: "Extra"))
+    Check.that("re-saving after an edit succeeds", { do { try repo.save(lib); return true } catch { return false } }())
+    Check.that("the edited library reloads with the new playlist", repo.load().count == 3)
+    // a corrupt file degrades to empty rather than throwing/crashing
+    try? Data("this is not json".utf8).write(to: tmp)
+    Check.that("a corrupt store loads as an empty library", repo.load().isEmpty)
+    // a bare array of playlists (an older/hand-written shape) is tolerated
+    if let bareArray = try? JSONEncoder().encode([Playlist(name: "Legacy")]) { try? bareArray.write(to: tmp) }
+    Check.that("a bare playlist array is read as a one-item library", repo.load().count == 1)
+    try? FileManager.default.removeItem(at: tmp.deletingLastPathComponent())
+}
+// The store is a versioned envelope and persistence is idempotent (save→load→save is stable).
+do {
+    let tmp = FileManager.default.temporaryDirectory
+        .appendingPathComponent("lumora-test-\(UUID().uuidString)")
+        .appendingPathComponent("playlists.json")
+    let repo = JSONPlaylistRepository(fileURL: tmp)
+    let lib = PlaylistLibrary([Playlist(name: "M", items: [WallpaperReference(id: "z")])])
+    try? repo.save(lib)
+    let raw = (try? String(contentsOf: tmp, encoding: .utf8)) ?? ""
+    Check.that("the on-disk store carries a version tag (migratable envelope)", raw.contains("\"version\""))
+    let reloaded = repo.load()
+    try? repo.save(reloaded)
+    Check.that("save → load → save → load is stable", repo.load() == lib)
+    try? FileManager.default.removeItem(at: tmp.deletingLastPathComponent())
+}
+
 Check.summarize()
