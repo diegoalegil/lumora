@@ -308,4 +308,29 @@ do {
     }
 }
 
+// MARK: TransitionController
+Check.section("TransitionController")
+do {
+    var t = TransitionController()
+    Check.that("idle incoming opacity is 1", t.incomingOpacity(at: 0) == 1)
+    let fading = t.begin(.crossfade, duration: 2, now: 0)
+    Check.that("begin crossfade keeps the old renderer alive", fading == true && t.phase == .crossfading)
+    Check.that("incoming starts transparent", t.incomingOpacity(at: 0) == 0)
+    Check.that("incoming is half-way at the midpoint", abs(t.incomingOpacity(at: 1) - 0.5) < 1e-9)
+    Check.that("outgoing is the complement at the midpoint", abs(t.outgoingOpacity(at: 1) - 0.5) < 1e-9)
+    Check.that("incoming is fully opaque at the end", t.incomingOpacity(at: 2) == 1)
+    Check.that("opacity is clamped past the end", t.incomingOpacity(at: 5) == 1 && t.outgoingOpacity(at: 5) == 0)
+    Check.that("tick before the end does not complete", t.tick(now: 1) == false && t.phase == .crossfading)
+    Check.that("tick at the end completes once and goes idle", t.tick(now: 2) == true && t.phase == .idle)
+    Check.that("a second tick after completion is false", t.tick(now: 3) == false)
+}
+do {
+    var t = TransitionController()
+    Check.that("a .none transition is a hard cut (drop the old renderer now)", t.begin(.none, duration: 2, now: 0) == false)
+    Check.that("after a hard cut the incoming is fully visible immediately", t.incomingOpacity(at: 0) == 1)
+    Check.that("a zero-duration crossfade is a hard cut", t.begin(.crossfade, duration: 0, now: 0) == false)
+    Check.that("a negative-duration crossfade is a hard cut", t.begin(.crossfade, duration: -1, now: 0) == false)
+    Check.that("a NaN-duration crossfade is a hard cut", t.begin(.crossfade, duration: .nan, now: 0) == false)
+}
+
 Check.summarize()
