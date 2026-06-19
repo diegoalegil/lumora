@@ -186,4 +186,51 @@ do {
                rec.made.count == 3 && rec.made[1].torndown && switcher.currentReference == c && rec.made[2].opacity == 1)
 }
 
+// MARK: PlaylistPlaybackController (rotation + transition, end-to-end)
+Check.section("PlaylistPlaybackController")
+do {
+    let rec = SurfaceRecorder()
+    let switcher = DisplaySwitcher { ref in let s = RecordingSurface(ref); rec.made.append(s); return s }
+    let a = WallpaperReference(id: "a"), b = WallpaperReference(id: "b"), c = WallpaperReference(id: "c")
+    let playlist = Playlist(name: "Rotate", items: [a, b, c], mode: .inOrder, rotationInterval: 100,
+                            transition: .init(kind: .crossfade, duration: 2))
+    let player = PlaylistPlaybackController(playlist: playlist, seed: 1, now: 0, switcher: switcher)
+    Check.that("starts on the first item, mounted instantly", player.currentReference == a && rec.made.count == 1 && rec.made[0].opacity == 1)
+    player.tick(now: 50)
+    Check.that("does not rotate before the interval", player.currentReference == a && rec.made.count == 1)
+    player.tick(now: 100)
+    Check.that("rotates to the second item and begins a cross-fade",
+               player.currentReference == b && rec.made.count == 2 && player.isTransitioning && rec.made[1].opacity == 0)
+    player.tick(now: 101)
+    Check.that("the cross-fade is half-way at the midpoint", abs(rec.made[0].opacity - 0.5) < 1e-9 && abs(rec.made[1].opacity - 0.5) < 1e-9)
+    player.tick(now: 102)
+    Check.that("the cross-fade finishes and the first surface is released", rec.made[0].torndown && !player.isTransitioning && rec.made[1].opacity == 1)
+    player.tick(now: 200)
+    Check.that("rotates again one interval later", player.currentReference == c && rec.made.count == 3 && player.isTransitioning)
+    player.tick(now: 202)   // finish the c fade
+    // Manual skip jumps immediately and restarts the interval.
+    player.next(now: 210)
+    Check.that("manual next wraps to the first item", player.currentReference == a && rec.made.count == 4)
+    player.tick(now: 260)
+    Check.that("the interval restarted from the manual skip (no rotation 50s later)", player.currentReference == a)
+}
+do {
+    // Pause holds the elapsed time; resume rotates only after the carried-over remainder elapses. Uses an
+    // instant transition so the assertions are about rotation timing, not fade bookkeeping.
+    let rec = SurfaceRecorder()
+    let switcher = DisplaySwitcher { ref in let s = RecordingSurface(ref); rec.made.append(s); return s }
+    let items = [WallpaperReference(id: "x"), WallpaperReference(id: "y")]
+    let player = PlaylistPlaybackController(
+        playlist: Playlist(name: "P", items: items, mode: .inOrder, rotationInterval: 100, transition: .init(kind: .none, duration: 0)),
+        seed: 1, now: 0, switcher: switcher)
+    player.pause(now: 40)            // 40 of the 100s interval elapsed
+    player.tick(now: 10_000)         // long gap while paused → no rotation
+    Check.that("a paused player does not rotate", player.currentReference == items[0])
+    player.resume(now: 10_000)       // 60s of the interval remain
+    player.tick(now: 10_050)         // only 50 more → not yet
+    Check.that("does not rotate before the carried-over remainder elapses", player.currentReference == items[0])
+    player.tick(now: 10_060)         // 60 more → rotates
+    Check.that("rotates once the carried-over remainder elapses", player.currentReference == items[1])
+}
+
 Check.summarize()
