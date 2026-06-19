@@ -8,6 +8,17 @@ import WallpaperShell
 import WEImporter
 import WEPlayers
 
+/// A surface with no window to mount in — used only when a display disconnects between a plan being
+/// applied and its switcher asking for a surface. It renders nothing and is torn down like any other.
+@MainActor
+private final class DetachedSurface: WallpaperSurface {
+    let reference: WallpaperReference
+    init(_ reference: WallpaperReference) { self.reference = reference }
+    func setOpacity(_ opacity: Double) {}
+    func apply(_ directive: PlaybackDirective) {}
+    func teardown() {}
+}
+
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var statusItem: NSStatusItem?
@@ -20,6 +31,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var renderers: [CGDirectDisplayID: any WallpaperRenderer] = [:]
     private let loginItem = LoginItemService()
     private var isPaused = false
+
+    // FASE 5 — playlist-driven playback. Env-gated for owner verification: the default path is the proven
+    // single-wallpaper one (`renderers`/`makeRenderer`), untouched. When LUMORA_PLAYLIST_PLAYBACK is set,
+    // this coordinator instead owns every display's content, fed by the selected playlist + its rotation/
+    // transition. One path is live per launch (no dual-mounting), so the default desktop never regresses.
+    private let playlistPlaybackEnabled = ProcessInfo.processInfo.environment["LUMORA_PLAYLIST_PLAYBACK"] != nil
+    private var playlistCoordinator: WallpaperPlaybackCoordinator?
+    private var rotationTimer: Timer?
+    private let playerFactory = DefaultWallpaperPlayerFactory()
+    private var appliedSelection: Playlist?
 
     // Product layer: the playlist library/store and live-applying preferences behind the settings window.
     private let playlistStore = PlaylistStore(repository: JSONPlaylistRepository.standard())
@@ -76,9 +97,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
         )
         coordinator.onDirective = { [weak self] id, directive in
-            self?.renderers[id]?.apply(directive)
+            guard let self else { return }
+            if self.playlistPlaybackEnabled {
+                // The policy engine decides per display; route to that display's playlist surface.
+                if let uuid = ScreenManager.displayUUID(for: id) {
+                    self.playlistCoordinator?.apply(directive, toDisplay: uuid)
+                }
+            } else {
+                self.renderers[id]?.apply(directive)
+            }
         }
         self.coordinator = coordinator
+
+        // Stand up playlist-driven playback before windows exist, so reconcile() can apply the first plan.
+        if playlistPlaybackEnabled { startPlaylistPlayback() }
 
         // Restore whether the user left wallpapers paused, before playback starts, so the choice survives a
         // relaunch instead of silently resuming.
@@ -105,6 +137,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func applicationWillTerminate(_ notification: Notification) {
         coordinator?.stop()
         screenManager.stop()
+        rotationTimer?.invalidate()
+        rotationTimer = nil
+        playlistCoordinator?.teardown()
+        playlistCoordinator = nil
         renderers.values.forEach { $0.tearDown() }
         renderers.removeAll()
     }
@@ -113,18 +149,81 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func reconcile() {
         let liveIDs = Set(screenManager.windows.keys)
 
-        for (id, window) in screenManager.windows where renderers[id] == nil {
-            guard let host = window.contentView as? RendererHostView else { continue }
-            let renderer = makeRenderer()
-            host.setContent(renderer.makeHostedView())
-            renderers[id] = renderer
-        }
-        for id in renderers.keys where !liveIDs.contains(id) {
-            renderers[id]?.tearDown()
-            renderers.removeValue(forKey: id)
+        if playlistPlaybackEnabled {
+            // The playlist coordinator owns window content; make sure no single-wallpaper renderer lingers,
+            // then re-plan against the current set of displays (add/remove of a display restarts only it).
+            renderers.values.forEach { $0.tearDown() }
+            renderers.removeAll()
+            refreshPlaylistPlayback()
+        } else {
+            for (id, window) in screenManager.windows where renderers[id] == nil {
+                guard let host = window.contentView as? RendererHostView else { continue }
+                let renderer = makeRenderer()
+                host.setContent(renderer.makeHostedView())
+                renderers[id] = renderer
+            }
+            for id in renderers.keys where !liveIDs.contains(id) {
+                renderers[id]?.tearDown()
+                renderers.removeValue(forKey: id)
+            }
         }
 
         coordinator?.evaluate()
+    }
+
+    // MARK: Playlist-driven playback (FASE 5)
+
+    /// Build the playlist coordinator and start the rotation clock. The coordinator's per-display switcher
+    /// mounts a renderer-backed surface inside that display's window; tearing the surfaces in/out is the
+    /// switcher's job, so the App only feeds it plans and ticks.
+    private func startPlaylistPlayback() {
+        let factory = playerFactory
+        playlistCoordinator = WallpaperPlaybackCoordinator(makeSwitcher: { [weak self] uuid in
+            DisplaySwitcher { [weak self] reference in
+                guard let self, let host = self.window(forUUID: uuid)?.contentView else {
+                    return DetachedSurface(reference)   // no window (display just left): a harmless no-op surface
+                }
+                return RendererSurface(reference: reference, resolved: self.resolve(reference),
+                                       factory: factory, parent: host)
+            }
+        })
+
+        // A coarse tick is plenty: rotation intervals are seconds-to-minutes and the cross-fade reads the
+        // wall clock each step. .common mode keeps it ticking during menu tracking.
+        let timer = Timer(timeInterval: 0.5, target: self, selector: #selector(rotationTick), userInfo: nil, repeats: true)
+        RunLoop.main.add(timer, forMode: .common)
+        rotationTimer = timer
+    }
+
+    /// Re-plan playback against the live displays and the selected playlist, then remember what we applied so
+    /// `rotationTick` can notice a selection change.
+    private func refreshPlaylistPlayback() {
+        guard let coordinator = playlistCoordinator else { return }
+        let connected = screenManager.windows.keys.compactMap { ScreenManager.displayUUID(for: $0) }
+        let selection = playlistStore.selectedPlaylist
+        coordinator.apply(PlaybackPlan(active: selection, connectedDisplays: connected),
+                          now: ProcessInfo.processInfo.systemUptime)
+        appliedSelection = selection
+    }
+
+    @objc private func rotationTick() {
+        guard let coordinator = playlistCoordinator else { return }
+        // Pick up a selection (or playlist edit) made in Settings since the last tick.
+        if playlistStore.selectedPlaylist != appliedSelection { refreshPlaylistPlayback() }
+        coordinator.tick(now: ProcessInfo.processInfo.systemUptime)
+    }
+
+    /// The desktop window currently driving the display with this stable UUID, if it's still connected.
+    private func window(forUUID uuid: String) -> DesktopWindow? {
+        for (id, window) in screenManager.windows where ScreenManager.displayUUID(for: id) == uuid {
+            return window
+        }
+        return nil
+    }
+
+    /// Resolve a playlist item's reference to an installed wallpaper (nil → the surface degrades to empty).
+    private func resolve(_ reference: WallpaperReference) -> ResolvedWallpaper? {
+        playableWallpapers.first { $0.ref.id == reference.id }
     }
 
     /// Swap every display's renderer to the current active wallpaper.
