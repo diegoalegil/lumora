@@ -272,4 +272,40 @@ do {
     Check.that("but manual next still works without an interval", manual.next(now: 0) == refs[1])
 }
 
+// MARK: PlaylistLibrary CRUD
+Check.section("PlaylistLibrary")
+do {
+    func mk(_ n: String) -> Playlist { Playlist(name: n) }
+    let a = mk("A"), b = mk("B"), c = mk("C")
+    var lib = PlaylistLibrary([a, b, c])
+    Check.that("library reports its count", lib.count == 3)
+    Check.that("finds a playlist by id", lib.playlist(id: b.id)?.name == "B")
+    // upsert: a new id appends, an existing id replaces in place.
+    let d = mk("D")
+    Check.that("upserting a new playlist inserts it", lib.upsert(d) == true && lib.count == 4)
+    var bEdited = b; bEdited.name = "B2"
+    Check.that("upserting an existing id replaces it (no insert)", lib.upsert(bEdited) == false && lib.count == 4)
+    Check.that("the replacement kept its position", lib.playlists[1].name == "B2")
+    // remove
+    lib.remove(id: a.id)
+    Check.that("remove drops the playlist", lib.count == 3 && lib.playlist(id: a.id) == nil)
+    Check.that("remove of an absent id is a no-op", { var l = lib; l.remove(id: a.id); return l == lib }())
+    // single move with clamping
+    var ordered = PlaylistLibrary([a, b, c, d])
+    ordered.move(from: 0, to: 2)
+    Check.that("move shifts an item to a later index", ordered.playlists.map(\.name) == ["B", "C", "A", "D"])
+    ordered.move(from: 3, to: 99)   // out-of-range target clamps to the end
+    Check.that("move clamps an out-of-range target", ordered.playlists.last?.name == "D")
+    // SwiftUI-style multi move
+    var byOffsets = PlaylistLibrary([a, b, c, d])
+    byOffsets.move(fromOffsets: IndexSet([0]), toOffset: 3)
+    Check.that("move(fromOffsets:toOffset:) matches SwiftUI semantics", byOffsets.playlists.map(\.name) == ["B", "C", "A", "D"])
+    // Codable round-trip of the whole library
+    if let data = try? JSONEncoder().encode(ordered), let back = try? JSONDecoder().decode(PlaylistLibrary.self, from: data) {
+        Check.that("the library round-trips through JSON", back == ordered)
+    } else {
+        Check.that("the library encodes/decodes", false)
+    }
+}
+
 Check.summarize()
