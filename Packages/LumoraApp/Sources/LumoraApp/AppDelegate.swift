@@ -329,7 +329,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func menuNeedsUpdate(_ menu: NSMenu) {
-        // SMAppService status can change externally (System Settings > Login Items).
+        // SMAppService status can change externally (System Settings > Login Items). Mirror the OS truth back
+        // into the source-of-truth preference (without re-applying — the OS already changed) so the Settings
+        // toggle and the persisted value never drift from what the system actually does.
+        if preferences.launchAtLogin != loginItem.isEnabled {
+            var prefs = preferences.preferences
+            prefs.launchAtLogin = loginItem.isEnabled
+            preferences.set(prefs)
+            Self.savePreferences(prefs)
+        }
         updateMenuState()
     }
 
@@ -407,18 +415,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc private func toggleLogin() {
-        do {
-            try loginItem.setEnabled(!loginItem.isEnabled)
-            // A fresh registration often lands in "requires approval"; take the user straight to the toggle.
-            if loginItem.requiresApproval { loginItem.openSystemSettings() }
-        } catch {
-            let alert = NSAlert()
-            alert.messageText = "Couldn’t change Launch at Login"
-            alert.informativeText = error.localizedDescription
-            alert.alertStyle = .warning
-            NSApp.activate(ignoringOtherApps: true)
-            alert.runModal()
-        }
+        // One source of truth: the menu writes the same preference the Settings toggle does, so the change is
+        // applied (via applyPreferences) and persisted once — no drift between the two toggles.
+        preferences.launchAtLogin = !loginItem.isEnabled
+        // A fresh registration often lands in "requires approval"; take the user straight to the toggle.
+        if loginItem.requiresApproval { loginItem.openSystemSettings() }
         updateMenuState()
     }
 
@@ -443,8 +444,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// restore the saved state) and whenever the settings UI changes them.
     private func applyPreferences(_ prefs: Preferences) {
         NSApp.setActivationPolicy(prefs.showDockIcon ? .regular : .accessory)
-        try? loginItem.setEnabled(prefs.launchAtLogin)
-        loginMenuItem?.state = loginItem.isEnabled ? .on : .off
+        do {
+            try loginItem.setEnabled(prefs.launchAtLogin)
+        } catch {
+            // Don't modal-alert here — applyPreferences also runs at launch. The menu toggle surfaces approval.
+            NSLog("Lumora: couldn't change Launch at Login: \(error.localizedDescription)")
+        }
+        updateMenuState()
     }
 
     private static func loadPreferences() -> Preferences {
