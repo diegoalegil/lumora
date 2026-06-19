@@ -273,4 +273,29 @@ do {
     Check.that("edits the monitor target", model.playlist.displayTarget == .display(uuid: "DISPLAY-1"))
 }
 
+// MARK: Preferences + PreferencesModel
+Check.section("PreferencesModel")
+do {
+    let prefs = Preferences(showDockIcon: true, launchAtLogin: false, activePlaylistID: UUID(uuidString: "00000000-0000-0000-0000-0000000000BB"))
+    if let data = try? JSONEncoder().encode(prefs), let back = try? JSONDecoder().decode(Preferences.self, from: data) {
+        Check.that("preferences round-trip through JSON", back == prefs)
+    } else {
+        Check.that("preferences encode/decode", false)
+    }
+    final class ApplyRecorder { var applied: [Preferences] = [] }
+    let rec = ApplyRecorder()
+    let model = PreferencesModel(Preferences(), onApply: { rec.applied.append($0) })
+    Check.that("starts with the Dock icon hidden (menu-bar only)", model.showDockIcon == false)
+    model.showDockIcon = true
+    Check.that("toggling the Dock icon applies live", model.showDockIcon == true && rec.applied.last?.showDockIcon == true)
+    let countAfterFirst = rec.applied.count
+    model.showDockIcon = true   // no-op
+    Check.that("a no-op edit does not re-apply", rec.applied.count == countAfterFirst)
+    model.launchAtLogin = true
+    Check.that("toggling launch-at-login applies live", rec.applied.last?.launchAtLogin == true)
+    // set(_:) replaces without re-applying (e.g. after loading from disk)
+    model.set(Preferences(showDockIcon: false))
+    Check.that("set(_:) replaces without firing apply", model.showDockIcon == false && rec.applied.count == countAfterFirst + 1)
+}
+
 Check.summarize()
