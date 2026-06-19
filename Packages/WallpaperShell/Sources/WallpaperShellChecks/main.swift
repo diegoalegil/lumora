@@ -233,4 +233,44 @@ do {
     Check.that("rotates once the carried-over remainder elapses", player.currentReference == items[1])
 }
 
+// MARK: PlaylistEditorModel
+Check.section("PlaylistEditorModel")
+do {
+    let items = [WallpaperReference(id: "a"), WallpaperReference(id: "b"), WallpaperReference(id: "c")]
+    let model = PlaylistEditorModel(Playlist(name: "Anime", items: items, mode: .inOrder, rotationInterval: 600,
+                                             transition: .init(kind: .crossfade, duration: 1.5)))
+    Check.that("reads the name and mode", model.name == "Anime" && model.mode == .inOrder)
+    model.name = "Chill"; model.mode = .shuffle
+    Check.that("edits the name and mode", model.playlist.name == "Chill" && model.playlist.mode == .shuffle)
+    // rotation interval shown in minutes, stored as seconds
+    Check.that("reads the interval in minutes", model.rotationIntervalMinutes == 10)
+    model.rotationIntervalMinutes = 30
+    Check.that("writes the interval back as seconds", model.playlist.rotationInterval == 1800)
+    model.rotationIntervalMinutes = 99_999
+    Check.that("clamps an over-long interval to 24h", model.playlist.rotationInterval == 1440 * 60)
+    model.rotationIntervalMinutes = 0
+    Check.that("a zero interval turns auto-rotation off", model.playlist.rotationInterval == nil && model.autoRotates == false)
+    model.autoRotates = true
+    Check.that("turning auto-rotation on restores the default interval", model.playlist.rotationInterval == PlaylistEditorModel.defaultIntervalSeconds)
+    // transition duration clamps to [0, 10]
+    model.transitionDurationSeconds = 50
+    Check.that("clamps an over-long transition", model.playlist.transition.duration == 10)
+    model.transitionDurationSeconds = -2
+    Check.that("clamps a negative transition to 0", model.playlist.transition.duration == 0)
+    model.transitionKind = .none
+    Check.that("edits the transition kind", model.playlist.transition.kind == .none)
+    // item editing: no-duplicate add, delete, reorder
+    model.addItem(WallpaperReference(id: "a"))
+    Check.that("adding a duplicate is ignored", model.items.count == 3)
+    model.addItem(WallpaperReference(id: "d"))
+    Check.that("adding a new wallpaper appends it", model.items.map(\.id) == ["a", "b", "c", "d"])
+    model.removeItems(atOffsets: IndexSet([1]))
+    Check.that("removing by offset drops the item", model.items.map(\.id) == ["a", "c", "d"])
+    model.moveItems(fromOffsets: IndexSet([0]), toOffset: 3)
+    Check.that("reordering moves the item", model.items.map(\.id) == ["c", "d", "a"])
+    // monitor target
+    model.monitorTarget = .display(uuid: "DISPLAY-1")
+    Check.that("edits the monitor target", model.playlist.displayTarget == .display(uuid: "DISPLAY-1"))
+}
+
 Check.summarize()
