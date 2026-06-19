@@ -372,4 +372,30 @@ do {
     Check.that("an identical resolution diffs to empty", DisplayResolutionDiff(from: old, to: old).isEmpty)
 }
 
+// MARK: PlaybackPlan
+Check.section("PlaybackPlan")
+do {
+    let all = Playlist(name: "All", items: [WallpaperReference(id: "x")], displayTarget: .all)
+    let plan = PlaybackPlan(active: all, connectedDisplays: ["D1", "D2"])
+    Check.that("an .all playlist plays on every display", plan.byDisplay.count == 2 && plan.playlist(forDisplay: "D1")?.id == all.id)
+    let one = Playlist(name: "One", displayTarget: .display(uuid: "D1"))
+    let targeted = PlaybackPlan(active: one, connectedDisplays: ["D1", "D2"])
+    Check.that("a display-targeted playlist plays only on its display", targeted.byDisplay.keys.sorted() == ["D1"])
+    Check.that("no active playlist yields an empty plan", PlaybackPlan(active: nil, connectedDisplays: ["D1"]).isEmpty)
+    // diff: start / stop / restart
+    let p1 = Playlist(name: "P1"), p2 = Playlist(name: "P2")
+    let old = PlaybackPlan(byDisplay: ["D1": p1, "D2": p1])
+    let new = PlaybackPlan(byDisplay: ["D1": p1, "D2": p2, "D3": p1])   // D1 same, D2 switched, D3 new, (none removed)
+    let diff = PlaybackPlanDiff(from: old, to: new)
+    Check.that("diff: a new display starts", diff.started == ["D3"])
+    Check.that("diff: a switched playlist restarts", diff.restarted == ["D2"])
+    Check.that("diff: an unchanged display is left alone", !diff.started.contains("D1") && !diff.restarted.contains("D1"))
+    let removed = PlaybackPlanDiff(from: old, to: PlaybackPlan(byDisplay: ["D1": p1]))
+    Check.that("diff: a dropped display stops", removed.stopped == ["D2"])
+    // editing a playlist (same id) does not restart it
+    var edited = p1; edited.name = "P1-edited"
+    Check.that("editing a playlist's contents (same id) does not restart it",
+               PlaybackPlanDiff(from: PlaybackPlan(byDisplay: ["D1": p1]), to: PlaybackPlan(byDisplay: ["D1": edited])).isEmpty)
+}
+
 Check.summarize()
