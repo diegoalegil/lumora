@@ -323,4 +323,37 @@ do {
     Check.that("reordering persists", repo.load().playlists.map(\.name) == ["Second", "First"])
 }
 
+// MARK: WallpaperPlaybackCoordinator (whole desktop, per display)
+Check.section("WallpaperPlaybackCoordinator")
+do {
+    final class SwitcherRecorder { var surfaces: [String: [RecordingSurface]] = [:] }
+    let rec = SwitcherRecorder()
+    let coord = WallpaperPlaybackCoordinator(makeSwitcher: { uuid in
+        DisplaySwitcher { ref in let s = RecordingSurface(ref); rec.surfaces[uuid, default: []].append(s); return s }
+    }, seed: { 1 })
+    let a = WallpaperReference(id: "a"), b = WallpaperReference(id: "b")
+    let p1 = Playlist(name: "P1", items: [a], displayTarget: .all)
+    let p2 = Playlist(name: "P2", items: [b], displayTarget: .all)
+    coord.apply(PlaybackPlan(byDisplay: ["D1": p1, "D2": p1]), now: 0)
+    Check.that("a plan starts a controller per display", coord.activeDisplays == ["D1", "D2"])
+    Check.that("each display shows its playlist's first item", coord.currentReference(forDisplay: "D1") == a && coord.currentReference(forDisplay: "D2") == a)
+    Check.that("each display mounted exactly one surface", rec.surfaces["D1"]?.count == 1 && rec.surfaces["D2"]?.count == 1)
+    // switch D2 to a different playlist → D2 restarts, D1 keeps running (no new surface)
+    coord.apply(PlaybackPlan(byDisplay: ["D1": p1, "D2": p2]), now: 10)
+    Check.that("a switched display shows the new playlist", coord.currentReference(forDisplay: "D2") == b)
+    Check.that("an unchanged display is not recreated", rec.surfaces["D1"]?.count == 1)
+    Check.that("the switched display mounted a new surface", rec.surfaces["D2"]?.count == 2)
+    // empty plan stops everything and tears down surfaces
+    coord.apply(PlaybackPlan(), now: 20)
+    Check.that("an empty plan stops all displays", coord.activeDisplays.isEmpty)
+    Check.that("stopping a display tears down its surface", rec.surfaces["D2"]?.last?.torndown == true)
+    // a rotating playlist advances on tick
+    let rot = Playlist(name: "Rot", items: [a, b], mode: .inOrder, rotationInterval: 100,
+                       transition: .init(kind: .none, duration: 0), displayTarget: .all)
+    coord.apply(PlaybackPlan(byDisplay: ["D1": rot]), now: 30)
+    Check.that("a restarted display shows the first item", coord.currentReference(forDisplay: "D1") == a)
+    coord.tick(now: 130)
+    Check.that("tick advances each display's rotation", coord.currentReference(forDisplay: "D1") == b)
+}
+
 Check.summarize()
