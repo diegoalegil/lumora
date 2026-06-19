@@ -38,6 +38,20 @@ public final class ScreenManager {
         return (screen.deviceDescription[key] as? NSNumber)?.uint32Value
     }
 
+    /// A stable string UUID for a display (`CGDisplayCreateUUIDFromDisplayID`) — unlike `CGDirectDisplayID`,
+    /// it survives reboots and reconnection, so it's the key the persisted per-monitor assignment uses. Nil if
+    /// the display has no UUID (e.g. a virtual/headless display). This bridges the live windows (keyed by
+    /// `DisplayID`) to the saved `DisplayAssignment` (keyed by UUID).
+    public static func displayUUID(for displayID: DisplayID) -> String? {
+        guard let cfUUID = CGDisplayCreateUUIDFromDisplayID(displayID)?.takeRetainedValue() else { return nil }
+        return CFUUIDCreateString(nil, cfUUID) as String?
+    }
+
+    /// Convenience: the stable UUID for a screen, via its hardware id.
+    public static func displayUUID(for screen: NSScreen) -> String? {
+        displayID(for: screen).flatMap(displayUUID(for:))
+    }
+
     /// Build the initial set of windows and start observing screen changes.
     public func start() {
         rebuild()
