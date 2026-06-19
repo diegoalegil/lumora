@@ -333,4 +333,43 @@ do {
     Check.that("a NaN-duration crossfade is a hard cut", t.begin(.crossfade, duration: .nan, now: 0) == false)
 }
 
+// MARK: DisplayAssignment (multi-monitor resolution)
+Check.section("DisplayAssignment")
+do {
+    let main = WallpaperReference(id: "main"), side = WallpaperReference(id: "side")
+    var assignment = DisplayAssignment(overrides: ["DISPLAY-1": side], fallback: main)
+    Check.that("a display with an override uses it", assignment.reference(for: "DISPLAY-1") == side)
+    Check.that("a display without an override uses the fallback", assignment.reference(for: "DISPLAY-2") == main)
+    // resolve over the connected set
+    let resolved = assignment.resolve(connectedDisplays: ["DISPLAY-1", "DISPLAY-2"])
+    Check.that("resolve maps each connected display", resolved == ["DISPLAY-1": side, "DISPLAY-2": main])
+    Check.that("an override for a disconnected display is ignored", assignment.resolve(connectedDisplays: ["DISPLAY-2"]) == ["DISPLAY-2": main])
+    // no fallback → a display without an override shows nothing
+    let noFallback = DisplayAssignment(overrides: ["DISPLAY-1": side])
+    Check.that("with no fallback an unassigned display is omitted", noFallback.resolve(connectedDisplays: ["DISPLAY-1", "DISPLAY-2"]) == ["DISPLAY-1": side])
+    // set/clear an override
+    assignment.setOverride(main, for: "DISPLAY-2")
+    Check.that("setOverride assigns a display", assignment.reference(for: "DISPLAY-2") == main && assignment.overrides.count == 2)
+    assignment.setOverride(nil, for: "DISPLAY-1")
+    Check.that("setOverride(nil) clears a display back to the fallback", assignment.overrides["DISPLAY-1"] == nil && assignment.reference(for: "DISPLAY-1") == main)
+    // Codable
+    if let data = try? JSONEncoder().encode(assignment), let back = try? JSONDecoder().decode(DisplayAssignment.self, from: data) {
+        Check.that("the assignment round-trips through JSON", back == assignment)
+    } else {
+        Check.that("the assignment encodes/decodes", false)
+    }
+}
+// Resolution diff: only the displays that changed need work.
+do {
+    let a = WallpaperReference(id: "a"), b = WallpaperReference(id: "b"), c = WallpaperReference(id: "c")
+    let old = ["D1": a, "D2": b, "D3": c]
+    let new = ["D1": a, "D2": c, "D4": b]   // D1 same, D2 changed, D3 removed, D4 added
+    let diff = DisplayResolutionDiff(from: old, to: new)
+    Check.that("diff finds the added display", diff.added == ["D4"])
+    Check.that("diff finds the removed display", diff.removed == ["D3"])
+    Check.that("diff finds the changed display", diff.changed == ["D2"])
+    Check.that("diff finds the unchanged display", diff.unchanged == ["D1"])
+    Check.that("an identical resolution diffs to empty", DisplayResolutionDiff(from: old, to: old).isEmpty)
+}
+
 Check.summarize()
