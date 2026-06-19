@@ -37,8 +37,9 @@ public struct PuppetMesh: Sendable, Equatable {
 public enum PuppetModel {
     /// Where a vertex's fields sit within one stride (position is always at byte 0/4). Centralising this so
     /// that supporting a new `.mdl` vertex format is one entry in `vertexLayout(…)` rather than a marker test
-    /// scattered through the parser.
-    private struct VertexLayout { let stride: Int; let uvOff: Int; let boneOff: Int; let weightOff: Int }
+    /// scattered through the parser. `boneOff`/`weightOff` are nil for formats with no per-vertex skinning
+    /// data (an older flat mesh) — the caller then leaves the vertices unskinned.
+    private struct VertexLayout { let stride: Int; let uvOff: Int; let boneOff: Int?; let weightOff: Int? }
 
     /// The single version→layout table: given the `.mdl`'s `MDLV<version>` field and a candidate vertex-block
     /// marker `<lead> 00 <kind> 01`, the vertex layout, or nil if this build doesn't recognise the format (the
@@ -52,6 +53,18 @@ public enum PuppetModel {
             return VertexLayout(stride: 52, uvOff: 44, boneOff: 12, weightOff: 28)
         default:
             return nil
+        }
+    }
+
+    /// Some older `.mdl` versions carry NO vertex-block marker; the vertex-bytes u32 sits right after the
+    /// material padding (at `materialEnd + 5`, where marker versions place their 4-byte marker then the
+    /// vertex-bytes). This returns the layout for such a version, or nil. Gated behind `LUMORA_PUPPET_V13`
+    /// until the rigs it unlocks pass a visual sign-off, so the default build's behaviour is unchanged.
+    private static func markerlessLayout(version: Int) -> VertexLayout? {
+        guard ProcessInfo.processInfo.environment["LUMORA_PUPPET_V13"] != nil else { return nil }
+        switch version {
+        case 13: return VertexLayout(stride: 20, uvOff: 12, boneOff: nil, weightOff: nil)   // position xyz + uv, flat (no skin)
+        default: return nil
         }
     }
 
@@ -86,6 +99,12 @@ public enum PuppetModel {
                 }
                 s += 1
             }
+            // A version with no marker (e.g. MDLV0013) places its vertex-bytes u32 at materialEnd+5. Treat
+            // materialEnd+1 as a virtual marker (so marker+4 = that u32 and marker+8 = the vertices) and the
+            // rest of the parser is unchanged.
+            if marker < 0, let ml = markerlessLayout(version: version) {
+                marker = p + 1; layout = ml
+            }
             // marker + 8 <= n so the vertex-block size read below stays in bounds (the search only guaranteed
             // the 4 marker bytes fit; this .mdl is untrusted input).
             guard marker >= 0, marker + 8 <= n, let layout else { return nil }
@@ -109,8 +128,12 @@ public enum PuppetModel {
                 let o = vertexBase + v * stride
                 positions.append(SIMD2(f32(o), f32(o + 4)))
                 uvs.append(SIMD2(f32(o + uvOff), f32(o + uvOff + 4)))
-                boneIdx.append(SIMD4(u32(o + boneOff), u32(o + boneOff + 4), u32(o + boneOff + 8), u32(o + boneOff + 12)))
-                weights.append(SIMD4(f32(o + weightOff), f32(o + weightOff + 4), f32(o + weightOff + 8), f32(o + weightOff + 12)))
+                // A flat-mesh layout (no skinning data) leaves the bone indices/weights zero — assemble finds
+                // no skeleton and the flat atlas is judged by the torn guard directly.
+                if let bo = boneOff { boneIdx.append(SIMD4(u32(o + bo), u32(o + bo + 4), u32(o + bo + 8), u32(o + bo + 12))) }
+                else { boneIdx.append(SIMD4(0, 0, 0, 0)) }
+                if let wo = weightOff { weights.append(SIMD4(f32(o + wo), f32(o + wo + 4), f32(o + wo + 8), f32(o + wo + 12))) }
+                else { weights.append(SIMD4(0, 0, 0, 0)) }
             }
             // The vertex block is untrusted bytes; a corrupt or variant `.mdl` can carry non-finite floats
             // (NaN/Inf bit patterns) in the position or UV fields. Refuse such a mesh cleanly so the caller

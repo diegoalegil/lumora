@@ -735,6 +735,12 @@ Check.that("the 0e 00 81 01 compact-vertex marker is recognised (52-byte stride)
 // the caller keeps the preview — never crash or guess a layout.
 Check.that("an unknown vertex marker → nil (graceful, no crash)",
            PuppetModel.parseMesh(flatPuppetMDL(gridVerts, gridTris, marker: [0x05, 0x00, 0x80, 0x01])) == nil)
+// A markerless version (e.g. MDLV0013 — no `XX 00 8x 01` marker at all) is recognised only behind the
+// LUMORA_PUPPET_V13 sign-off gate; in the default build it degrades to nil (the caller keeps the preview),
+// never crashing.
+var mdl13 = Data("MDLV0013".utf8); while mdl13.count < 0x40 { mdl13.append(0) }
+Check.that("a markerless MDLV0013 mesh degrades to nil by default (sign-off gated)",
+           PuppetModel.parseMesh(mdl13) == nil)
 
 Check.that("SceneVec3 parses a partial string", {
     let v = SceneVec3(parsing: "1.5 2"); return v.x == 1.5 && v.y == 2 && v.z == 0
