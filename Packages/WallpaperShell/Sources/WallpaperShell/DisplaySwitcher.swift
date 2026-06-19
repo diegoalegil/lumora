@@ -29,6 +29,8 @@ public protocol WallpaperSurface: AnyObject {
     var reference: WallpaperReference { get }
     /// Set the surface's opacity (0 = transparent, 1 = opaque) — the cross-fade ramps this.
     func setOpacity(_ opacity: Double)
+    /// Apply a playback directive (enable/disable rendering + target frame rate) to the live renderer.
+    func apply(_ directive: PlaybackDirective)
     /// Tear down the surface (close its window, release its renderer). Called when it's no longer shown.
     func teardown()
 }
@@ -78,6 +80,13 @@ public final class DisplaySwitcher {
         current?.setOpacity(transition.outgoingOpacity(at: now))
         incoming?.setOpacity(transition.incomingOpacity(at: now))
         if transition.tick(now: now) { finishTransition() }
+    }
+
+    /// Forward a playback directive to the live surface(s). During a cross-fade both the outgoing and
+    /// incoming surfaces get it, so neither stalls mid-transition.
+    public func apply(_ directive: PlaybackDirective) {
+        current?.apply(directive)
+        incoming?.apply(directive)
     }
 
     /// Release every surface this switcher owns.

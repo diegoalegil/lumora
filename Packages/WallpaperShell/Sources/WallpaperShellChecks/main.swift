@@ -150,8 +150,10 @@ do {
     let reference: WallpaperReference
     var opacity: Double = 1
     var torndown = false
+    var directives: [PlaybackDirective] = []
     init(_ reference: WallpaperReference) { self.reference = reference }
     func setOpacity(_ opacity: Double) { self.opacity = opacity }
+    func apply(_ directive: PlaybackDirective) { directives.append(directive) }
     func teardown() { torndown = true }
 }
 final class SurfaceRecorder { var made: [RecordingSurface] = [] }
@@ -354,6 +356,40 @@ do {
     Check.that("a restarted display shows the first item", coord.currentReference(forDisplay: "D1") == a)
     coord.tick(now: 130)
     Check.that("tick advances each display's rotation", coord.currentReference(forDisplay: "D1") == b)
+}
+
+// MARK: directive forwarding (playback policy reaches the live surface per display)
+Check.section("playback-directive forwarding")
+do {
+    final class SwitcherRecorder { var surfaces: [String: [RecordingSurface]] = [:] }
+    let rec = SwitcherRecorder()
+    let coord = WallpaperPlaybackCoordinator(makeSwitcher: { uuid in
+        DisplaySwitcher { ref in let s = RecordingSurface(ref); rec.surfaces[uuid, default: []].append(s); return s }
+    })
+    let a = WallpaperReference(id: "a")
+    let p = Playlist(name: "P", items: [a], displayTarget: .all)
+    coord.apply(PlaybackPlan(byDisplay: ["D1": p, "D2": p]), now: 0)
+    coord.apply(.paused, toDisplay: "D1")
+    Check.that("a per-display directive reaches that display's surface", rec.surfaces["D1"]?.first?.directives == [.paused])
+    Check.that("a per-display directive does not touch other displays", rec.surfaces["D2"]?.first?.directives.isEmpty == true)
+    coord.applyToAll(.active)
+    Check.that("applyToAll reaches every display", rec.surfaces["D1"]?.first?.directives == [.paused, .active] && rec.surfaces["D2"]?.first?.directives == [.active])
+    coord.apply(.active, toDisplay: "absent")   // unknown display is a safe no-op
+    Check.that("a directive to an unknown display is a no-op", coord.activeDisplays == ["D1", "D2"])
+}
+
+// MARK: a cross-fade forwards directives to BOTH live surfaces
+Check.section("directive during cross-fade")
+do {
+    let rec = SurfaceRecorder()
+    let switcher = DisplaySwitcher { ref in let s = RecordingSurface(ref); rec.made.append(s); return s }
+    let a = WallpaperReference(id: "a"), b = WallpaperReference(id: "b")
+    let fade = TransitionSettings(kind: .crossfade, duration: 10)
+    switcher.apply(a, transition: fade, now: 0)
+    switcher.apply(b, transition: fade, now: 0)   // start a fade: both surfaces alive
+    switcher.apply(.paused)
+    Check.that("both the outgoing and incoming surfaces get the directive mid-fade",
+               rec.made[0].directives == [.paused] && rec.made[1].directives == [.paused])
 }
 
 Check.summarize()

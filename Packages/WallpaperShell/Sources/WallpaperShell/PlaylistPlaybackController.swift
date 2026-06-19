@@ -51,6 +51,9 @@ public final class PlaylistPlaybackController {
     public func pause(now: TimeInterval) { scheduler.pause(now: now) }
     public func resume(now: TimeInterval) { scheduler.resume(now: now) }
 
+    /// Forward a playback-policy directive (rendering on/off + frame rate) to the display's live surface.
+    public func apply(_ directive: PlaybackDirective) { switcher.apply(directive) }
+
     /// Release the display's surfaces.
     public func teardown() { switcher.teardown() }
 }

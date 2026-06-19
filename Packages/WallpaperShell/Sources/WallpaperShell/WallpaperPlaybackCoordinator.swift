@@ -56,6 +56,17 @@ public final class WallpaperPlaybackCoordinator {
         for controller in controllers.values { controller.tick(now: now) }
     }
 
+    /// Route a playback-policy directive to one display's live surface (the policy engine decides per display
+    /// — e.g. an occluded screen pauses while a visible one keeps rendering).
+    public func apply(_ directive: PlaybackDirective, toDisplay uuid: String) {
+        controllers[uuid]?.apply(directive)
+    }
+
+    /// Push a directive to every display at once.
+    public func applyToAll(_ directive: PlaybackDirective) {
+        for controller in controllers.values { controller.apply(directive) }
+    }
+
     /// Manually skip a single display forward/back.
     public func next(display uuid: String, now: TimeInterval) { controllers[uuid]?.next(now: now) }
     public func previous(display uuid: String, now: TimeInterval) { controllers[uuid]?.previous(now: now) }
