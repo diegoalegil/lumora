@@ -113,6 +113,18 @@ Check.that("VideoPlayer handles the video type", VideoPlayer.supportedType == .v
 Check.that("VideoFallbackPlayer handles the video type", VideoFallbackPlayer.supportedType == .video)
 Check.that("WebPlayer handles the web type", WebPlayer.supportedType == .web)
 
+Check.section("DefaultWallpaperPlayerFactory routing")
+Check.that("native video container routes to the AVFoundation player",
+           DefaultWallpaperPlayerFactory.kind(for: resolved(.video, "v", file: "a.mp4")) == .nativeVideo)
+Check.that("mov also routes to the native player",
+           DefaultWallpaperPlayerFactory.kind(for: resolved(.video, "v", file: "a.mov")) == .nativeVideo)
+Check.that("a webm video routes to the WebKit <video> fallback",
+           DefaultWallpaperPlayerFactory.kind(for: resolved(.video, "v", file: "a.webm")) == .fallbackVideo)
+Check.that("a web wallpaper routes to the web player",
+           DefaultWallpaperPlayerFactory.kind(for: resolved(.web, "w", file: "index.html")) == .web)
+Check.that("a scene wallpaper routes to the scene player",
+           DefaultWallpaperPlayerFactory.kind(for: resolved(.scene, "s", file: "scene.pkg")) == .scene)
+
 Check.section("WallpaperNavigationPolicy")
 let wallpaperFolder = URL(fileURLWithPath: "/Steam/workshop/431960/123", isDirectory: true)
 let confined = WallpaperNavigationPolicy(confinedTo: wallpaperFolder)
