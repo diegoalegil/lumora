@@ -319,6 +319,10 @@ if let read = Check.noThrow("reads a PKGV0009 package", { try ScenePackage.read(
 }
 Check.that("reads legacy PKGV0001 with an empty TOC",
            (try? ScenePackage.read(buildPKG(version: "PKGV0001", files: [])))?.entries.isEmpty == true)
+// Generality / forward-compatibility: a FUTURE container version (one not in the sample library) must read
+// like any other — the version is a label, the TOC layout is the same across the PKGV family.
+Check.that("reads a future PKGV9999 version (version is a label, not a hard match)",
+           (try? ScenePackage.read(buildPKG(version: "PKGV9999", files: [("scene.json", Data("{}".utf8))])))?.entry(named: "scene.json")?.data == Data("{}".utf8))
 Check.that("sceneJSON is nil for an empty package",
            (try? ScenePackage.read(buildPKG(version: "PKGV0001", files: [])))?.sceneJSON == nil)
 Check.throwsError("rejects a non-PKGV signature",
@@ -372,6 +376,10 @@ if let h = Check.noThrow("reads a .tex header", { try SceneTexture.readHeader(te
 Check.that("TEXB0002 is uncompressed",
            (try? SceneTexture.readHeader(buildTexHeader(format: 0, texW: 512, texH: 512, imgW: 500, imgH: 500,
                                                         mipContainer: "TEXB0002", mipCount: 3)))?.compression == TextureCompression.none)
+// Generality: a FUTURE .tex container/mip version reads structurally — the header layout is shared across the
+// TEXV/TEXB family and the compression is inferred from the mip version number (≥3 ⇒ LZ4), not a hard match.
+Check.that("reads a future TEXV9999 / TEXB9999 texture header (LZ4 inferred from the version number)",
+           (try? SceneTexture.readHeader({ var d = cstr("TEXV9999"); d.append(cstr("TEXI0001")); d.append(le32(0)); d.append(le32(2)); d.append(le32(8)); d.append(le32(8)); d.append(le32(8)); d.append(le32(8)); d.append(le32(0)); d.append(cstr("TEXB9999")); d.append(le32(1)); return d }()))?.compression == TextureCompression.lz4)
 Check.that("RGBA8888 format code maps",
            (try? SceneTexture.readHeader(buildTexHeader(format: 0, texW: 8, texH: 8, imgW: 8, imgH: 8,
                                                         mipContainer: "TEXB0004", mipCount: 1)))?.format == TextureFormat.rgba8888)
