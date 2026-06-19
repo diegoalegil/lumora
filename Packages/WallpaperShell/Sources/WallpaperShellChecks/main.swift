@@ -298,4 +298,29 @@ do {
     Check.that("set(_:) replaces without firing apply", model.showDockIcon == false && rec.applied.count == countAfterFirst + 1)
 }
 
+// MARK: PlaylistStore (observable app state)
+Check.section("PlaylistStore")
+do {
+    let seed = PlaylistLibrary([Playlist(name: "First"), Playlist(name: "Second")])
+    let repo = InMemoryPlaylistRepository(seed)
+    let store = PlaylistStore(repository: repo)
+    Check.that("loads the library from the repository", store.library.count == 2)
+    Check.that("selects the first playlist on launch", store.selectedPlaylist?.name == "First")
+    // add → grows, selects the new one, persists
+    let added = store.addPlaylist(name: "Third")
+    Check.that("adding a playlist grows the library and selects it", store.library.count == 3 && store.selectedPlaylistID == added.id)
+    Check.that("the addition is persisted", repo.load().count == 3)
+    // edit → replaces + persists
+    var edited = added; edited.name = "Third+"
+    store.update(edited)
+    Check.that("editing replaces the playlist and persists", store.library.playlist(id: added.id)?.name == "Third+" && repo.load().playlist(id: added.id)?.name == "Third+")
+    // remove the selected → reselects the first remaining, persists
+    store.remove(id: added.id)
+    Check.that("removing the selected playlist reselects another", store.library.count == 2 && store.selectedPlaylist?.name == "First")
+    Check.that("the removal is persisted", repo.load().count == 2)
+    // reorder → persists
+    store.movePlaylists(fromOffsets: IndexSet([0]), toOffset: 2)
+    Check.that("reordering persists", repo.load().playlists.map(\.name) == ["Second", "First"])
+}
+
 Check.summarize()

@@ -14,6 +14,15 @@ public protocol PlaylistRepository {
     func save(_ library: PlaylistLibrary) throws
 }
 
+/// An in-memory `PlaylistRepository` for SwiftUI previews and tests — holds the library in RAM, persists
+/// nothing.
+public final class InMemoryPlaylistRepository: PlaylistRepository {
+    private var stored: PlaylistLibrary
+    public init(_ initial: PlaylistLibrary = .init()) { stored = initial }
+    public func load() -> PlaylistLibrary { stored }
+    public func save(_ library: PlaylistLibrary) throws { stored = library }
+}
+
 /// A JSON-file-backed `PlaylistRepository`. The file holds a versioned envelope so a future format change is a
 /// migration step, not a breaking read; a missing or corrupt file reads as an empty library (never a crash).
 public final class JSONPlaylistRepository: PlaylistRepository, Sendable {
