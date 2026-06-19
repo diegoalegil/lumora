@@ -35,6 +35,26 @@ public struct PuppetMesh: Sendable, Equatable {
 }
 
 public enum PuppetModel {
+    /// Where a vertex's fields sit within one stride (position is always at byte 0/4). Centralising this so
+    /// that supporting a new `.mdl` vertex format is one entry in `vertexLayout(…)` rather than a marker test
+    /// scattered through the parser.
+    private struct VertexLayout { let stride: Int; let uvOff: Int; let boneOff: Int; let weightOff: Int }
+
+    /// The single version→layout table: given the `.mdl`'s `MDLV<version>` field and a candidate vertex-block
+    /// marker `<lead> 00 <kind> 01`, the vertex layout, or nil if this build doesn't recognise the format (the
+    /// caller then keeps the static preview). Every supported vertex format is exactly one case here and the
+    /// rest of the parser is format-agnostic — adding a version means adding a case, nothing else.
+    private static func vertexLayout(version: Int, markerLead: UInt8, markerKind: UInt8) -> VertexLayout? {
+        switch (markerLead, markerKind) {
+        case (0x0f, 0x80):                   // the full 80-byte vertex (carries a normal/tangent block)
+            return VertexLayout(stride: 80, uvOff: 72, boneOff: 40, weightOff: 56)
+        case (0x09, 0x80), (0x0e, 0x81):     // the compact 52-byte vertex (no normal/tangent block)
+            return VertexLayout(stride: 52, uvOff: 44, boneOff: 12, weightOff: 28)
+        default:
+            return nil
+        }
+    }
+
     /// Parse the common 80-byte-vertex `.mdl` (the `MDLV…` form whose vertex section begins `0f 00 80 01`).
     /// A variant attribute layout (different stride) returns nil, so the caller keeps the static-preview
     /// fallback rather than drawing a garbled mesh. The 80-byte vertex is: position float32 at byte 0/4,
@@ -48,34 +68,28 @@ public enum PuppetModel {
             func f32(_ o: Int) -> Float { Float(bitPattern: u32(o)) }
             // "MDLV" magic.
             guard u32(0) == 0x564c444d else { return nil }
+            // The MDLV version (the four ASCII digits after the "MDLV" magic) selects the format together with
+            // the vertex-block marker that follows the material path.
+            let version = Int(String(bytes: (4 ..< 8).map { raw[$0] }, encoding: .ascii) ?? "0") ?? 0
             // Material path is a null-terminated string at 0x15; the vertex section follows it (after some
-            // padding), tagged by a vertex marker. Anchor the search past the material so a coincidental
-            // match inside the float data isn't picked up.
+            // padding), tagged by a `<lead> 00 <kind> 01` marker the version→layout table recognises. Anchor
+            // the search past the material so a coincidental match inside the float data isn't picked up.
             var p = 0x15
             while p < n, raw[p] != 0 { p += 1 }
             var marker = -1
-            var fmt: UInt8 = 0
+            var layout: VertexLayout?
             var s = p
             while s + 4 <= min(n, p + 96) {
-                // Three vertex markers seen across versions, all `<lead> 00 <kind> 01`: `0f 00 80 01` = the
-                // 80-byte vertex, `09 00 80 01` and `0e 00 81 01` = the compact 52-byte vertex (same fields,
-                // tighter offsets). A bad stride is still caught by the `vertexBytes % stride` guard below.
-                let lead = raw[s]
                 if raw[s + 1] == 0, raw[s + 3] == 0x01,
-                   (raw[s + 2] == 0x80 && (lead == 0x0f || lead == 0x09)) || (raw[s + 2] == 0x81 && lead == 0x0e) {
-                    marker = s; fmt = lead; break
+                   let l = vertexLayout(version: version, markerLead: raw[s], markerKind: raw[s + 2]) {
+                    marker = s; layout = l; break
                 }
                 s += 1
             }
             // marker + 8 <= n so the vertex-block size read below stays in bounds (the search only guaranteed
             // the 4 marker bytes fit; this .mdl is untrusted input).
-            guard marker >= 0, marker + 8 <= n else { return nil }
-
-            // Per-layout field offsets within one vertex (position is at 0/4 in every layout). The 0x09 and
-            // 0x0e markers are the compact 52-byte vertex; 0x0f is the full 80-byte vertex.
-            let stride: Int, uvOff: Int, boneOff: Int, weightOff: Int
-            if fmt == 0x09 || fmt == 0x0e { stride = 52; uvOff = 44; boneOff = 12; weightOff = 28 }
-            else                          { stride = 80; uvOff = 72; boneOff = 40; weightOff = 56 }
+            guard marker >= 0, marker + 8 <= n, let layout else { return nil }
+            let stride = layout.stride, uvOff = layout.uvOff, boneOff = layout.boneOff, weightOff = layout.weightOff
             let vertexBytes = Int(u32(marker + 4))
             let vertexBase = marker + 8
             guard vertexBytes > 0, vertexBytes % stride == 0, vertexBase + vertexBytes + 4 <= n else { return nil }

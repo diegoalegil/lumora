@@ -731,6 +731,10 @@ Check.that("a scattered atlas (parts packed far apart) is rejected as torn",
 // the same way (position at 0/4, UV at 44). A coherent grid in that form must parse and compose.
 Check.that("the 0e 00 81 01 compact-vertex marker is recognised (52-byte stride)",
            PuppetModel.parseMesh(flatPuppetMDL(gridVerts, gridTris, marker: [0x0e, 0x00, 0x81, 0x01], stride: 52, uvOff: 44))?.assembled == true)
+// A vertex marker the version→layout table doesn't know (here a made-up `05 00 80 01`) must degrade to nil —
+// the caller keeps the preview — never crash or guess a layout.
+Check.that("an unknown vertex marker → nil (graceful, no crash)",
+           PuppetModel.parseMesh(flatPuppetMDL(gridVerts, gridTris, marker: [0x05, 0x00, 0x80, 0x01])) == nil)
 
 Check.that("SceneVec3 parses a partial string", {
     let v = SceneVec3(parsing: "1.5 2"); return v.x == 1.5 && v.y == 2 && v.z == 0
