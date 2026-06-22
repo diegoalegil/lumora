@@ -1385,7 +1385,8 @@ public final class SceneRenderer {
             // An audio-visualiser layer drives its own scene graph: feed this frame's spectrum to the script,
             // run it, and draw the bars it produced (instead of the single base quad).
             if let group = layer.scriptGroup {
-                drawScriptGroup(encoder, group: group, layerAlpha: alpha, aspectScale: aspectScale)
+                drawScriptGroup(encoder, group: group, layer: layer, layerAlpha: alpha, aspectScale: aspectScale,
+                                time: time, swayX: swayX, swayY: swayY)
                 continue
             }
             // A puppet layer draws its assembled mesh (indexed triangles) textured with the atlas,
@@ -1487,7 +1488,8 @@ public final class SceneRenderer {
     /// the script leaves each bar at height 0, and nothing is drawn (graceful: an idle visualiser is empty,
     /// never wrong).
     private func drawScriptGroup(_ encoder: MTLRenderCommandEncoder, group: PreparedScriptGroup,
-                                 layerAlpha: Float, aspectScale: SIMD2<Float>) {
+                                 layer: PreparedLayer, layerAlpha: Float, aspectScale: SIMD2<Float>,
+                                 time: Double, swayX: Float, swayY: Float) {
         let left = currentAudioOverrides["g_AudioSpectrum64Left"] ?? []
         let right = currentAudioOverrides["g_AudioSpectrum64Right"] ?? []
         if !left.isEmpty || !right.isEmpty {
@@ -1499,6 +1501,9 @@ public final class SceneRenderer {
             group.runtime.setAudioSpectrum(bands)
         }
         group.runtime.runUpdate()
+        // The host layer's per-frame motion (parallax sway + origin keyframes) shifts every bar — the bars'
+        // origins are relative to the host's base, so add the host's animated NDC delta to each.
+        let hostOffset = animatedCenter(layer, time: time, swayX: swayX, swayY: swayY) - layer.center
         encoder.setRenderPipelineState(group.isAdditive ? pipelineAdditive : pipelineOver)
         for bar in group.runtime.scriptedLayers() {
             let half = SIMD2(group.baseHalfExtent.x * bar.scale.x, group.baseHalfExtent.y * bar.scale.y)
@@ -1514,7 +1519,7 @@ public final class SceneRenderer {
             case "top":    centerY = baseY - half.y
             default:       centerY = baseY
             }
-            var quad = QuadUniform(center: SIMD2(baseX, centerY), halfExtent: half,
+            var quad = QuadUniform(center: SIMD2(baseX + hostOffset.x, centerY + hostOffset.y), halfExtent: half,
                                    uvScale: group.uvScale, aspectScale: aspectScale)
             var tint = bar.color
             var a = bar.alpha * layerAlpha
