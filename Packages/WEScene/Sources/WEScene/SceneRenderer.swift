@@ -587,7 +587,7 @@ public final class SceneRenderer {
                 let runtime = layer.textScript.flatMap { SceneScriptRuntime(script: $0) }
                 let prepText = PreparedTextLayer(runtime: runtime, staticText: layer.textValue ?? "",
                                                  font: font, color: SIMD3(Float(layer.color.x), Float(layer.color.y), Float(layer.color.z)),
-                                                 pointSize: layer.pointSize, device: device, horizontalAlign: layer.horizontalAlign)
+                                                 pointSize: layer.pointSize, device: device, horizontalAlign: layer.horizontalAlign, verticalAlign: layer.verticalAlign)
                 let center = SIMD2(Float(layer.origin.x / orthoW * 2 - 1), Float(layer.origin.y / orthoH * 2 - 1))
                 prepared.append(PreparedLayer(
                     texture: whiteTexture, center: center, halfExtent: .zero, uvScale: SIMD2(1, 1),
@@ -1416,6 +1416,13 @@ public final class SceneRenderer {
                 switch textLayer.horizontalAlign {
                 case "left":  center.x += half.x
                 case "right": center.x -= half.x
+                default: break
+                }
+                // Vertical alignment anchors a string edge at the origin (scene y is up): a top-anchored
+                // string hangs below origin, a bottom-anchored one rises above it.
+                switch textLayer.verticalAlign {
+                case "top":    center.y -= half.y
+                case "bottom": center.y += half.y
                 default: break
                 }
                 var quad = QuadUniform(center: center,
