@@ -860,6 +860,11 @@ public enum WEShaderTranspiler {
         out = texCall.stringByReplacingMatches(in: out, range: NSRange(out.startIndex..., in: out),
                                                withTemplate: "$1.sample($1_smp,")
         out = rewriteMul(out)   // HLSL-style mul(a, b) → (a * b)
+        // GLSL component-wise relational builtins → Metal vector relational operators (same bvec result).
+        for (glsl, op) in [("lessThanEqual", "<="), ("greaterThanEqual", ">="), ("lessThan", "<"),
+                           ("greaterThan", ">"), ("notEqual", "!="), ("equal", "==")] {
+            out = rewriteBinaryCall(out, glsl, op)
+        }
         out = rewriteArrayConstructors(out)   // GLSL T[N](a, b, …) → MSL brace-init {a, b, …}
         out = promoteNumericLiterals(out)   // min(x, 1) with a float x → min(x, 1.0)
         out = rewriteReservedWords(out)
@@ -1029,13 +1034,18 @@ public enum WEShaderTranspiler {
         return s
     }
 
-    /// Rewrite WE/HLSL `mul(a, b)` matrix products to Metal's `(a) * (b)`, matching balanced parens so
-    /// nested calls and comma-bearing arguments survive.
-    private static func rewriteMul(_ source: String) -> String {
+    private static func rewriteMul(_ source: String) -> String { rewriteBinaryCall(source, "mul", "*") }
+
+    /// Rewrite a binary call `name(a, b)` to Metal's `((a) op (b))`, matching balanced parens so nested
+    /// calls and comma-bearing arguments survive. Used for HLSL `mul` (matrix product → `*`) and the GLSL
+    /// component-wise relational builtins (`lessThan`→`<`, `greaterThan`→`>`, `equal`→`==`, …) — Metal has
+    /// no such functions, but its vector relational operators return the same component-wise bool vector.
+    private static func rewriteBinaryCall(_ source: String, _ name: String, _ op: String) -> String {
         var s = source
         var searchFrom = s.startIndex
-        while let call = s.range(of: "mul(", range: searchFrom ..< s.endIndex) {
-            // Skip a "mul(" that's the tail of a longer identifier (premul(, accumul(, …).
+        let needle = name + "("
+        while let call = s.range(of: needle, range: searchFrom ..< s.endIndex) {
+            // Skip a needle that's the tail of a longer identifier (premul(, accumul(, …).
             if call.lowerBound > s.startIndex {
                 let before = s[s.index(before: call.lowerBound)]
                 if before.isLetter || before.isNumber || before == "_" { searchFrom = call.upperBound; continue }
@@ -1058,7 +1068,7 @@ public enum WEShaderTranspiler {
             let a = s[call.upperBound..<commaIndex].trimmingCharacters(in: .whitespacesAndNewlines)
             let b = s[s.index(after: commaIndex)..<closeIndex].trimmingCharacters(in: .whitespacesAndNewlines)
             let resumeOffset = s.distance(from: s.startIndex, to: call.lowerBound)
-            s.replaceSubrange(call.lowerBound...closeIndex, with: "((\(a)) * (\(b)))")
+            s.replaceSubrange(call.lowerBound...closeIndex, with: "((\(a)) \(op) (\(b)))")
             searchFrom = s.index(s.startIndex, offsetBy: resumeOffset)   // resume at the replacement; a nested mul inside it is still reached, without an O(N²) rescan
         }
         return s
@@ -1069,6 +1079,8 @@ public enum WEShaderTranspiler {
         for (glsl, msl) in [("vec2", "float2"), ("vec3", "float3"), ("vec4", "float4"),
                             ("mat2", "float2x2"), ("mat3", "float3x3"), ("mat4", "float4x4"),
                             ("ivec2", "int2"), ("ivec3", "int3"), ("ivec4", "int4"),
+                            ("bvec2", "bool2"), ("bvec3", "bool3"), ("bvec4", "bool4"),
+                            ("uvec2", "uint2"), ("uvec3", "uint3"), ("uvec4", "uint4"),
                             // WE cast macros (their #define is stripped) → Metal constructors
                             ("CAST2", "float2"), ("CAST3", "float3"), ("CAST4", "float4"),
                             // CAST3X3 truncates a mat4 to its upper-left 3×3; Metal has no such
@@ -1083,6 +1095,8 @@ public enum WEShaderTranspiler {
         switch type {
         case "vec2": return "float2"; case "vec3": return "float3"; case "vec4": return "float4"
         case "mat2": return "float2x2"; case "mat3": return "float3x3"; case "mat4": return "float4x4"
+        case "bvec2": return "bool2"; case "bvec3": return "bool3"; case "bvec4": return "bool4"
+        case "uvec2": return "uint2"; case "uvec3": return "uint3"; case "uvec4": return "uint4"
         default: return type
         }
     }

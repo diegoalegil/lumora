@@ -215,6 +215,22 @@ Check.that("rewrites GLSL discard to MSL discard_fragment()", discardMSL.contain
 if let device = MTLCreateSystemDefaultDevice() {
     Check.that("discard MSL compiles via Metal", (try? device.makeLibrary(source: discardMSL, options: nil))?.makeFunction(name: "we_fragment") != nil)
 }
+// GLSL bvec/uvec types and the component-wise relational builtins (lessThan/…) lower to Metal's bool/uint
+// vectors and its vector relational operators (which return the same component-wise bool vector).
+let relFrag = """
+varying vec4 v_TexCoord;
+void main() {
+    vec3 a = v_TexCoord.xyz;
+    vec3 b = vec3(0.5);
+    bvec3 lo = lessThan(a, b);
+    gl_FragColor = any(lo) ? vec4(1.0) : vec4(0.0);
+}
+"""
+let relMSL = WEShaderTranspiler.fragmentToMSL(relFrag)
+Check.that("lowers bvec3 + the lessThan relational builtin", relMSL.contains("bool3") && !relMSL.contains("lessThan("))
+if let device = MTLCreateSystemDefaultDevice() {
+    Check.that("relational/bvec MSL compiles via Metal", (try? device.makeLibrary(source: relMSL, options: nil))?.makeFunction(name: "we_fragment") != nil)
+}
 // A function definition in an included header must not register its name as a variable dimension (a
 // `vec3 blend(...)` helper would otherwise mis-type a later `float blend` local and force a bad swizzle).
 Check.that("a vecN function name is not mistaken for a vecN variable", {
