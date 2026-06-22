@@ -200,6 +200,51 @@ Check.that("truncates a same-width compound assigned to a narrower target", arit
 if let device = MTLCreateSystemDefaultDevice() {
     Check.that("harmonised arithmetic MSL compiles via Metal", (try? device.makeLibrary(source: arithMSL, options: nil))?.makeFunction(name: "we_vertex") != nil)
 }
+// GLSL `discard;` (alpha-test / cutout fragments) lowers to MSL `discard_fragment();`.
+let discardFrag = """
+varying vec4 v_TexCoord;
+uniform sampler2D g_Texture0;
+void main() {
+    vec4 c = texSample2D(g_Texture0, v_TexCoord.xy);
+    if (c.a < 0.5) discard;
+    gl_FragColor = c;
+}
+"""
+let discardMSL = WEShaderTranspiler.fragmentToMSL(discardFrag)
+Check.that("rewrites GLSL discard to MSL discard_fragment()", discardMSL.contains("discard_fragment()"))
+if let device = MTLCreateSystemDefaultDevice() {
+    Check.that("discard MSL compiles via Metal", (try? device.makeLibrary(source: discardMSL, options: nil))?.makeFunction(name: "we_fragment") != nil)
+}
+// GLSL bvec/uvec types and the component-wise relational builtins (lessThan/…) lower to Metal's bool/uint
+// vectors and its vector relational operators (which return the same component-wise bool vector).
+let relFrag = """
+varying vec4 v_TexCoord;
+void main() {
+    vec3 a = v_TexCoord.xyz;
+    vec3 b = vec3(0.5);
+    bvec3 lo = lessThan(a, b);
+    gl_FragColor = any(lo) ? vec4(1.0) : vec4(0.0);
+}
+"""
+let relMSL = WEShaderTranspiler.fragmentToMSL(relFrag)
+Check.that("lowers bvec3 + the lessThan relational builtin", relMSL.contains("bool3") && !relMSL.contains("lessThan("))
+if let device = MTLCreateSystemDefaultDevice() {
+    Check.that("relational/bvec MSL compiles via Metal", (try? device.makeLibrary(source: relMSL, options: nil))?.makeFunction(name: "we_fragment") != nil)
+}
+// gl_FragCoord (window-space pixel coordinate) wires to MSL's [[position]] fragment parameter.
+let fcFrag = """
+varying vec4 v_TexCoord;
+uniform vec4 g_Texture0Resolution;
+void main() {
+    vec2 uv = gl_FragCoord.xy / g_Texture0Resolution.xy;
+    gl_FragColor = vec4(uv, 0.0, 1.0);
+}
+"""
+let fcMSL = WEShaderTranspiler.fragmentToMSL(fcFrag)
+Check.that("wires gl_FragCoord to a [[position]] parameter", fcMSL.contains("[[position]]") && fcMSL.contains("_fragCoord") && !fcMSL.contains("gl_FragCoord"))
+if let device = MTLCreateSystemDefaultDevice() {
+    Check.that("gl_FragCoord MSL compiles via Metal", (try? device.makeLibrary(source: fcMSL, options: nil))?.makeFunction(name: "we_fragment") != nil)
+}
 // A function definition in an included header must not register its name as a variable dimension (a
 // `vec3 blend(...)` helper would otherwise mis-type a later `float blend` local and force a bad swizzle).
 Check.that("a vecN function name is not mistaken for a vecN variable", {
