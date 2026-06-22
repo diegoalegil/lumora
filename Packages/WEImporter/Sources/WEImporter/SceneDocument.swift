@@ -182,6 +182,7 @@ public struct SceneLayer: Sendable, Equatable {
     public let fontPath: String?          // in-package path of the .ttf (e.g. "fonts/RobotoMono-Regular.ttf")
     public let pointSize: Double          // font point size in scene units
     public let horizontalAlign: String?   // "left" | "center" | "right"
+    public let verticalAlign: String?     // "top" | "center" | "bottom"
     /// True when this object is a text layer (drawn from rendered glyphs, not a packed texture).
     public var isTextLayer: Bool { textValue != nil || textScript != nil }
     /// A SceneScript bound to one of this object's properties (visible / scale / origin) that manipulates the
@@ -194,8 +195,8 @@ public struct SceneLayer: Sendable, Equatable {
                 alphaAnimation: AlphaAnimation?, originAnimation: Vec3Animation?, parallaxDepth: SceneVec3,
                 visible: Bool, blending: String?, shader: String?, effects: [LayerEffect], puppetPath: String? = nil,
                 textValue: String? = nil, textScript: String? = nil, fontPath: String? = nil,
-                pointSize: Double = 32, horizontalAlign: String? = nil, driverScript: String? = nil,
-                alignment: String? = nil) {
+                pointSize: Double = 32, horizontalAlign: String? = nil, verticalAlign: String? = nil,
+                driverScript: String? = nil, alignment: String? = nil) {
         self.name = name
         self.texturePath = texturePath
         self.isSolidLayer = isSolidLayer
@@ -218,6 +219,7 @@ public struct SceneLayer: Sendable, Equatable {
         self.fontPath = fontPath
         self.pointSize = pointSize
         self.horizontalAlign = horizontalAlign
+        self.verticalAlign = verticalAlign
         self.driverScript = driverScript
         self.alignment = alignment
     }
@@ -360,7 +362,8 @@ public enum SceneGraph {
                         textValue: value, textScript: script,
                         fontPath: object["font"] as? String,
                         pointSize: pointSize,
-                        horizontalAlign: object["horizontalalign"] as? String))
+                        horizontalAlign: object["horizontalalign"] as? String,
+                        verticalAlign: object["verticalalign"] as? String))
                     continue
                 }
             }

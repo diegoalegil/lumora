@@ -587,7 +587,7 @@ public final class SceneRenderer {
                 let runtime = layer.textScript.flatMap { SceneScriptRuntime(script: $0) }
                 let prepText = PreparedTextLayer(runtime: runtime, staticText: layer.textValue ?? "",
                                                  font: font, color: SIMD3(Float(layer.color.x), Float(layer.color.y), Float(layer.color.z)),
-                                                 pointSize: layer.pointSize, device: device, horizontalAlign: layer.horizontalAlign)
+                                                 pointSize: layer.pointSize, device: device, horizontalAlign: layer.horizontalAlign, verticalAlign: layer.verticalAlign)
                 let center = SIMD2(Float(layer.origin.x / orthoW * 2 - 1), Float(layer.origin.y / orthoH * 2 - 1))
                 prepared.append(PreparedLayer(
                     texture: whiteTexture, center: center, halfExtent: .zero, uvScale: SIMD2(1, 1),
@@ -1385,7 +1385,8 @@ public final class SceneRenderer {
             // An audio-visualiser layer drives its own scene graph: feed this frame's spectrum to the script,
             // run it, and draw the bars it produced (instead of the single base quad).
             if let group = layer.scriptGroup {
-                drawScriptGroup(encoder, group: group, layerAlpha: alpha, aspectScale: aspectScale)
+                drawScriptGroup(encoder, group: group, layer: layer, layerAlpha: alpha, aspectScale: aspectScale,
+                                time: time, swayX: swayX, swayY: swayY)
                 continue
             }
             // A puppet layer draws its assembled mesh (indexed triangles) textured with the atlas,
@@ -1416,6 +1417,13 @@ public final class SceneRenderer {
                 switch textLayer.horizontalAlign {
                 case "left":  center.x += half.x
                 case "right": center.x -= half.x
+                default: break
+                }
+                // Vertical alignment anchors a string edge at the origin (scene y is up): a top-anchored
+                // string hangs below origin, a bottom-anchored one rises above it.
+                switch textLayer.verticalAlign {
+                case "top":    center.y -= half.y
+                case "bottom": center.y += half.y
                 default: break
                 }
                 var quad = QuadUniform(center: center,
@@ -1480,7 +1488,8 @@ public final class SceneRenderer {
     /// the script leaves each bar at height 0, and nothing is drawn (graceful: an idle visualiser is empty,
     /// never wrong).
     private func drawScriptGroup(_ encoder: MTLRenderCommandEncoder, group: PreparedScriptGroup,
-                                 layerAlpha: Float, aspectScale: SIMD2<Float>) {
+                                 layer: PreparedLayer, layerAlpha: Float, aspectScale: SIMD2<Float>,
+                                 time: Double, swayX: Float, swayY: Float) {
         let left = currentAudioOverrides["g_AudioSpectrum64Left"] ?? []
         let right = currentAudioOverrides["g_AudioSpectrum64Right"] ?? []
         if !left.isEmpty || !right.isEmpty {
@@ -1492,6 +1501,9 @@ public final class SceneRenderer {
             group.runtime.setAudioSpectrum(bands)
         }
         group.runtime.runUpdate()
+        // The host layer's per-frame motion (parallax sway + origin keyframes) shifts every bar — the bars'
+        // origins are relative to the host's base, so add the host's animated NDC delta to each.
+        let hostOffset = animatedCenter(layer, time: time, swayX: swayX, swayY: swayY) - layer.center
         encoder.setRenderPipelineState(group.isAdditive ? pipelineAdditive : pipelineOver)
         for bar in group.runtime.scriptedLayers() {
             let half = SIMD2(group.baseHalfExtent.x * bar.scale.x, group.baseHalfExtent.y * bar.scale.y)
@@ -1507,7 +1519,7 @@ public final class SceneRenderer {
             case "top":    centerY = baseY - half.y
             default:       centerY = baseY
             }
-            var quad = QuadUniform(center: SIMD2(baseX, centerY), halfExtent: half,
+            var quad = QuadUniform(center: SIMD2(baseX + hostOffset.x, centerY + hostOffset.y), halfExtent: half,
                                    uvScale: group.uvScale, aspectScale: aspectScale)
             var tint = bar.color
             var a = bar.alpha * layerAlpha

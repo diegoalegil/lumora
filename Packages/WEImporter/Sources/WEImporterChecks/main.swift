@@ -748,11 +748,11 @@ Check.that("the 0e 00 81 01 marker also resolves as an 84-byte vertex (stride di
 // the caller keeps the preview — never crash or guess a layout.
 Check.that("an unknown vertex marker → nil (graceful, no crash)",
            PuppetModel.parseMesh(flatPuppetMDL(gridVerts, gridTris, marker: [0x05, 0x00, 0x80, 0x01])) == nil)
-// A markerless version (e.g. MDLV0013 — no `XX 00 8x 01` marker at all) is recognised only behind the
-// LUMORA_PUPPET_V13 sign-off gate; in the default build it degrades to nil (the caller keeps the preview),
-// never crashing.
+// A markerless version (MDLV0013 — no `XX 00 8x 01` marker) is recognised by default now its rig was
+// signed off (the LUMORA_PUPPET_V13 gate was dropped). This crafted one carries an EMPTY vertex block, so
+// it degrades to nil via the `vertexBytes > 0` bounds guard rather than the old gate — never crashing.
 var mdl13 = Data("MDLV0013".utf8); while mdl13.count < 0x40 { mdl13.append(0) }
-Check.that("a markerless MDLV0013 mesh degrades to nil by default (sign-off gated)",
+Check.that("a markerless MDLV0013 with an empty vertex block degrades to nil (bounds guard)",
            PuppetModel.parseMesh(mdl13) == nil)
 
 Check.that("SceneVec3 parses a partial string", {
