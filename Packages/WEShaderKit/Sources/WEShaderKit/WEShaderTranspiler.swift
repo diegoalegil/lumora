@@ -46,6 +46,13 @@ public enum WEShaderTranspiler {
         }
         for uniform in scalars { qualifiers.append((uniform.name, "u.\(uniform.name)")) }
         qualifiers.append(("gl_FragColor", "_fragColor"))
+        // MSL exposes the fragment's window-space pixel coordinate through a [[position]] parameter — GLSL's
+        // gl_FragCoord. Wire it only when the shader reads it. (MSL's origin is top-left vs GLSL's bottom-left;
+        // WE shaders that read gl_FragCoord normalise by resolution, so the origin difference doesn't bite.)
+        // gl_FragCoord is a builtin (never declared), so it appears even on its first use — `isReferenced`
+        // wants >1 occurrence and would miss it; check for a single word-bounded occurrence instead.
+        let usesFragCoord = resolved.range(of: #"(?<![\w.])gl_FragCoord(?![\w])"#, options: .regularExpression) != nil
+        if usesFragCoord { qualifiers.append(("gl_FragCoord", "_fragCoord")) }
 
         var body = rewriteTypes(rewriteIntrinsics(mainBody(of: resolved)))
         body = coerceVectorTruncations(body, vectorDims(of: resolved))
@@ -73,6 +80,7 @@ public enum WEShaderTranspiler {
             msl += ",\n    \(textureType) \(sampler.name) [[texture(\(index))]]"
             msl += ",\n    sampler \(sampler.name)_smp [[sampler(\(index))]]"
         }
+        if usesFragCoord { msl += ",\n    float4 _fragCoord [[position]]" }
         msl += ") {\n    float4 _fragColor = float4(0.0);\n"
         msl += arrayVaryingLocals(varyings, from: "in")
         msl += globalConstLocals(of: resolved, applying: qualifiers)

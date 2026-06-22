@@ -231,6 +231,20 @@ Check.that("lowers bvec3 + the lessThan relational builtin", relMSL.contains("bo
 if let device = MTLCreateSystemDefaultDevice() {
     Check.that("relational/bvec MSL compiles via Metal", (try? device.makeLibrary(source: relMSL, options: nil))?.makeFunction(name: "we_fragment") != nil)
 }
+// gl_FragCoord (window-space pixel coordinate) wires to MSL's [[position]] fragment parameter.
+let fcFrag = """
+varying vec4 v_TexCoord;
+uniform vec4 g_Texture0Resolution;
+void main() {
+    vec2 uv = gl_FragCoord.xy / g_Texture0Resolution.xy;
+    gl_FragColor = vec4(uv, 0.0, 1.0);
+}
+"""
+let fcMSL = WEShaderTranspiler.fragmentToMSL(fcFrag)
+Check.that("wires gl_FragCoord to a [[position]] parameter", fcMSL.contains("[[position]]") && fcMSL.contains("_fragCoord") && !fcMSL.contains("gl_FragCoord"))
+if let device = MTLCreateSystemDefaultDevice() {
+    Check.that("gl_FragCoord MSL compiles via Metal", (try? device.makeLibrary(source: fcMSL, options: nil))?.makeFunction(name: "we_fragment") != nil)
+}
 // A function definition in an included header must not register its name as a variable dimension (a
 // `vec3 blend(...)` helper would otherwise mis-type a later `float blend` local and force a bad swizzle).
 Check.that("a vecN function name is not mistaken for a vecN variable", {
