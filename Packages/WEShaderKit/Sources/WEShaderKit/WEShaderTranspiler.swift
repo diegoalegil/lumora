@@ -867,6 +867,9 @@ public enum WEShaderTranspiler {
         for (glsl, msl) in [("frac", "fract"), ("inversesqrt", "rsqrt"), ("lerp", "mix")] {
             out = replaceWord(out, glsl, msl)
         }
+        // GLSL's `discard;` statement is MSL's `discard_fragment();` call (alpha-test / cutout fragments).
+        // `discard` is a GLSL reserved keyword — never an identifier — so a word-bounded replace is safe.
+        out = replaceWord(out, "discard", "discard_fragment()")
         return out
     }
 

@@ -200,6 +200,21 @@ Check.that("truncates a same-width compound assigned to a narrower target", arit
 if let device = MTLCreateSystemDefaultDevice() {
     Check.that("harmonised arithmetic MSL compiles via Metal", (try? device.makeLibrary(source: arithMSL, options: nil))?.makeFunction(name: "we_vertex") != nil)
 }
+// GLSL `discard;` (alpha-test / cutout fragments) lowers to MSL `discard_fragment();`.
+let discardFrag = """
+varying vec4 v_TexCoord;
+uniform sampler2D g_Texture0;
+void main() {
+    vec4 c = texSample2D(g_Texture0, v_TexCoord.xy);
+    if (c.a < 0.5) discard;
+    gl_FragColor = c;
+}
+"""
+let discardMSL = WEShaderTranspiler.fragmentToMSL(discardFrag)
+Check.that("rewrites GLSL discard to MSL discard_fragment()", discardMSL.contains("discard_fragment()"))
+if let device = MTLCreateSystemDefaultDevice() {
+    Check.that("discard MSL compiles via Metal", (try? device.makeLibrary(source: discardMSL, options: nil))?.makeFunction(name: "we_fragment") != nil)
+}
 // A function definition in an included header must not register its name as a variable dimension (a
 // `vec3 blend(...)` helper would otherwise mis-type a later `float blend` local and force a bad swizzle).
 Check.that("a vecN function name is not mistaken for a vecN variable", {
