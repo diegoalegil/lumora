@@ -1134,8 +1134,14 @@ public final class SceneRenderer {
             // velocity over `age` is ∫v₀e^(-drag·t)dt = v₀·(1-e^(-drag·age))/drag, falling back to v₀·age when
             // there's no drag (the limit as drag→0), so an undragged system is byte-identical.
             let travel = s.drag > 0 ? (1 - exp(-s.drag * age)) / s.drag : age
-            var posX = spawnX + velX * travel + 0.5 * s.gravity.x * age * age
-            var posY = spawnY + velY * travel + 0.5 * s.gravity.y * age * age
+            // Gravity is damped by the SAME drag — a dragged particle approaches terminal velocity g/drag
+            // instead of accelerating forever. Position from constant gravity under linear drag is
+            // (g/drag)·(age − travel); with no drag this is the familiar ½·g·age² (the drag→0 limit), so an
+            // undragged system stays byte-identical.
+            let gx = s.drag > 0 ? (s.gravity.x / s.drag) * (age - travel) : 0.5 * s.gravity.x * age * age
+            let gy = s.drag > 0 ? (s.gravity.y / s.drag) * (age - travel) : 0.5 * s.gravity.y * age * age
+            var posX = spawnX + velX * travel + gx
+            var posY = spawnY + velY * travel + gy
             let lifeFrac = age / life
             // Alpha over life. A universal birth/death envelope softens every sprite at spawn and death — this
             // is what keeps dense additive crowds from saturating to a flat wash. A system's explicit alphafade

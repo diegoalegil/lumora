@@ -884,6 +884,17 @@ if let spin = ParticleSystem.parse(spinParticle) {
                spin.initialRotation.lowerBound == 0 && abs(spin.initialRotation.upperBound - 2 * .pi) < 1e-6)
     Check.that("angularvelocityrandom → the z spin-rate range", spin.angularVelocity == -2 ... 3)
 }
+// rotationrandom honours shipped bounds: a scalar pair, and the z of an "x y z" vector pair.
+if let rScalar = ParticleSystem.parse(["emitter": [["name": "boxrandom", "rate": 5]],
+        "initializer": [["name": "rotationrandom", "min": -0.4, "max": -0.3]]]) {
+    Check.that("rotationrandom honours scalar min/max bounds",
+               abs(rScalar.initialRotation.lowerBound - (-0.4)) < 1e-6 && abs(rScalar.initialRotation.upperBound - (-0.3)) < 1e-6)
+}
+if let rVec = ParticleSystem.parse(["emitter": [["name": "boxrandom", "rate": 5]],
+        "initializer": [["name": "rotationrandom", "min": "0 0 0", "max": "0 0 1.5"]]]) {
+    Check.that("rotationrandom reads the z of an x-y-z vector bound",
+               rVec.initialRotation.lowerBound == 0 && abs(rVec.initialRotation.upperBound - 1.5) < 1e-6)
+}
 if let plain = ParticleSystem.parse(boxParticle) {
     Check.that("a system without rotation has no spin", plain.initialRotation == 0 ... 0 && plain.angularVelocity == 0 ... 0)
     Check.that("a system without sizechange holds a constant size", plain.sizeStart == 1 && plain.sizeEnd == 1)
