@@ -739,6 +739,11 @@ Check.that("a scattered atlas (parts packed far apart) is rejected as torn",
 // the same way (position at 0/4, UV at 44). A coherent grid in that form must parse and compose.
 Check.that("the 0e 00 81 01 compact-vertex marker is recognised (52-byte stride)",
            PuppetModel.parseMesh(flatPuppetMDL(gridVerts, gridTris, marker: [0x0e, 0x00, 0x81, 0x01], stride: 52, uvOff: 44))?.assembled == true)
+// The SAME `0e 00 81 01` marker also ships as an 84-byte vertex (a normal/tangent block; the MDLV0023 model
+// in scene 3577990983 / "Reze"). The marker byte alone doesn't fix the stride, so the parser must pick the
+// candidate stride that evenly divides the declared vertex-block size — here 84, not 52 — and compose it.
+Check.that("the 0e 00 81 01 marker also resolves as an 84-byte vertex (stride disambiguated by block size)",
+           PuppetModel.parseMesh(flatPuppetMDL(gridVerts, gridTris, marker: [0x0e, 0x00, 0x81, 0x01], stride: 84, uvOff: 76))?.assembled == true)
 // A vertex marker the version→layout table doesn't know (here a made-up `05 00 80 01`) must degrade to nil —
 // the caller keeps the preview — never crash or guess a layout.
 Check.that("an unknown vertex marker → nil (graceful, no crash)",
