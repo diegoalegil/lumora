@@ -157,8 +157,23 @@ public struct ParticleSystem: Sendable, Equatable {
                 system.color = Range3(min: vec3(initializer["min"], default: 255),
                                       max: vec3(initializer["max"], default: 255))
             case "rotationrandom":
-                // A random starting orientation. WE stores no bounds for the common 2-D case → a full circle.
-                system.initialRotation = 0 ... (2 * .pi)
+                // A random starting orientation (screen-plane z, radians). WE encodes the bound either as a
+                // scalar or as the z of an "x y z" vector; honour whichever is present and only fall back to a
+                // full circle when the system ships no bound at all. Values are clamped finite defensively.
+                func rotZ(_ v: Any?) -> Double? {
+                    let raw: Double?
+                    if let n = v as? NSNumber { raw = n.doubleValue }
+                    else if let s = v as? String, !s.isEmpty { raw = SceneVec3(parsing: s).z }
+                    else { raw = nil }
+                    return raw.map { clampFinite($0, -1_000_000, 1_000_000, 0) }
+                }
+                let lo = rotZ(initializer["min"]), hi = rotZ(initializer["max"])
+                if lo != nil || hi != nil {
+                    let a = lo ?? hi!, b = hi ?? lo!
+                    system.initialRotation = min(a, b) ... max(a, b)
+                } else {
+                    system.initialRotation = 0 ... (2 * .pi)
+                }
             case "angularvelocityrandom":
                 // Per-axis spin; for a flat sprite only the z component (the screen-plane spin, rad/s) matters.
                 let lo = vec3(initializer["min"]).z, hi = vec3(initializer["max"]).z
