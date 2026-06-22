@@ -30,6 +30,8 @@ public struct ImportDiagnostic: Error, Sendable, Equatable, CustomStringConverti
         case missingMainFile
         /// The manifest names a main `file` that is not present on disk.
         case missingMainAsset(String)
+        /// The manifest names a main `file` that resolves outside its own folder (path traversal).
+        case unsafeMainFile(String)
 
         public var description: String {
             switch self {
@@ -40,6 +42,7 @@ public struct ImportDiagnostic: Error, Sendable, Equatable, CustomStringConverti
             case .unknownType(let t):           return "unknown type '\(t)'"
             case .missingMainFile:              return "manifest has no main file"
             case .missingMainAsset(let f):      return "main file '\(f)' is missing on disk"
+            case .unsafeMainFile(let f):        return "main file '\(f)' escapes the wallpaper folder"
             }
         }
     }

@@ -9,7 +9,7 @@ public enum PlayableWallpapers {
         switch wallpaper.type {
         case .video: return VideoFormatSupport.isPlayable(wallpaper.mainFileURL)
         case .web:   return true
-        case .scene: return false   // no scene player yet
+        case .scene: return true    // rendered by ScenePlayer (WEScene Metal compositor)
         }
     }
 

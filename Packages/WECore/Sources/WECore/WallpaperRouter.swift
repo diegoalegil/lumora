@@ -16,7 +16,24 @@ public struct WallpaperRouter: Sendable {
             throw RoutingError.missingMainFile(type: type)
         }
         let mainFileURL = ref.folderURL.appendingPathComponent(manifest.file)
+        // The manifest is untrusted Workshop content: a `file` like "../../../etc/passwd" (or an
+        // absolute path) would resolve outside the wallpaper's own folder, and the players read it
+        // verbatim. Require the resolved path to stay inside the folder so a manifest can't name an
+        // arbitrary file on disk.
+        guard Self.path(mainFileURL, isWithin: ref.folderURL) else {
+            throw RoutingError.unsafeMainFile(file: manifest.file)
+        }
         return ResolvedWallpaper(ref: ref, type: type, manifest: manifest, mainFileURL: mainFileURL)
+    }
+
+    /// True when `url`, after collapsing any `.`/`..`, still points to a location strictly inside
+    /// `folder`. Comparison is purely lexical (`.standardized`, not `.standardizedFileURL`): the latter
+    /// resolves symlinks only for paths that exist on disk, which would compare an existing folder
+    /// against a not-yet-existing asset inconsistently. The trailing-slash guard rejects a sibling
+    /// whose name merely shares the prefix (`/library/wall` is not "inside" `/library/wallpaper`).
+    static func path(_ url: URL, isWithin folder: URL) -> Bool {
+        let base = folder.standardized.path
+        return url.standardized.path.hasPrefix(base + "/")
     }
 
     /// Load `project.json` from a folder and resolve in one step.
@@ -31,11 +48,14 @@ public struct WallpaperRouter: Sendable {
 
 public enum RoutingError: Error, Equatable, Sendable, CustomStringConvertible {
     case missingMainFile(type: WallpaperType)
+    case unsafeMainFile(file: String)
 
     public var description: String {
         switch self {
         case .missingMainFile(let type):
             return "Manifest of type '\(type.rawValue)' has no main `file`."
+        case .unsafeMainFile(let file):
+            return "Manifest main `file` \"\(file)\" resolves outside the wallpaper folder."
         }
     }
 }

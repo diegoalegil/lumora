@@ -41,7 +41,18 @@ public struct WallpaperLibraryScanner: Sendable {
 
         let ref = WallpaperRef(folderURL: folderURL, manifest: manifest)
         do {
-            let resolved = try router.resolve(ref: ref, manifest: manifest)
+            var resolved = try router.resolve(ref: ref, manifest: manifest)
+            // A scene wallpaper's manifest names its unpacked source (`scene.json`), but ScenePlayer reads the
+            // packaged `scene.pkg` (a PKGV container). PREFER scene.pkg whenever it exists — not only when the
+            // loose scene.json is absent: an extracted folder shipping BOTH would otherwise resolve to the
+            // loose scene.json, which ScenePlayer can't read as PKGV, marking the scene playable then failing
+            // to a fallback fill. Workshop content (pkg only) is unaffected.
+            if resolved.type == .scene {
+                let packaged = folderURL.appendingPathComponent("scene.pkg")
+                if FileManager.default.fileExists(atPath: packaged.path) {
+                    resolved = ResolvedWallpaper(ref: ref, type: .scene, manifest: manifest, mainFileURL: packaged)
+                }
+            }
             guard FileManager.default.fileExists(atPath: resolved.mainFileURL.path) else {
                 return reject(.missingMainAsset(manifest.file))
             }
@@ -77,9 +88,11 @@ public struct WallpaperLibraryScanner: Sendable {
             case .unknown(let raw):       return .unknownType(raw)
             }
         }
-        // RoutingError currently has the single `missingMainFile` case.
-        if error is RoutingError {
-            return .missingMainFile
+        if let routing = error as? RoutingError {
+            switch routing {
+            case .missingMainFile:        return .missingMainFile
+            case .unsafeMainFile(let f):  return .unsafeMainFile(f)
+            }
         }
         return .corruptManifest(message(for: error))
     }

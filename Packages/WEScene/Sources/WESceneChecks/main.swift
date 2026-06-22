@@ -1,0 +1,497 @@
+// SPDX-License-Identifier: MIT
+// Provenance: clean-room headless verification of the WEScene Metal renderer: renders to an offscreen
+// texture and reads the pixels back. Skips gracefully when no Metal device is available (e.g. some CI).
+import Foundation
+import Metal
+import CoreGraphics
+import ImageIO
+import WEImporter
+import WEScene
+
+// MARK: - Fixture helpers
+
+@MainActor func le32(_ v: Int) -> Data {
+    let u = UInt32(truncatingIfNeeded: v)
+    return Data([UInt8(u & 0xff), UInt8((u >> 8) & 0xff), UInt8((u >> 16) & 0xff), UInt8((u >> 24) & 0xff)])
+}
+@MainActor func cstr(_ s: String) -> Data { var d = Data(s.utf8); d.append(0); return d }
+
+/// A .tex carrying one raw (uncompressed) RGBA8 mip.
+@MainActor func buildTexRGBA(_ w: Int, _ h: Int, _ pixels: Data) -> Data {
+    var d = cstr("TEXV0005") + cstr("TEXI0001")
+    d.append(le32(0)); d.append(le32(2))                       // format RGBA8888, flags
+    d.append(le32(w)); d.append(le32(h)); d.append(le32(w)); d.append(le32(h)); d.append(le32(0))
+    d.append(cstr("TEXB0002")); d.append(le32(1))              // mip container + mip count
+    d.append(le32(0))                                          // (version-1) leading u32
+    d.append(le32(w)); d.append(le32(h))
+    d.append(le32(0)); d.append(le32(pixels.count)); d.append(le32(pixels.count))   // raw, sizes
+    d.append(pixels)
+    return d
+}
+
+/// A PKGV container packing the given files.
+@MainActor func buildPKG(_ files: [(String, Data)]) -> Data {
+    var toc = Data(); var blob = Data()
+    toc.append(le32("PKGV0009".utf8.count)); toc.append(Data("PKGV0009".utf8))
+    toc.append(le32(files.count))
+    for (path, fileData) in files {
+        let p = Data(path.utf8)
+        toc.append(le32(p.count)); toc.append(p)
+        toc.append(le32(blob.count)); toc.append(le32(fileData.count))
+        blob.append(fileData)
+    }
+    return toc + blob
+}
+
+@MainActor func solid(_ r: UInt8, _ g: UInt8, _ b: UInt8, _ count: Int) -> Data {
+    var d = Data(); d.reserveCapacity(count * 4)
+    for _ in 0 ..< count { d.append(contentsOf: [r, g, b, 255]) }
+    return d
+}
+@MainActor func centerRGB(_ frame: RenderedFrame) -> (Int, Int, Int) {
+    let x = frame.width / 2, y = frame.height / 2
+    let o = (y * frame.width + x) * 4
+    return (Int(frame.rgba[o]), Int(frame.rgba[o + 1]), Int(frame.rgba[o + 2]))
+}
+@MainActor func near(_ a: Int, _ b: Int, _ tol: Int = 4) -> Bool { abs(a - b) <= tol }
+
+/// Encode a frame to a PNG file (dev tooling for eyeballing a render).
+@MainActor func writePNG(_ frame: RenderedFrame, to path: String) -> Bool {
+    var rgba = frame.rgba
+    let image = rgba.withUnsafeMutableBytes { (raw: UnsafeMutableRawBufferPointer) -> CGImage? in
+        guard let context = CGContext(data: raw.baseAddress, width: frame.width, height: frame.height,
+                                      bitsPerComponent: 8, bytesPerRow: frame.width * 4,
+                                      space: CGColorSpaceCreateDeviceRGB(),
+                                      bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
+        return context.makeImage()
+    }
+    guard let image,
+          let dest = CGImageDestinationCreateWithURL(URL(fileURLWithPath: path) as CFURL,
+                                                     "public.png" as CFString, 1, nil) else { return false }
+    CGImageDestinationAddImage(dest, image, nil)
+    return CGImageDestinationFinalize(dest)
+}
+
+@MainActor func cgImage(_ frame: RenderedFrame) -> CGImage? {
+    var rgba = frame.rgba
+    return rgba.withUnsafeMutableBytes { (raw: UnsafeMutableRawBufferPointer) -> CGImage? in
+        CGContext(data: raw.baseAddress, width: frame.width, height: frame.height, bitsPerComponent: 8,
+                  bytesPerRow: frame.width * 4, space: CGColorSpaceCreateDeviceRGB(),
+                  bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)?.makeImage()
+    }
+}
+
+/// Render every `<dir>/*/scene.pkg` into a contact-sheet PNG, reporting non-blank / blank / failed.
+@MainActor func batchRender(_ dir: String, renderer: SceneRenderer) {
+    let fm = FileManager.default
+    let names = ((try? fm.contentsOfDirectory(atPath: dir)) ?? []).sorted()
+    let cellW = 240, cellH = 135, cols = 8
+    var cells: [CGImage?] = []
+    var ok = 0, blank = 0, failed = 0
+    var uniformity: [(String, Double)] = []   // (scene, stddev of luma) — low stddev ≈ flat/solid render
+    for name in names {
+        let pkgPath = dir + "/" + name + "/scene.pkg"
+        guard fm.fileExists(atPath: pkgPath) else { continue }
+        guard let data = try? Data(contentsOf: URL(fileURLWithPath: pkgPath)),
+              let package = try? ScenePackage.read(data),
+              let document = try? SceneGraph.load(from: package),
+              let frame = renderer.render(document, package: package, width: cellW, height: cellH) else {
+            failed += 1; cells.append(nil); continue
+        }
+        var lo: UInt8 = 255, hi: UInt8 = 0
+        var sum = 0.0, sumSq = 0.0, n = 0.0
+        for i in stride(from: 0, to: frame.rgba.count, by: 257) {
+            let v = Double(frame.rgba[i]); lo = min(lo, frame.rgba[i]); hi = max(hi, frame.rgba[i])
+            sum += v; sumSq += v * v; n += 1
+        }
+        if Int(hi) - Int(lo) > 8 { ok += 1 } else { blank += 1 }
+        let variance = max(0, sumSq / n - (sum / n) * (sum / n))
+        uniformity.append((name, variance.squareRoot()))
+        cells.append(cgImage(frame))
+    }
+    print("flattest renders (low detail — likely solid-fill or decode issues):")
+    for (name, std) in uniformity.sorted(by: { $0.1 < $1.1 }).prefix(10) {
+        print(String(format: "  %@  std=%.1f", name, std))
+    }
+    let rows = max(1, (cells.count + cols - 1) / cols)
+    let sheetW = cols * cellW, sheetH = rows * cellH
+    if let ctx = CGContext(data: nil, width: sheetW, height: sheetH, bitsPerComponent: 8,
+                           bytesPerRow: sheetW * 4, space: CGColorSpaceCreateDeviceRGB(),
+                           bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) {
+        ctx.setFillColor(CGColor(red: 0.09, green: 0.09, blue: 0.11, alpha: 1))
+        ctx.fill(CGRect(x: 0, y: 0, width: sheetW, height: sheetH))
+        for (index, cell) in cells.enumerated() {
+            guard let cell else { continue }
+            let col = index % cols, row = index / cols
+            ctx.draw(cell, in: CGRect(x: col * cellW, y: sheetH - (row + 1) * cellH, width: cellW, height: cellH))
+        }
+        if let image = ctx.makeImage(),
+           let dest = CGImageDestinationCreateWithURL(URL(fileURLWithPath: "/tmp/lumora_contact_sheet.png") as CFURL,
+                                                      "public.png" as CFString, 1, nil) {
+            CGImageDestinationAddImage(dest, image, nil); _ = CGImageDestinationFinalize(dest)
+        }
+    }
+    print("batch: \(ok) non-blank, \(blank) blank, \(failed) failed of \(cells.count) -> /tmp/lumora_contact_sheet.png")
+}
+
+// Optional dev mode: a scene.pkg path renders one wallpaper; a directory batch-renders a contact sheet.
+if CommandLine.arguments.count > 1 {
+    let arg = CommandLine.arguments[1]
+    guard let renderer = SceneRenderer() else { print("no Metal device"); exit(0) }
+    var isDir: ObjCBool = false
+    _ = FileManager.default.fileExists(atPath: arg, isDirectory: &isDir)
+    if isDir.boolValue { batchRender(arg, renderer: renderer); exit(0) }
+    guard let data = try? Data(contentsOf: URL(fileURLWithPath: arg)),
+          let package = try? ScenePackage.read(data),
+          let document = try? SceneGraph.load(from: package) else { print("failed to load \(arg)"); exit(1) }
+    if CommandLine.arguments.count > 3, CommandLine.arguments[2] == "dumpentry" {
+        if let e = package.entry(named: CommandLine.arguments[3]) {
+            print(String(data: e.data, encoding: .utf8) ?? "<\(e.data.count) bytes, not utf8>")
+        } else { print("no entry \(CommandLine.arguments[3])") }
+        exit(0)
+    }
+    if CommandLine.arguments.count > 3, CommandLine.arguments[2] == "dumptex" {
+        if let e = package.entry(named: CommandLine.arguments[3]), let d = try? SceneTexture.decodeFirstMip(e.data),
+           let f = renderer.render(decoded: d, alpha: 1, clearColor: SceneVec3(x: 0, y: 0, z: 0),
+                                   width: min(d.imageWidth, 1024), height: min(d.imageHeight, 1024)) {
+            // alpha-channel stats of the decoded RGBA — a layer that decodes RGB but draws invisible has alpha≈0
+            let px = [UInt8](d.pixels); var aMin = 255, aMax = 0, aSum = 0; let n = px.count / 4
+            for i in 0 ..< n { let a = Int(px[i * 4 + 3]); aMin = min(aMin, a); aMax = max(aMax, a); aSum += a }
+            print("format=\(d.format) \(d.imageWidth)x\(d.imageHeight) alpha[min=\(aMin) max=\(aMax) mean=\(n > 0 ? aSum / n : 0)] -> \(writePNG(f, to: "/tmp/lumora_tex.png"))")
+        } else { print("decode failed") }
+        exit(0)
+    }
+    if CommandLine.arguments.count > 2, CommandLine.arguments[2] == "puppetonly" {
+        let pups = document.layers.filter { $0.puppetPath != nil }
+        let only = RenderableScene(orthoWidth: document.orthoWidth, orthoHeight: document.orthoHeight,
+                                   clearColor: SceneVec3(x: 0.12, y: 0.12, z: 0.14), layers: pups, particleSystems: [])
+        let w = min(document.orthoWidth, 1280), h = min(document.orthoHeight, 720)
+        if let f = renderer.render(only, package: package, width: w, height: h) {
+            print("puppet layers \(pups.count) -> \(writePNG(f, to: "/tmp/lumora_puppet.png"))")
+        }
+        exit(0)
+    }
+    if CommandLine.arguments.count > 2, CommandLine.arguments[2] == "mdldump" {   // dev: inspect puppet .mdl headers
+        for layer in document.layers where layer.puppetPath != nil {
+            guard let e = package.entry(named: layer.puppetPath!) else { continue }
+            let d = [UInt8](e.data); let n = d.count
+            func u32(_ o: Int) -> Int { o + 4 <= n ? Int(d[o]) | Int(d[o+1]) << 8 | Int(d[o+2]) << 16 | Int(d[o+3]) << 24 : -1 }
+            func ascii(_ o: Int, _ len: Int) -> String { o + len <= n ? (String(bytes: d[o..<o+len], encoding: .ascii) ?? "?") : "?" }
+            var mdls = -1
+            if n >= 4 { for i in stride(from: n - 4, through: 0, by: -1) where d[i] == 0x4d && d[i+1] == 0x44 && d[i+2] == 0x4c && d[i+3] == 0x53 { mdls = i; break } }
+            print("\(layer.puppetPath!): size=\(n) magic=\(ascii(0, 8)) mdls@\(mdls) ver=\(mdls >= 0 ? ascii(mdls+4, 4) : "-") bones=\(mdls >= 0 ? u32(mdls+13) : -1)")
+            if mdls >= 0, mdls + 17 + 80 <= n {
+                let s = mdls + 17
+                print("   bind@\(s): " + (s..<s+80).map { String(format: "%02x", d[$0]) }.joined(separator: " "))
+            }
+        }
+        exit(0)
+    }
+    if CommandLine.arguments.count > 2, CommandLine.arguments[2] == "layers" {   // dev: dump layer placement
+        print("ortho \(Int(document.orthoWidth))x\(Int(document.orthoHeight)), \(document.layers.count) layers, usesPuppet=\(document.usesPuppet):")
+        for (i, l) in document.layers.enumerated() {
+            let sz = l.size.map { "(\(Int($0.x)),\(Int($0.y)))" } ?? "-"
+            print("  [\(i)] vis=\(l.visible ? 1 : 0) tex=\(l.texturePath ?? (l.isSolidLayer ? "SOLID" : "nil")) "
+                + "origin=(\(Int(l.origin.x)),\(Int(l.origin.y))) size=\(sz) scale=(\(l.scale.x),\(l.scale.y)) "
+                + "angles=(\(l.angles.x),\(l.angles.y),\(l.angles.z)) depth=(\(l.parallaxDepth.x),\(l.parallaxDepth.y)) "
+                + "anim=\(l.originAnimation != nil) eff=\(l.effects.count) blend=\(l.blending ?? "-") "
+                + "alpha=\(l.alpha) color=\(l.color)")
+        }
+        exit(0)
+    }
+    let time = CommandLine.arguments.count > 2 ? (Double(CommandLine.arguments[2]) ?? 0) : 0
+    // Optional width/height override (args 3 and 4) so a scene can be rendered at an arbitrary target —
+    // e.g. a display's real pixel size/aspect — to reproduce size-dependent artifacts the scene's own
+    // ortho size hides.
+    let argW = CommandLine.arguments.count > 3 ? Int(CommandLine.arguments[3]) : nil
+    let argH = CommandLine.arguments.count > 4 ? Int(CommandLine.arguments[4]) : nil
+    let w = argW ?? min(document.orthoWidth > 0 ? document.orthoWidth : 1920, 3840)
+    let h = argH ?? min(document.orthoHeight > 0 ? document.orthoHeight : 1080, 2160)
+    let prepared = renderer.prepare(document, package: package)
+    guard let frame = renderer.render(prepared, width: w, height: h, time: time) else { print("render failed"); exit(1) }
+    let out = "/tmp/lumora_render\(time > 0 ? "_t\(Int(time))" : "").png"
+    print("rendered \(prepared.layerCount) layer(s) @ \(w)x\(h) t=\(time) animated=\(prepared.hasAnimation) "
+        + "usesPuppet=\(document.usesPuppet) puppetReady=\(prepared.puppetReady); png=\(writePNG(frame, to: out)) -> \(out)")
+    if CommandLine.arguments.count > 2, CommandLine.arguments[2] == "effect",
+       let effectRenderer = EffectRenderer(device: renderer.device),
+       let layer = document.layers.first(where: { !$0.effects.isEmpty }),
+       let effect = layer.effects.first,
+       let input = effectRenderer.makeTexture(rgba: frame.rgba, width: w, height: h),
+       let white = effectRenderer.makeTexture(rgba: Data([255, 255, 255, 255]), width: 1, height: 1) {
+        if let output = effectRenderer.apply(effect, to: input, package: package, auxTexture: white, width: w, height: h) {
+            let outRGBA = effectRenderer.readback(output)
+            let c = (h / 2 * w + w / 2) * 4
+            let effected = RenderedFrame(width: w, height: h, rgba: outRGBA)
+            print("applied effect '\(effect.name)' (center \(Array(frame.rgba[c ..< c + 4])) -> \(Array(outRGBA[c ..< c + 4]))) -> /tmp/lumora_effect.png = \(writePNG(effected, to: "/tmp/lumora_effect.png"))")
+        } else {
+            print("effect '\(effect.name)' failed to apply (likely a shader/uniform mismatch)")
+        }
+    }
+    exit(0)
+}
+
+// MARK: - Render checks
+
+guard let renderer = SceneRenderer() else {
+    print("⚠︎ no Metal device available — skipping WEScene render checks (not a failure)")
+    print("\n────────────────────────────────────────\nALL 0 CHECKS PASSED")
+    exit(0)
+}
+
+print("WEScene: Metal device '\(renderer.device.name)', BC support: \(renderer.device.supportsBCTextureCompression)")
+
+Check.section("SceneRenderer")
+let red = SceneVec3(x: 1, y: 0, z: 0)
+
+// A crafted particle system can declare an unbounded rate/lifetime; the steady-state slot count must
+// clamp into [1, maxcount] without trapping the Int conversion (rate × lifetime can overflow to inf).
+Check.that("a normal rate × lifetime gives the expected slot count",
+           SceneRenderer.particleInstanceCount(rate: 50, lifetimeUpper: 3, maxCount: 4000) == 150)
+Check.that("the slot count is capped at maxcount",
+           SceneRenderer.particleInstanceCount(rate: 1000, lifetimeUpper: 10, maxCount: 4000) == 4000)
+Check.that("an overflowing rate × lifetime clamps to the cap instead of trapping",
+           SceneRenderer.particleInstanceCount(rate: 1e300, lifetimeUpper: 1e300, maxCount: 4000) == 4000)
+Check.that("a huge finite rate clamps to the cap",
+           SceneRenderer.particleInstanceCount(rate: 1e200, lifetimeUpper: 1, maxCount: 4000) == 4000)
+Check.that("a non-finite lifetime clamps to the cap",
+           SceneRenderer.particleInstanceCount(rate: 1, lifetimeUpper: .infinity, maxCount: 4000) == 4000)
+Check.that("at least one slot is always allocated",
+           SceneRenderer.particleInstanceCount(rate: 0.0001, lifetimeUpper: 0.0001, maxCount: 4000) == 1)
+
+// Aspect cover: a scene fills a differently-shaped target by scaling up the overflow axis (so it crops),
+// never stretching. Matching or degenerate aspects are identity.
+Check.that("a matching aspect is identity", SceneRenderer.coverScale(sceneAspect: 16.0 / 9, targetAspect: 16.0 / 9) == SIMD2<Float>(1, 1))
+Check.that("a narrower (taller) target grows X and crops the sides", {
+    let s = SceneRenderer.coverScale(sceneAspect: 16.0 / 9, targetAspect: 1.0)   // square target
+    return s.x > 1.0 && s.y == 1.0
+}())
+Check.that("a wider target grows Y and crops top/bottom", {
+    let s = SceneRenderer.coverScale(sceneAspect: 16.0 / 9, targetAspect: 21.0 / 9)
+    return s.y > 1.0 && s.x == 1.0
+}())
+Check.that("a degenerate aspect is identity", SceneRenderer.coverScale(sceneAspect: 0, targetAspect: 1.78) == SIMD2<Float>(1, 1))
+
+// 1) Clear-only: no texture -> the frame is the clear colour.
+if let frame = renderer.render(texture: nil, alpha: 1, clearColor: red, width: 8, height: 8) {
+    let (r, g, b) = centerRGB(frame)
+    Check.that("clears to the scene colour (red)", near(r, 255) && near(g, 0) && near(b, 0))
+    Check.that("frame is the requested size", frame.width == 8 && frame.height == 8)
+    Check.that("frame has w*h*4 bytes", frame.rgba.count == 8 * 8 * 4)
+} else {
+    Check.that("clear-only render produced a frame", false)
+}
+
+// 2) A solid-green texture drawn full-screen covers the red clear colour.
+let green = DecodedTexture(format: .rgba8888, width: 8, height: 8, imageWidth: 8, imageHeight: 8,
+                           pixels: solid(0, 255, 0, 64))
+if let frame = renderer.render(decoded: green, alpha: 1, clearColor: red, width: 8, height: 8) {
+    let (r, g, b) = centerRGB(frame)
+    Check.that("textured quad covers the frame (green)", near(r, 0) && near(g, 255) && near(b, 0))
+} else {
+    Check.that("textured render produced a frame", false)
+}
+
+// 3) Full pipeline: scene.json -> model -> material -> .tex (solid blue) -> rendered frame.
+let sceneJSON = Data(#"{"general":{"orthogonalprojection":{"width":8,"height":8},"clearcolor":"1 0 0"},"objects":[{"name":"base","image":"models/m.json","origin":"4 4 0","alpha":1,"visible":true}]}"#.utf8)
+let modelJSON = Data(#"{"material":"materials/mat.json"}"#.utf8)
+let materialJSON = Data(#"{"passes":[{"shader":"genericimage2","textures":["t"]}]}"#.utf8)
+let blueTex = buildTexRGBA(8, 8, solid(0, 0, 255, 64))
+let pkgData = buildPKG([
+    ("scene.json", sceneJSON), ("models/m.json", modelJSON),
+    ("materials/mat.json", materialJSON), ("materials/t.tex", blueTex),
+])
+if let package = try? ScenePackage.read(pkgData),
+   let document = try? SceneGraph.load(from: package),
+   let frame = renderer.render(document, package: package, width: 8, height: 8) {
+    let (r, g, b) = centerRGB(frame)
+    Check.that("end-to-end scene renders its texture (blue)", near(r, 0) && near(g, 0) && near(b, 255))
+    let prepared = renderer.prepare(document, package: package)
+    Check.that("prepare yields one layer", prepared.layerCount == 1)
+    // A fully static scene (one image, no parallax/keyframes/effects/particles/video/script) must report no
+    // animation, so the player renders it once and parks the loop instead of re-compositing every frame.
+    Check.that("a static single-image scene reports no animation", prepared.hasAnimation == false)
+    if let still = renderer.render(prepared, width: 8, height: 8, time: 0) {
+        let (pr, pg, pb) = centerRGB(still)
+        Check.that("prepared still render (t=0) matches the composite (blue)", near(pr, 0) && near(pg, 0) && near(pb, 255))
+    }
+} else {
+    Check.that("end-to-end scene produced a frame", false)
+}
+
+// Conversely, a scene whose layer carries parallax depth DOES animate (the camera sway moves it over time),
+// so it must report animation and keep its render loop running.
+let parallaxJSON = Data(#"{"general":{"orthogonalprojection":{"width":8,"height":8},"clearcolor":"1 0 0"},"objects":[{"name":"base","image":"models/m.json","origin":"4 4 0","alpha":1,"parallaxDepth":"0.5 0.5"}]}"#.utf8)
+let parallaxPkg = buildPKG([
+    ("scene.json", parallaxJSON), ("models/m.json", modelJSON),
+    ("materials/mat.json", materialJSON), ("materials/t.tex", blueTex),
+])
+if let package = try? ScenePackage.read(parallaxPkg), let document = try? SceneGraph.load(from: package) {
+    Check.that("a parallax-depth scene reports animation (keeps the loop running)",
+               renderer.prepare(document, package: package).hasAnimation == true)
+}
+
+// Graceful degradation: an effect that blanks the layer is dropped at prepare, so the layer keeps its
+// artwork (blue) instead of being punched out to the clear colour (red).
+let blankFrag = "varying vec4 v_TexCoord;\nuniform sampler2D g_Texture0;\nvoid main() { gl_FragColor = vec4(0.0); }"
+let degradeJSON = Data(#"{"general":{"orthogonalprojection":{"width":8,"height":8},"clearcolor":"1 0 0"},"objects":[{"name":"base","image":"models/m.json","origin":"4 4 0","alpha":1,"effects":[{"file":"effects/blank/effect.json","passes":[{}]}]}]}"#.utf8)
+let degradePkg = buildPKG([
+    ("scene.json", degradeJSON), ("models/m.json", modelJSON),
+    ("materials/mat.json", materialJSON), ("materials/t.tex", blueTex),
+    ("effects/blank/effect.json", Data(#"{"passes":[{"material":"materials/effects/blank.json"}]}"#.utf8)),
+    ("materials/effects/blank.json", Data(#"{"passes":[{"shader":"effects/blank"}]}"#.utf8)),
+    ("shaders/effects/blank.frag", Data(blankFrag.utf8)),
+])
+if let package = try? ScenePackage.read(degradePkg), let document = try? SceneGraph.load(from: package),
+   let frame = renderer.render(document, package: package, width: 8, height: 8) {
+    let (r, g, b) = centerRGB(frame)
+    Check.that("an effect that blanks the layer is dropped, keeping the artwork (blue)",
+               near(r, 0) && near(g, 0) && near(b, 255))
+}
+
+// A text layer's font comes from the untrusted package. Garbage font bytes must fall back to a system font,
+// and a font that measures to non-finite/absurd glyph metrics is rejected (the text draws nothing) rather
+// than trapping the Int conversions in the rasteriser — either way the scene still renders a frame.
+let textJSON = Data(#"{"general":{"orthogonalprojection":{"width":64,"height":64},"clearcolor":"0 0 0"},"objects":[{"name":"clock","text":"12:00","font":"fonts/bad.ttf","pointsize":24,"origin":"32 32 0","alpha":1,"visible":true,"color":"1 1 1"}]}"#.utf8)
+let textPkg = buildPKG([
+    ("scene.json", textJSON),
+    ("fonts/bad.ttf", Data([0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09])),
+])
+if let package = try? ScenePackage.read(textPkg), let document = try? SceneGraph.load(from: package) {
+    Check.that("a text scene with a garbage font renders without crashing",
+               renderer.render(document, package: package, width: 64, height: 64) != nil)
+}
+
+// A layer's roll angle (angles.z) must be honoured — it was ignored, so rolled layers drew axis-aligned.
+// A full-frame texture that's red on top and blue on the bottom, rolled 180°, must swap: the top reads blue.
+var splitPixels = Data()
+for y in 0 ..< 8 { for _ in 0 ..< 8 { splitPixels.append(contentsOf: y < 4 ? [255, 0, 0, 255] : [0, 0, 255, 255]) } }
+let splitTex = buildTexRGBA(8, 8, splitPixels)
+@MainActor func renderRoll(_ angles: String) -> RenderedFrame? {
+    let sceneJSON = Data((#"{"general":{"orthogonalprojection":{"width":8,"height":8},"clearcolor":"0 0 0"},"objects":[{"name":"r","image":"models/m.json","origin":"4 4 0","angles":""# + angles + #"","alpha":1,"visible":true}]}"#).utf8)
+    let pkg = buildPKG([("scene.json", sceneJSON), ("models/m.json", modelJSON),
+                        ("materials/mat.json", materialJSON), ("materials/t.tex", splitTex)])
+    guard let package = try? ScenePackage.read(pkg), let document = try? SceneGraph.load(from: package) else { return nil }
+    return renderer.render(document, package: package, width: 8, height: 8)
+}
+let topPixel = (1 * 8 + 4) * 4   // a pixel near the top edge, centre column
+if let upright = renderRoll("0 0 0"), let rolled = renderRoll("0 0 3.14159") {
+    Check.that("upright: the top of the layer is red", near(Int(upright.rgba[topPixel]), 255) && near(Int(upright.rgba[topPixel + 2]), 0))
+    Check.that("rolled 180°: the top is now blue (the roll is applied)",
+               near(Int(rolled.rgba[topPixel]), 0) && near(Int(rolled.rgba[topPixel + 2]), 255))
+} else {
+    Check.that("rolled-layer scene rendered", false)
+}
+
+// Effect pass machinery: a tint effect (transpiled WE shaders) halves the input texture.
+if let effectRenderer = EffectRenderer(device: renderer.device) {
+    Check.section("EffectRenderer")
+    // makeTexture's width/height can come from untrusted data; it must reject out-of-range or non-positive
+    // dimensions and a pixel buffer too small for them (which would read past the end of `rgba`), while a
+    // correctly sized buffer still uploads.
+    Check.that("makeTexture rejects oversized dimensions",
+               effectRenderer.makeTexture(rgba: Data(count: 16), width: 1_000_000, height: 1_000_000) == nil)
+    Check.that("makeTexture rejects a pixel buffer too small for its dimensions",
+               effectRenderer.makeTexture(rgba: Data(count: 4), width: 100, height: 100) == nil)
+    Check.that("makeTexture rejects non-positive dimensions",
+               effectRenderer.makeTexture(rgba: Data(count: 4), width: 0, height: 4) == nil)
+    Check.that("makeTexture accepts a correctly sized buffer",
+               effectRenderer.makeTexture(rgba: Data(count: 2 * 2 * 4), width: 2, height: 2) != nil)
+    let effectFragment = """
+    varying vec4 v_TexCoord;
+    uniform sampler2D g_Texture0;
+    uniform float g_Tint;
+    void main() { gl_FragColor = texSample2D(g_Texture0, v_TexCoord.xy) * g_Tint; }
+    """
+    if let pipeline = effectRenderer.makePipeline(fragmentShader: effectFragment) {
+        Check.that("builds an effect pipeline from transpiled WE shaders", true)
+        let inputDescriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .rgba8Unorm, width: 4, height: 4, mipmapped: false)
+        inputDescriptor.usage = [.shaderRead]
+        let input = renderer.device.makeTexture(descriptor: inputDescriptor)!
+        var pixels = [UInt8](repeating: 200, count: 4 * 4 * 4)
+        for i in stride(from: 3, to: pixels.count, by: 4) { pixels[i] = 255 }
+        input.replace(region: MTLRegionMake2D(0, 0, 4, 4), mipmapLevel: 0, withBytes: &pixels, bytesPerRow: 16)
+        var tint: Float = 0.5
+        let uniforms = Data(bytes: &tint, count: MemoryLayout<Float>.size)
+        if let output = effectRenderer.apply(pipeline: pipeline, to: input, fragmentUniforms: uniforms, width: 4, height: 4) {
+            let centerR = Int(effectRenderer.readback(output)[(2 * 4 + 2) * 4])
+            Check.that("the tint effect halves the input (200 → ~100)", abs(centerR - 100) <= 6)
+        } else {
+            Check.that("the effect pass produced output", false)
+        }
+    } else {
+        Check.that("builds an effect pipeline from transpiled WE shaders", false)
+    }
+
+    // An effect fragment that reads a varying the fixed full-screen vertex never produces (v_Scale) can
+    // only be drawn through the effect's OWN vertex — this is the interface mismatch that silently dropped
+    // most effects. The guarantee is that pairing the own vertex links and runs correctly (asserted below).
+    // Whether Metal's linker *rejects* the fixed-vertex pairing is driver-dependent — a discrete GPU fails
+    // to link it, but a paravirtual device (e.g. CI runners) links it leniently — so that is not asserted.
+    let ownVertex = """
+    attribute vec3 a_Position;
+    attribute vec2 a_TexCoord;
+    uniform mat4 g_ModelViewProjectionMatrix;
+    varying vec4 v_TexCoord;
+    varying vec2 v_Scale;
+    void main() {
+        gl_Position = mul(vec4(a_Position, 1.0), g_ModelViewProjectionMatrix);
+        v_TexCoord = vec4(a_TexCoord, a_TexCoord);
+        v_Scale = vec2(0.5, 0.25);
+    }
+    """
+    let ownFragment = """
+    varying vec4 v_TexCoord;
+    varying vec2 v_Scale;
+    uniform sampler2D g_Texture0;
+    void main() { gl_FragColor = texSample2D(g_Texture0, v_TexCoord.xy) * vec4(v_Scale.x, v_Scale.y, 1.0, 1.0); }
+    """
+    _ = effectRenderer.makePipeline(fragmentShader: ownFragment)   // driver-dependent link result; not asserted
+    if let ownPipeline = effectRenderer.makeVertexPipeline(vertexShader: ownVertex, fragmentShader: ownFragment) {
+        Check.that("the effect's own vertex links the pipeline", true)
+        let descriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .rgba8Unorm, width: 4, height: 4, mipmapped: false)
+        descriptor.usage = [.shaderRead]
+        let input = renderer.device.makeTexture(descriptor: descriptor)!
+        var pixels = [UInt8](repeating: 200, count: 4 * 4 * 4)
+        for i in stride(from: 3, to: pixels.count, by: 4) { pixels[i] = 255 }
+        input.replace(region: MTLRegionMake2D(0, 0, 4, 4), mipmapLevel: 0, withBytes: &pixels, bytesPerRow: 16)
+        let identity: [Float] = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]
+        let vertexUniforms = identity.withUnsafeBytes { Data($0) }
+        if let output = effectRenderer.applyVertexEffect(pipeline: ownPipeline, to: input, vertexUniforms: vertexUniforms, width: 4, height: 4) {
+            let rgba = effectRenderer.readback(output)
+            let r = Int(rgba[(2 * 4 + 2) * 4]), g = Int(rgba[(2 * 4 + 2) * 4 + 1])
+            Check.that("the own-vertex effect runs over the grid (r 200→~100, g 200→~50)", abs(r - 100) <= 6 && abs(g - 50) <= 6)
+        } else {
+            Check.that("the own-vertex effect produced output", false)
+        }
+    } else {
+        Check.that("the effect's own vertex links the pipeline", false)
+    }
+
+    // A vertex that writes a varying the fragment ignores — sitting between two the fragment does use —
+    // must still link: the fragment's stage_in mirrors the vertex's varyings so the locations don't drift
+    // (the vhs regression, where v_TexCoordGlitchBase shifted v_TexCoordGlitch).
+    let extraVertex = """
+    attribute vec3 a_Position;
+    attribute vec2 a_TexCoord;
+    uniform mat4 g_ModelViewProjectionMatrix;
+    varying vec4 v_TexCoord;
+    varying vec2 v_Ignored;
+    varying vec3 v_Used;
+    void main() {
+        gl_Position = mul(vec4(a_Position, 1.0), g_ModelViewProjectionMatrix);
+        v_TexCoord = vec4(a_TexCoord, a_TexCoord);
+        v_Ignored = vec2(9.0);
+        v_Used = vec3(0.5);
+    }
+    """
+    let usingFragment = """
+    varying vec4 v_TexCoord;
+    varying vec3 v_Used;
+    uniform sampler2D g_Texture0;
+    void main() { gl_FragColor = texSample2D(g_Texture0, v_TexCoord.xy) * vec4(v_Used, 1.0); }
+    """
+    Check.that("a vertex varying the fragment ignores doesn't drift the locations or break the link",
+               effectRenderer.makeVertexPipeline(vertexShader: extraVertex, fragmentShader: usingFragment) != nil)
+}
+
+Check.summarize()

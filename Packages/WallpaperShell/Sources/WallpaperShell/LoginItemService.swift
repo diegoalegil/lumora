@@ -16,6 +16,9 @@ public final class LoginItemService {
     public func enable() throws { try SMAppService.mainApp.register() }
     public func disable() throws { try SMAppService.mainApp.unregister() }
 
+    /// Open System Settings › General › Login Items so the user can approve a pending registration.
+    public func openSystemSettings() { SMAppService.openSystemSettingsLoginItems() }
+
     public func setEnabled(_ enabled: Bool) throws {
         if enabled { try enable() } else { try disable() }
     }

@@ -1,6 +1,6 @@
 // swift-tools-version: 6.0
-// License posture: MIT — clean-room. Players built on Apple frameworks (AVFoundation/AppKit now,
-// WebKit later). Depends only on WECore. No GPL.
+// License posture: MIT — clean-room. Players built on Apple frameworks (AVFoundation/AppKit/WebKit/
+// Metal). Depends on WECore, plus WEImporter + WEScene for the scene player. No GPL.
 import PackageDescription
 
 // NOTE on testing: Command Line Tools only (no Xcode), so no XCTest / swift-testing. The headless,
@@ -14,9 +14,12 @@ let package = Package(
     ],
     dependencies: [
         .package(path: "../WECore"),
+        .package(path: "../WEImporter"),
+        .package(path: "../WEScene"),
+        .package(path: "../WESceneDynamics"),
     ],
     targets: [
-        .target(name: "WEPlayers", dependencies: ["WECore"]),
+        .target(name: "WEPlayers", dependencies: ["WECore", "WEImporter", "WEScene", "WESceneDynamics"]),
         .executableTarget(name: "WEPlayersChecks", dependencies: ["WEPlayers", "WECore"]),
     ]
 )
