@@ -36,23 +36,30 @@ public struct PuppetMesh: Sendable, Equatable {
 
 public enum PuppetModel {
     /// Where a vertex's fields sit within one stride (position is always at byte 0/4). Centralising this so
-    /// that supporting a new `.mdl` vertex format is one entry in `vertexLayout(…)` rather than a marker test
+    /// that supporting a new `.mdl` vertex format is one entry in `vertexLayouts(…)` rather than a marker test
     /// scattered through the parser. `boneOff`/`weightOff` are nil for formats with no per-vertex skinning
     /// data (an older flat mesh) — the caller then leaves the vertices unskinned.
     private struct VertexLayout { let stride: Int; let uvOff: Int; let boneOff: Int?; let weightOff: Int? }
 
     /// The single version→layout table: given the `.mdl`'s `MDLV<version>` field and a candidate vertex-block
-    /// marker `<lead> 00 <kind> 01`, the vertex layout, or nil if this build doesn't recognise the format (the
-    /// caller then keeps the static preview). Every supported vertex format is exactly one case here and the
-    /// rest of the parser is format-agnostic — adding a version means adding a case, nothing else.
-    private static func vertexLayout(version: Int, markerLead: UInt8, markerKind: UInt8) -> VertexLayout? {
+    /// marker `<lead> 00 <kind> 01`, the candidate vertex layouts, or empty if this build doesn't recognise the
+    /// format (the caller then keeps the static preview). A marker byte does NOT uniquely fix the vertex stride
+    /// — e.g. `0e 00 81 01` ships both as a 52-byte vertex (most MDLV0023 rigs) AND an 84-byte vertex (the
+    /// MDLV0023 model that carries an extra normal/tangent block, e.g. scene 3577990983). The parser tries the
+    /// candidates in listed order and takes the first whose stride evenly divides the declared vertex-block size
+    /// (and whose index block then parses into a non-torn mesh), so a marker shared across strides resolves
+    /// rather than being rejected. When a block size divides by more than one stride, order decides — the
+    /// genuine 52-byte rigs are listed first. Every supported vertex format is exactly one entry here and the rest of the parser is
+    /// format-agnostic — adding a version/stride means adding an entry, nothing else.
+    private static func vertexLayouts(version: Int, markerLead: UInt8, markerKind: UInt8) -> [VertexLayout] {
         switch (markerLead, markerKind) {
         case (0x0f, 0x80):                   // the full 80-byte vertex (carries a normal/tangent block)
-            return VertexLayout(stride: 80, uvOff: 72, boneOff: 40, weightOff: 56)
-        case (0x09, 0x80), (0x0e, 0x81):     // the compact 52-byte vertex (no normal/tangent block)
-            return VertexLayout(stride: 52, uvOff: 44, boneOff: 12, weightOff: 28)
+            return [VertexLayout(stride: 80, uvOff: 72, boneOff: 40, weightOff: 56)]
+        case (0x09, 0x80), (0x0e, 0x81):     // the compact vertex: 52-byte (no normal/tangent) or 84-byte (with)
+            return [VertexLayout(stride: 52, uvOff: 44, boneOff: 12, weightOff: 28),
+                    VertexLayout(stride: 84, uvOff: 76, boneOff: nil, weightOff: nil)]
         default:
-            return nil
+            return []
         }
     }
 
@@ -89,12 +96,12 @@ public enum PuppetModel {
             var p = 0x15
             while p < n, raw[p] != 0 { p += 1 }
             var marker = -1
-            var layout: VertexLayout?
+            var candidates: [VertexLayout] = []
             var s = p
             while s + 4 <= min(n, p + 96) {
-                if raw[s + 1] == 0, raw[s + 3] == 0x01,
-                   let l = vertexLayout(version: version, markerLead: raw[s], markerKind: raw[s + 2]) {
-                    marker = s; layout = l; break
+                if raw[s + 1] == 0, raw[s + 3] == 0x01 {
+                    let cs = vertexLayouts(version: version, markerLead: raw[s], markerKind: raw[s + 2])
+                    if !cs.isEmpty { marker = s; candidates = cs; break }
                 }
                 s += 1
             }
@@ -102,15 +109,19 @@ public enum PuppetModel {
             // materialEnd+1 as a virtual marker (so marker+4 = that u32 and marker+8 = the vertices) and the
             // rest of the parser is unchanged.
             if marker < 0, let ml = markerlessLayout(version: version) {
-                marker = p + 1; layout = ml
+                marker = p + 1; candidates = [ml]
             }
             // marker + 8 <= n so the vertex-block size read below stays in bounds (the search only guaranteed
             // the 4 marker bytes fit; this .mdl is untrusted input).
-            guard marker >= 0, marker + 8 <= n, let layout else { return nil }
-            let stride = layout.stride, uvOff = layout.uvOff, boneOff = layout.boneOff, weightOff = layout.weightOff
+            guard marker >= 0, marker + 8 <= n, !candidates.isEmpty else { return nil }
             let vertexBytes = Int(u32(marker + 4))
             let vertexBase = marker + 8
-            guard vertexBytes > 0, vertexBytes % stride == 0, vertexBase + vertexBytes + 4 <= n else { return nil }
+            guard vertexBytes > 0, vertexBase + vertexBytes + 4 <= n else { return nil }
+            // A marker can map to more than one stride (e.g. `0e 00 81 01` is both a 52- and an 84-byte vertex);
+            // pick the candidate whose stride divides the declared block evenly. A wrong guess can't survive: the
+            // index-bounds, finite-float and torn-mesh guards below reject a mis-strided parse.
+            guard let layout = candidates.first(where: { vertexBytes % $0.stride == 0 }) else { return nil }
+            let stride = layout.stride, uvOff = layout.uvOff, boneOff = layout.boneOff, weightOff = layout.weightOff
             let vertexCount = vertexBytes / stride
 
             let indexOffset = vertexBase + vertexBytes
