@@ -477,6 +477,11 @@ public enum WEShaderTranspiler {
         var out: [String] = []
         for rawLine in body.components(separatedBy: "\n") {
             var line = rawLine
+            // The component-wise/length harmonisers below recurse into each nested intrinsic and copy an O(N)
+            // substring per level, so a single pathologically long line (a crafted .pkg shader nesting
+            // mix(mix(…)) thousands deep) costs O(N²) and freezes wallpaper load. Real shader lines are a few
+            // hundred chars; pass an absurdly long one through untouched rather than chew on it.
+            guard line.utf8.count <= 8192 else { out.append(line); continue }
             // (0) Harmonise component-wise intrinsic args (mix/clamp/…) whose vector widths disagree, and
             // rewrite length() of a scalar to abs().
             line = rewriteScalarLength(harmonizeComponentwiseArgs(line, dims), dims)
