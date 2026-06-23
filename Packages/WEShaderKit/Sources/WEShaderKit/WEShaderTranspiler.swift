@@ -664,8 +664,12 @@ public enum WEShaderTranspiler {
         var out = ""
         for (signature, body) in topLevelBlocks(cleaned) where signature.contains("(") {
             let name = functionName(of: signature)
+            // `paren` is the first "(" and `close` the last ")"; in a malformed signature the ")" can precede
+            // the "(" (e.g. ")("), which would make the parameter sub-range below invert and trap. Require the
+            // open paren to come first.
             guard hosted.contains(name), let paren = signature.firstIndex(of: "("),
-                  let close = signature.range(of: ")", options: .backwards) else { continue }
+                  let close = signature.range(of: ")", options: .backwards),
+                  paren < close.lowerBound else { continue }
             let head = signature[..<paren].trimmingCharacters(in: .whitespaces)   // "<return type> <name>"
             guard let nameRange = head.range(of: name, options: .backwards) else { continue }
             let returnType = head[..<nameRange.lowerBound].trimmingCharacters(in: .whitespaces)
