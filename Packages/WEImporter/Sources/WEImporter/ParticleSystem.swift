@@ -119,7 +119,16 @@ public struct ParticleSystem: Sendable, Equatable {
         // distancemax is a box's half-extents, or (for a sphere emitter) a scalar radius — spread it
         // across the screen plane so particles fill the scene instead of spawning along one axis.
         let kind = (emitter["name"] as? String) ?? "box"
-        var boxSize = vec3(emitter["distancemax"])
+        // distancemax is a `"x y z"` string for box emitters but a bare scalar radius for sphere emitters. A
+        // scalar arrives as an NSNumber from JSONSerialization (never a String), so it must be read directly —
+        // routed through `vec3` it would match no branch and collapse to (0,0,0), spawning every particle at
+        // the emitter origin. A scalar radius spreads across the screen (x/y) plane.
+        var boxSize: SceneVec3
+        if let radius = (emitter["distancemax"] as? NSNumber)?.doubleValue {
+            boxSize = SceneVec3(x: radius, y: radius, z: 0)
+        } else {
+            boxSize = vec3(emitter["distancemax"])
+        }
         if kind.hasPrefix("sphere"), boxSize.y == 0, boxSize.z == 0 {
             boxSize = SceneVec3(x: boxSize.x, y: boxSize.x, z: 0)
         }

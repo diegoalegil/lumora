@@ -852,11 +852,13 @@ if let system = ParticleSystem.parse(boxParticle) {
 } else {
     Check.that("a box particle system parses", false)
 }
+// A sphere emitter's distancemax is a bare JSON NUMBER (this is how the real library encodes it), not a
+// string — the parse must read the scalar radius and spread it across x/y, not drop it to zero.
 let sphereParticle: [String: Any] = [
-    "emitter": [["name": "sphererandom", "distancemax": "2000", "rate": 50, "speedmin": 0, "speedmax": 20, "directions": "1 1 0"]]
+    "emitter": [["name": "sphererandom", "distancemax": 2000, "rate": 50, "speedmin": 0, "speedmax": 20, "directions": "1 1 0"]]
 ]
 if let sphere = ParticleSystem.parse(sphereParticle) {
-    Check.that("a sphere's scalar radius spreads across x and y", sphere.boxSize.x == 2000 && sphere.boxSize.y == 2000)
+    Check.that("a sphere's numeric scalar radius spreads across x and y", sphere.boxSize.x == 2000 && sphere.boxSize.y == 2000)
     Check.that("parses the sphere speed range", sphere.speed == 0 ... 20 && sphere.directions.x == 1)
 } else {
     Check.that("a sphere particle system parses", false)
