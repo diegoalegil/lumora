@@ -1207,17 +1207,27 @@ public final class SceneRenderer {
                 posX += o.mask.x * disp
                 posY += o.mask.y * disp
             }
-            // controlpointattract: drift toward (or, for a negative scale, away from) the control point at the
+            // controlpointattract: drift toward (or, for a negative scale, away from) a control point at the
             // emitter origin + offset. Modelled as a first-order relaxation — displacement = direction · force ·
             // (1-e^(-age)) — so it eases to a bounded terminal offset instead of integrating to an explosion;
-            // the force falls off with distance past the threshold. Clamped to half the ortho for safety.
-            if s.cpScale != 0 {
-                let rx = spawnX - (s.origin.x + s.cpOffset.x), ry = spawnY - (s.origin.y + s.cpOffset.y)
-                let dist = max(1, (rx * rx + ry * ry).squareRoot())
-                let strength = s.cpScale / (1 + dist * dist / (s.cpThreshold * s.cpThreshold))
-                let push = max(-orthoW * 0.5, min(orthoW * 0.5, strength * (1 - exp(-age)) * 0.02))
-                posX += rx / dist * push
-                posY += ry / dist * push
+            // the force falls off with distance past the threshold. A system may carry SEVERAL attractors (e.g.
+            // a short-range repel + a long-range attract that hold a flock around a point); their displacements
+            // SUM. Each push is clamped, then the accumulated displacement is clamped again to half the ortho so
+            // N attractors can never push a sprite past the same bound a single one could.
+            if !s.attractors.isEmpty {
+                var cpDX = 0.0, cpDY = 0.0
+                for a in s.attractors where a.scale != 0 {
+                    let rx = spawnX - (s.origin.x + a.offset.x), ry = spawnY - (s.origin.y + a.offset.y)
+                    let dist = max(1, (rx * rx + ry * ry).squareRoot())
+                    let strength = a.scale / (1 + dist * dist / (a.threshold * a.threshold))
+                    let push = max(-orthoW * 0.5, min(orthoW * 0.5, strength * (1 - exp(-age)) * 0.02))
+                    cpDX += rx / dist * push
+                    cpDY += ry / dist * push
+                }
+                // Bound the SUM by the same ±orthoW*0.5 each push already obeys, so a single-attractor system
+                // is byte-identical (the sum equals its one push, already in range → the clamp is a no-op).
+                posX += max(-orthoW * 0.5, min(orthoW * 0.5, cpDX))
+                posY += max(-orthoW * 0.5, min(orthoW * 0.5, cpDY))
             }
             // vortex: orbit the particle about the centre. Tangential speed blends inner→outer by radius; the
             // angular speed ω = v/r is clamped so a large WE speed near the centre can't strobe. Rotation

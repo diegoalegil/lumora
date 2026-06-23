@@ -43,6 +43,19 @@ public struct ParticleSystem: Sendable, Equatable {
         }
     }
 
+    /// One `controlpointattract` operator: a force pulling particles toward (or, for a negative `scale`,
+    /// pushing them away from) a control point at `emitter origin + offset`, falling off past `threshold`.
+    /// A system may carry several (e.g. a short-range repel + a long-range attract on the same point for a
+    /// flock that cohesively orbits without collapsing), so they are stored as an array the renderer sums.
+    public struct Attractor: Sendable, Equatable {
+        public var scale: Double      // force; negative repels
+        public var threshold: Double  // falloff radius (>= 1)
+        public var offset: SceneVec3  // control point offset from the emitter origin
+        public init(scale: Double, threshold: Double, offset: SceneVec3) {
+            self.scale = scale; self.threshold = threshold; self.offset = offset
+        }
+    }
+
     /// A sinusoidal modulator (oscillatealpha / oscillatesize / oscillateposition). Each particle picks a
     /// frequency in `freq` (Hz) and a phase in `phase` (cycles). For alpha/size the 0…1 sine envelope is
     /// mapped into the `scale` multiplier range; for position `scale` is the displacement amplitude and `mask`
@@ -105,11 +118,13 @@ public struct ParticleSystem: Sendable, Equatable {
     public var colorChangeStartTime: Double
     public var colorChangeEndTime: Double
     public var turbulence: Turbulence?   // turbulence operator: a noise flow-field drift (nil = none)
-    // controlpointattract: pull/push particles toward a control point (≈ emitter origin + offset). `cpScale`
-    // is the force (negative = repel); `cpThreshold` its falloff radius. 0 scale = no operator.
-    public var cpScale: Double
-    public var cpThreshold: Double
-    public var cpOffset: SceneVec3
+    // controlpointattract: pull/push particles toward control points (≈ emitter origin + offset). A system may
+    // declare SEVERAL such operators (WE applies them all); the renderer sums their forces. Empty = no operator.
+    // The `cpScale/cpThreshold/cpOffset` convenience accessors expose the first attractor for back-compat.
+    public var attractors: [Attractor]
+    public var cpScale: Double { attractors.first?.scale ?? 0 }
+    public var cpThreshold: Double { attractors.first?.threshold ?? 0 }
+    public var cpOffset: SceneVec3 { attractors.first?.offset ?? SceneVec3(x: 0, y: 0, z: 0) }
     public var vortex: Vortex?   // vortex operator: orbit particles about a centre (nil = none)
 
     /// Parse a particle system from its JSON object, or nil if it lacks an emitter we can drive.
@@ -157,7 +172,7 @@ public struct ParticleSystem: Sendable, Equatable {
             turbVelScale: 0, turbVelOffset: 0, turbVelSpeed: 0 ... 0,
             hasColorChange: false, colorChangeStart: SceneVec3(x: 1, y: 1, z: 1),
             colorChangeEnd: SceneVec3(x: 1, y: 1, z: 1), colorChangeStartTime: 0, colorChangeEndTime: 1,
-            turbulence: nil, cpScale: 0, cpThreshold: 0, cpOffset: SceneVec3(x: 0, y: 0, z: 0), vortex: nil)
+            turbulence: nil, attractors: [], vortex: nil)
 
         for initializer in (json["initializer"] as? [[String: Any]]) ?? [] {
             let name = (initializer["name"] as? String) ?? ""
@@ -231,12 +246,17 @@ public struct ParticleSystem: Sendable, Equatable {
                     speedInner: num("speedinner", 0),
                     speedOuter: num("speedouter", 0))
             case "controlpointattract":
+                // A system may declare SEVERAL controlpointattract operators (e.g. a short-range repel + a
+                // long-range attract that together make a flock orbit a point without collapsing). Collect each
+                // — appending rather than overwriting — so the renderer can sum them; cap the count so a crafted
+                // .pkg can't accumulate an unbounded array (the renderer's per-attractor cost is non-trivial).
+                guard system.attractors.count < 16 else { break }
                 let cpId = (op["controlpoint"] as? NSNumber)?.intValue ?? 1
                 let cps = json["controlpoint"] as? [[String: Any]] ?? []
                 let cp = cps.first { ($0["id"] as? NSNumber)?.intValue == cpId }
-                system.cpScale = min(20000, max(-20000, (op["scale"] as? NSNumber)?.doubleValue ?? 0))
-                system.cpThreshold = max(1, (op["threshold"] as? NSNumber)?.doubleValue ?? 64)
-                system.cpOffset = vec3(cp?["offset"])
+                let scale = min(20000, max(-20000, (op["scale"] as? NSNumber)?.doubleValue ?? 0))
+                let threshold = max(1, clampFinite((op["threshold"] as? NSNumber)?.doubleValue ?? 64, 1, 1_000_000, 64))
+                system.attractors.append(Attractor(scale: scale, threshold: threshold, offset: vec3(cp?["offset"])))
             case "turbulence":
                 func num(_ k: String, _ f: Double) -> Double { (op[k] as? NSNumber)?.doubleValue ?? f }
                 let sp = scalarRange(op, fallback: 0, keys: ("speedmin", "speedmax"))
