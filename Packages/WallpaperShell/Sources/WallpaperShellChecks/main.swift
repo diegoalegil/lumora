@@ -106,6 +106,13 @@ mock.fire()
 Check.that("user pause stops display 1", results[1]?.renderingEnabled == false)
 Check.that("user pause stops display 2", results[2]?.renderingEnabled == false)
 
+// evaluate() reads the global power/thermal inputs ONCE per pass (a live IOKit snapshot), not once per
+// display — so with 2 displays a single re-evaluation must call globalInputs() exactly once, not twice.
+let callsBefore = mock.globalInputsCalls
+mock.fire()
+Check.that("evaluate snapshots global inputs once per pass, not per display",
+           mock.globalInputsCalls - callsBefore == 1)
+
 // MARK: PlaylistRepository
 Check.section("PlaylistRepository")
 do {

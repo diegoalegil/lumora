@@ -42,8 +42,14 @@ public final class PlaybackCoordinator {
 
     /// Recompute and emit directives for all current displays.
     public func evaluate() {
+        // The global inputs (battery/thermal/low-power) are shared across displays and `globalInputs()` does
+        // a live IOKit power snapshot, so take it ONCE per pass and vary only the per-display occlusion —
+        // instead of N identical snapshots for N displays. Equivalent result (one instantaneous reading).
+        let base = source.globalInputs()
         for id in displays() {
-            onDirective?(id, directive(for: id))
+            var inputs = base
+            inputs.isOccluded = source.isOccluded(displayID: id)
+            onDirective?(id, engine.directive(for: inputs))
         }
     }
 }

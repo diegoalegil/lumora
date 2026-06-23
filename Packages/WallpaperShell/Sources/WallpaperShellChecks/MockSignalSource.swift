@@ -11,9 +11,10 @@ final class MockSignalSource: PlaybackSignalSource {
     var base = PlaybackInputs()
     var occluded: Set<CGDirectDisplayID> = []
 
+    private(set) var globalInputsCalls = 0
     func start() {}
     func stop() {}
-    func globalInputs() -> PlaybackInputs { base }
+    func globalInputs() -> PlaybackInputs { globalInputsCalls += 1; return base }
     func isOccluded(displayID: CGDirectDisplayID) -> Bool { occluded.contains(displayID) }
 
     /// Simulate a signal change.
