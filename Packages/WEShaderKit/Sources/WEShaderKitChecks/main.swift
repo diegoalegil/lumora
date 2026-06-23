@@ -930,6 +930,12 @@ Check.that("keeps the active #if branch", ShaderPreprocessor.resolve(conditional
 Check.that("keeps the #else when the #if is inactive", ShaderPreprocessor.resolve(conditional, combos: ["MASK": 0]) == "a\nc\nd")
 Check.that("a missing combo reads as 0", ShaderPreprocessor.resolve(conditional, combos: [:]) == "a\nc\nd")
 Check.that("#ifdef follows definedness, not value", ShaderPreprocessor.resolve("#ifdef X\ny\n#endif", combos: ["X": 0]) == "y")
+// A #define makes its name defined for #ifdef/#ifndef/defined() regardless of its value parsing as an int —
+// a valueless flag, a function-like macro, and a float-valued macro are all "defined" (C semantics).
+Check.that("a valueless #define is seen by #ifdef", ShaderPreprocessor.resolve("#define HQ\n#ifdef HQ\ny\n#endif", combos: [:]) == "y")
+Check.that("a valueless #define is seen by defined()", ShaderPreprocessor.resolve("#define FEATURE\n#if defined(FEATURE)\ny\n#else\nn\n#endif", combos: [:]) == "y")
+Check.that("a function-like macro is seen by defined()", ShaderPreprocessor.resolve("#define BLUR(x) ((x)*2.0)\n#if defined(BLUR)\ny\n#else\nn\n#endif", combos: [:]) == "y")
+Check.that("a float-valued #define makes #ifndef false", ShaderPreprocessor.resolve("#define DEG2RAD 0.01745\n#ifndef DEG2RAD\ny\n#else\nn\n#endif", combos: [:]) == "n")
 // Regression: WE ships CRLF. Swift treats "\r\n" as one grapheme, so a naive split(separator:"\n")
 // never matches it and the whole shader collapses to one line — emptying every transpiled body.
 Check.that("normalises CRLF before resolving conditionals",
