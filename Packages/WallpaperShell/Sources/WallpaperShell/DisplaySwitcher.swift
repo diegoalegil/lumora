@@ -59,7 +59,11 @@ public final class DisplaySwitcher {
     /// Switch to `reference`. With an existing wallpaper and a cross-fade transition, both overlap and ramp;
     /// otherwise it's an instant cut. Switching to the wallpaper already shown (and not mid-fade) is a no-op.
     public func apply(_ reference: WallpaperReference, transition settings: TransitionSettings, now: TimeInterval) {
-        if !isTransitioning, current?.reference == reference { return }
+        // Re-requesting the wallpaper already shown OR currently fading IN is a true no-op — check the incoming
+        // target too, not just `current`. Without this, re-applying B mid-fade collapses the fade and allocates
+        // a fresh B surface (a new GPU renderer) only to cross-fade B onto itself. A switch back to the
+        // OUTGOING wallpaper still proceeds (currentReference is the incoming one, which differs).
+        if currentReference == reference { return }
         if isTransitioning { finishTransition() }   // collapse an in-flight fade before starting the next
         let surface = makeSurface(reference)
         if settings.kind == .crossfade, settings.effectiveDuration > 0, current != nil {

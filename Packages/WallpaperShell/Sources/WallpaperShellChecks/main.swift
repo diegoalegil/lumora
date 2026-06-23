@@ -187,6 +187,22 @@ do {
     Check.that("a .none transition is an instant cut",
                rec.made.count == 3 && rec.made[1].torndown && switcher.currentReference == c && rec.made[2].opacity == 1)
 }
+// Re-applying the wallpaper that is currently fading IN must also be a no-op — no redundant surface, no
+// self-fade restart. (Before the fix the guard only checked `current`, so a mid-fade re-apply re-allocated.)
+do {
+    let rec = SurfaceRecorder()
+    let switcher = DisplaySwitcher { ref in let s = RecordingSurface(ref); rec.made.append(s); return s }
+    let a = WallpaperReference(id: "a"), b = WallpaperReference(id: "b")
+    let fade = TransitionSettings(kind: .crossfade, duration: 2)
+    switcher.apply(a, transition: fade, now: 0)
+    switcher.apply(b, transition: fade, now: 10)   // start the A→B cross-fade
+    switcher.tick(now: 11)                          // mid-fade, still transitioning
+    let incomingOpacity = rec.made[1].opacity
+    switcher.apply(b, transition: fade, now: 11)   // re-request the wallpaper already fading in
+    Check.that("re-applying the fading-in wallpaper allocates no new surface", rec.made.count == 2)
+    Check.that("re-applying the fading-in wallpaper doesn't restart its fade",
+               rec.made[1].opacity == incomingOpacity && switcher.isTransitioning)
+}
 
 // MARK: PlaylistPlaybackController (rotation + transition, end-to-end)
 Check.section("PlaylistPlaybackController")
