@@ -83,21 +83,26 @@ final class AssetSchemeHandler: NSObject, WKURLSchemeHandler {
 
     private var fileURL: URL?
     private var html = ""
+    // The file is memory-mapped once when the wallpaper loads, not on every Range request: WebKit's <video>
+    // streams a clip with many small Range requests, and re-establishing the mmap each time is needless
+    // per-request main-thread work. Re-mapped on each configure() so the mapping tracks the active wallpaper.
+    private var fileData: Data?
+    private var mime = "application/octet-stream"
 
     func configure(fileURL: URL, html: String) {
         self.fileURL = fileURL
         self.html = html
+        self.fileData = try? Data(contentsOf: fileURL, options: .mappedIfSafe)
+        self.mime = VideoFallbackHTML.mimeType(forExtension: fileURL.pathExtension)
     }
 
     func webView(_ webView: WKWebView, start urlSchemeTask: any WKURLSchemeTask) {
         let path = urlSchemeTask.request.url?.path ?? ""
         if path.hasSuffix("index.html") {
             respond(urlSchemeTask, data: Data(html.utf8), mime: "text/html")
-        } else if let fileURL, let data = try? Data(contentsOf: fileURL, options: .mappedIfSafe) {
-            // Memory-map the file (don't read it all into RAM) and honour the <video> element's Range
-            // requests, so a large clip streams a window at a time and seeking works, instead of buffering
-            // the whole file in memory.
-            let mime = VideoFallbackHTML.mimeType(forExtension: fileURL.pathExtension)
+        } else if let data = fileData {
+            // The file is already memory-mapped (configure()); honour the <video> element's Range requests so
+            // a large clip streams a window at a time and seeking works, without re-mapping per request.
             if let header = urlSchemeTask.request.value(forHTTPHeaderField: "Range"),
                let range = AssetByteRange.parse(header, total: data.count) {
                 respond(urlSchemeTask, data: data.subdata(in: range), mime: mime, partialOf: data.count, start: range.lowerBound)
