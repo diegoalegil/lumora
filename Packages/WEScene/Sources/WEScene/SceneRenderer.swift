@@ -63,6 +63,8 @@ private struct PreparedParticles {
     let count: Int
     let isAdditive: Bool
     let isRefractive: Bool           // draw by refracting the background through the normal map
+    let uvScale: SIMD2<Float>        // content/POT crop of the sprite (as layers use), so a padded sprite
+                                     // samples only its content region instead of stretching it over the quad
     let instanceBuffer: MTLBuffer    // sized for `count` instances, refilled each frame (not reallocated)
 }
 
@@ -324,7 +326,8 @@ public final class SceneRenderer {
     struct POut { float4 position [[position]]; float2 uv; float4 color; };
     vertex POut lumora_particle_vertex(uint vid [[vertex_id]], uint iid [[instance_id]],
                                        constant PInst *insts [[buffer(0)]],
-                                       constant float2 &aspectScale [[buffer(1)]]) {
+                                       constant float2 &aspectScale [[buffer(1)]],
+                                       constant float2 &uvScale [[buffer(2)]]) {
         float2 corner[4] = { float2(-1, -1), float2(1, -1), float2(-1, 1), float2(1, 1) };
         float2 uvs[4]    = { float2(0, 1),  float2(1, 1),  float2(0, 0),  float2(1, 0) };
         PInst p = insts[iid];
@@ -334,7 +337,7 @@ public final class SceneRenderer {
         float2 c = corner[vid];
         float2 r = float2(c.x * p.rotor.x - c.y * p.rotor.y, c.x * p.rotor.y + c.y * p.rotor.x);
         out.position = float4((p.center + r * p.halfExtent) * aspectScale, 0, 1);
-        out.uv = uvs[vid];
+        out.uv = uvs[vid] * uvScale;   // sample only the content region of a padded (POT) sprite
         out.color = p.color;
         return out;
     }
@@ -750,7 +753,7 @@ public final class SceneRenderer {
             preparedParticles.append(PreparedParticles(system: system, texture: sprite.texture,
                                                        normalTexture: sprite.normal, count: count,
                                                        isAdditive: sprite.isAdditive, isRefractive: sprite.isRefractive,
-                                                       instanceBuffer: instanceBuffer))
+                                                       uvScale: sprite.uvScale, instanceBuffer: instanceBuffer))
         }
         return PreparedScene(layers: prepared, clearColor: document.clearColor,
                              particles: preparedParticles, orthoWidth: orthoW, orthoHeight: orthoH,
@@ -762,34 +765,40 @@ public final class SceneRenderer {
     /// (additive for glowy sparks/embers, alpha-over for solid sprites like petals/butterflies). Returns
     /// nil if the sprite can't be resolved, so the system is skipped rather than drawn as white squares.
     private func particleSprite(_ system: ParticleSystem, package: ScenePackage)
-        -> (texture: MTLTexture, normal: MTLTexture?, isAdditive: Bool, isRefractive: Bool)? {
+        -> (texture: MTLTexture, normal: MTLTexture?, isAdditive: Bool, isRefractive: Bool, uvScale: SIMD2<Float>)? {
         guard let materialPath = system.materialPath, let entry = package.entry(named: materialPath),
               let material = (try? JSONSerialization.jsonObject(with: entry.data)) as? [String: Any],
               let pass = (material["passes"] as? [[String: Any]])?.first
         else { return nil }
         let names = (pass["textures"] as? [Any])?.compactMap { $0 as? String } ?? []
-        guard let first = names.first, let texture = spriteTexture(named: first, package: package) else { return nil }
+        guard let first = names.first, let sprite = spriteTexture(named: first, package: package) else { return nil }
         // Rain-on-glass droplets (REFRACT combo + a normal map) distort the scene behind each sprite. We
         // refract by sampling the composited background displaced by the droplet's normal map (see the
         // refractive render branch). Needs the second texture; without it we can't refract faithfully, so
         // skip (a plain albedo blob would just obscure the scene — worse than the effect's absence).
         if (pass["combos"] as? [String: Any])?["REFRACT"] as? Int == 1 {
             guard names.count >= 2, let normal = spriteTexture(named: names[1], package: package) else { return nil }
-            return (texture, normal, false, true)
+            return (sprite.texture, normal.texture, false, true, sprite.uvScale)
         }
         let blending = (pass["blending"] as? String) ?? "normal"
-        return (texture, nil, blending == "additive" || blending == "add", false)
+        return (sprite.texture, nil, blending == "additive" || blending == "add", false, sprite.uvScale)
     }
 
     /// Load a particle sprite: WE's common built-in shapes procedurally (they aren't shipped in the
-    /// package), packaged sprites from the scene, else nil so the system is skipped.
-    private func spriteTexture(named name: String, package: ScenePackage) -> MTLTexture? {
-        if name.hasPrefix("util/") { return resolveAuxTexture(name, package: package) }
+    /// package), packaged sprites from the scene, else nil so the system is skipped. `uvScale` is the
+    /// content/POT crop (the sprite's content sub-rect of a power-of-two texture); (1,1) for a procedural
+    /// or full-content sprite.
+    private func spriteTexture(named name: String, package: ScenePackage) -> (texture: MTLTexture, uvScale: SIMD2<Float>)? {
+        if name.hasPrefix("util/") { return (resolveAuxTexture(name, package: package), SIMD2(1, 1)) }
         // Packaged sprite from the scene takes priority.
         if let entry = package.entry(named: "materials/\(name).tex"),
            let decoded = try? SceneTexture.decodeFirstMip(entry.data),
            let made = MetalTexture.make(decoded, device: device) {
-            return made
+            let uvScale = decoded.width > 0 && decoded.height > 0
+                ? SIMD2(Float(min(1.0, Double(decoded.imageWidth) / Double(decoded.width))),
+                        Float(min(1.0, Double(decoded.imageHeight) / Double(decoded.height))))
+                : SIMD2<Float>(1, 1)
+            return (made, uvScale)
         }
         // WE's unshipped built-in sprites: blob-like glows (halo, fog, dot, flare, …) approximate well as a
         // soft radial glow tinted by the particle's colour. Two families we DON'T approximate, because a
@@ -802,7 +811,7 @@ public final class SceneRenderer {
                         "fire", "flame", "ember", "spark", "lava", "magma", "wildfire"]
             let blob = ["halo", "glow", "drop", "dot", "fog", "flare", "smoke", "star", "bokeh", "circle"]
             if blob.contains(where: name.contains), !skip.contains(where: name.contains) {
-                return haloTexture
+                return (haloTexture, SIMD2(1, 1))   // procedural glow fills its texture: no crop
             }
         }
         return nil
@@ -1336,6 +1345,8 @@ public final class SceneRenderer {
                     encoder.setRenderPipelineState(particleRefract)
                     encoder.setVertexBuffer(prepared.instanceBuffer, offset: 0, index: 0)
                     encoder.setVertexBytes(&pAspect, length: MemoryLayout<SIMD2<Float>>.stride, index: 1)
+                    var pUVScale = prepared.uvScale
+                    encoder.setVertexBytes(&pUVScale, length: MemoryLayout<SIMD2<Float>>.stride, index: 2)
                     encoder.setFragmentTexture(prepared.texture, index: 0)
                     encoder.setFragmentSamplerState(sampler, index: 0)
                     encoder.setFragmentTexture(normal, index: 1)
@@ -1475,6 +1486,8 @@ public final class SceneRenderer {
             encoder.setVertexBuffer(prepared.instanceBuffer, offset: 0, index: 0)
             var pAspect = aspectScale
             encoder.setVertexBytes(&pAspect, length: MemoryLayout<SIMD2<Float>>.stride, index: 1)
+            var pUVScale = prepared.uvScale
+            encoder.setVertexBytes(&pUVScale, length: MemoryLayout<SIMD2<Float>>.stride, index: 2)
             encoder.setFragmentTexture(prepared.texture, index: 0)
             encoder.setFragmentSamplerState(sampler, index: 0)
             encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4, instanceCount: n)
