@@ -32,8 +32,13 @@ public final class AudioEngine: NSObject, AudioSpectrumProvider, SCStreamDelegat
     private var prev = Snapshot()
     private var lastTime = CACurrentMediaTimeOrZero()
 
-    private var stream: SCStream?
-    private var running = false
+    // `running` (is capture active?) and the live `stream` are control state touched from THREE contexts: the
+    // main actor (start/stop, driven by playback policy + wallpaper switching), the detached startCapture
+    // task, and the SCStream delegate queue. Confine every access to this lock so a stop() can never lose a
+    // stream that startCapture is concurrently adopting — which would leak a live Screen-Recording capture
+    // that nothing stops. SCStream isn't Sendable, so use the unchecked lock variant.
+    private struct Control { var running = false; var stream: SCStream? }
+    private let control = OSAllocatedUnfairLock(uncheckedState: Control())
 
     public override init() { super.init() }
 
@@ -55,17 +60,24 @@ public final class AudioEngine: NSObject, AudioSpectrumProvider, SCStreamDelegat
     // MARK: Lifecycle
     /// Begin capturing system audio. Idempotent; failure leaves the engine silent (no throw to the caller).
     public func start() {
-        guard !running else { return }
-        running = true
+        let begin = control.withLockUnchecked { c -> Bool in
+            guard !c.running else { return false }
+            c.running = true
+            return true
+        }
+        guard begin else { return }
         Task { [weak self] in await self?.startCapture() }
     }
 
     /// Stop capturing and reset to silence so a paused wallpaper doesn't read stale bands.
     public func stop() {
-        running = false
-        let s = stream
-        stream = nil
-        if let s { Task { try? await s.stopCapture() } }
+        let active = control.withLockUnchecked { c -> SCStream? in
+            c.running = false
+            let s = c.stream
+            c.stream = nil
+            return s
+        }
+        if let active { Task { try? await active.stopCapture() } }
         state.withLock { $0 = Snapshot() }
         captureQueue.async { [weak self] in
             self?.accumLeft.removeAll(keepingCapacity: true)
@@ -89,17 +101,25 @@ public final class AudioEngine: NSObject, AudioSpectrumProvider, SCStreamDelegat
             let stream = SCStream(filter: filter, configuration: config, delegate: self)
             try stream.addStreamOutput(self, type: .audio, sampleHandlerQueue: captureQueue)
             try await stream.startCapture()
-            guard running else { try? await stream.stopCapture(); return }
-            self.stream = stream
+            // Adopt the started stream only if we're still meant to be running, atomically with respect to a
+            // concurrent stop()/start(). If running flipped false while we were starting (stop won), or a prior
+            // stream is already stored (a stop→start raced ahead of us), hand the loser back out and stop it —
+            // so a capture is never left running with nothing tracking it.
+            let abandoned: SCStream? = control.withLockUnchecked { c -> SCStream? in
+                guard c.running else { return stream }   // stop() won — abandon the stream we just started
+                let evicted = c.stream                   // a prior stream we're replacing (rare start/stop overlap)
+                c.stream = stream
+                return evicted
+            }
+            if let abandoned { try? await abandoned.stopCapture() }
         } catch {
-            running = false   // permission denied / unavailable → remain silent
+            control.withLockUnchecked { $0.running = false }   // permission denied / unavailable → remain silent
         }
     }
 
     // MARK: SCStreamDelegate
     public func stream(_ stream: SCStream, didStopWithError error: Error) {
-        running = false
-        self.stream = nil
+        control.withLockUnchecked { c in c.running = false; c.stream = nil }
         state.withLock { $0 = Snapshot() }
     }
 
