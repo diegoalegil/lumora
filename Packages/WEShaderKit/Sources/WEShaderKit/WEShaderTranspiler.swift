@@ -1103,6 +1103,7 @@ public enum WEShaderTranspiler {
         switch type {
         case "vec2": return "float2"; case "vec3": return "float3"; case "vec4": return "float4"
         case "mat2": return "float2x2"; case "mat3": return "float3x3"; case "mat4": return "float4x4"
+        case "ivec2": return "int2"; case "ivec3": return "int3"; case "ivec4": return "int4"
         case "bvec2": return "bool2"; case "bvec3": return "bool3"; case "bvec4": return "bool4"
         case "uvec2": return "uint2"; case "uvec3": return "uint3"; case "uvec4": return "uint4"
         default: return type

@@ -231,6 +231,22 @@ Check.that("lowers bvec3 + the lessThan relational builtin", relMSL.contains("bo
 if let device = MTLCreateSystemDefaultDevice() {
     Check.that("relational/bvec MSL compiles via Metal", (try? device.makeLibrary(source: relMSL, options: nil))?.makeFunction(name: "we_fragment") != nil)
 }
+// An ivec uniform's struct member must lower to Metal's int vector — the body rewrite already maps
+// ivec→int, but a uniform/varying/attribute member is typed by mslType(), which must agree or Metal rejects
+// the whole Uniforms struct ("cannot be used in buffer pointee type").
+let ivecFrag = """
+varying vec4 v_TexCoord;
+uniform ivec2 g_Cells; // {"material":"cells"}
+void main() {
+    int n = g_Cells.x + g_Cells.y;
+    gl_FragColor = vec4(float(n));
+}
+"""
+let ivecMSL = WEShaderTranspiler.fragmentToMSL(ivecFrag)
+Check.that("an ivec uniform member lowers to int2, not raw ivec2", ivecMSL.contains("int2 g_Cells") && !ivecMSL.contains("ivec2"))
+if let device = MTLCreateSystemDefaultDevice() {
+    Check.that("ivec-uniform MSL compiles via Metal", (try? device.makeLibrary(source: ivecMSL, options: nil))?.makeFunction(name: "we_fragment") != nil)
+}
 // gl_FragCoord (window-space pixel coordinate) wires to MSL's [[position]] fragment parameter.
 let fcFrag = """
 varying vec4 v_TexCoord;
