@@ -205,11 +205,13 @@ public struct ParticleSystem: Sendable, Equatable {
                 system.gravity = vec3(op["gravity"])
                 system.drag = min(50, max(0, (op["drag"] as? NSNumber)?.doubleValue ?? 0))
             case "sizechange":
+                // Clamp finite like every other untrusted particle scalar: an unsanitised start/end value
+                // (e.g. `-1e309` → -inf) would lerp to NaN/±Inf and reach the GPU as a non-finite sprite size.
                 func num(_ key: String, _ fallback: Double) -> Double { (op[key] as? NSNumber)?.doubleValue ?? fallback }
-                system.sizeStart = num("startvalue", 1)
-                system.sizeEnd = num("endvalue", 1)
-                system.sizeStartTime = num("starttime", 0)
-                system.sizeEndTime = num("endtime", 1)
+                system.sizeStart = clampFinite(num("startvalue", 1), -10_000, 10_000, 1)
+                system.sizeEnd = clampFinite(num("endvalue", 1), -10_000, 10_000, 1)
+                system.sizeStartTime = clampFinite(num("starttime", 0), 0, 1, 0)
+                system.sizeEndTime = clampFinite(num("endtime", 1), 0, 1, 1)
             case "alphafade":
                 system.hasAlphaFade = true
                 system.fadeInTime = clampFinite((op["fadeintime"] as? NSNumber)?.doubleValue ?? 0, 0, 1, 0)

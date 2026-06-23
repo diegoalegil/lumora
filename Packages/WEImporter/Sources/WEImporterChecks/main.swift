@@ -988,6 +988,12 @@ if let grow = ParticleSystem.parse(growParticle) {
                grow.sizeStart == 0 && grow.sizeEnd == 1 && grow.sizeStartTime == 0 && grow.sizeEndTime == 0.2)
     Check.that("a system without alphafade is flagged so (keeps the generic fade)", grow.hasAlphaFade == false)
 }
+// A non-finite sizechange value (reachable via -1e309 → -inf through JSONSerialization) must be clamped, or it
+// lerps to NaN/Inf and reaches the GPU as a non-finite sprite size. Build via the real loader path.
+if let j = try? JSONSerialization.jsonObject(with: Data(#"{"emitter":[{"name":"boxrandom","rate":20}],"operator":[{"name":"sizechange","startvalue":-1e309,"endvalue":1}]}"#.utf8)) as? [String: Any],
+   let nf = ParticleSystem.parse(j) {
+    Check.that("a non-finite sizechange value is clamped finite", nf.sizeStart.isFinite && nf.sizeEnd.isFinite)
+}
 // alphafade (an operator): explicit fade-in / fade-out life fractions.
 let fadeParticle: [String: Any] = [
     "emitter": [["name": "boxrandom", "rate": 20]],
