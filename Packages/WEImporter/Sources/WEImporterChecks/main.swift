@@ -452,6 +452,21 @@ if let dec = Check.noThrow("decodes a raw uncompressed mip", {
     Check.that("raw mip dims", dec.width == 4 && dec.height == 4)
     Check.that("raw pixels pass through", dec.pixels == rawPixels)
 }
+// A POT-padded sprite: 100×100 content inside a 128×128 power-of-two buffer. decodeFirstMip must report the
+// storage dims as width/height and the smaller content dims as imageWidth/imageHeight — this content/POT
+// distinction is exactly what the layer compositor AND the particle sprites use (uvScale = content/storage)
+// to sample only the content sub-rect of a padded texture instead of stretching it over the whole quad.
+var paddedTex = buildTexHeader(format: 0, texW: 128, texH: 128, imgW: 100, imgH: 100,
+                               mipContainer: "TEXB0002", mipCount: 1)
+paddedTex.append(le32(0))                                              // (version 2 → one leading u32)
+paddedTex.append(le32(128)); paddedTex.append(le32(128))              // mip storage dims
+let paddedPayload = Data(repeating: 0, count: 128 * 128 * 4)
+paddedTex.append(le32(0)); paddedTex.append(le32(paddedPayload.count)); paddedTex.append(le32(paddedPayload.count))
+paddedTex.append(paddedPayload)
+if let padded = Check.noThrow("decodes a POT-padded sprite", { try SceneTexture.decodeFirstMip(paddedTex) }) {
+    Check.that("a padded sprite's content dims are smaller than its POT storage",
+               padded.width == 128 && padded.height == 128 && padded.imageWidth == 100 && padded.imageHeight == 100)
+}
 let original = Data(repeating: 7, count: 4096)
 let compressed = lz4Compress(original)
 Check.that("lz4 fixture compresses", compressed.count > 0 && compressed.count < original.count)
