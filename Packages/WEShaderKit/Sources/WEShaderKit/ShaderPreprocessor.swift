@@ -27,17 +27,22 @@ public enum ShaderPreprocessor {
         var combos = combos
         var macros: [(name: String, value: String)] = []
         var funcMacros: [(name: String, params: [String], body: String)] = []
+        // Every `#define` makes its name "defined" for `#ifdef`/`#ifndef`/`defined()`, regardless of whether
+        // its value parses as an integer combo — a valueless `#define HQ`, a function-like `#define BLUR(x)…`,
+        // and a non-integer `#define DEG2RAD 0.017` are all defined. `combos` alone (seeded only for integer
+        // values) would miss them and select the wrong conditional branch.
+        var definedNames: Set<String> = []
 
         var output: [String] = []
         for line in source.split(separator: "\n", omittingEmptySubsequences: false).map(String.init) {
             let trimmed = line.trimmingCharacters(in: .whitespaces)
             if trimmed.hasPrefix("#if ") || trimmed.hasPrefix("#ifdef ") || trimmed.hasPrefix("#ifndef ") {
                 let parent = emitting()
-                let value = parent && evaluate(condition(trimmed), combos: combos)
+                let value = parent && evaluate(condition(trimmed), combos: combos, defined: definedNames)
                 stack.append(Frame(parentEmitting: parent, taken: value, active: value))
             } else if trimmed.hasPrefix("#elif ") {
                 guard var frame = stack.popLast() else { continue }
-                frame.active = frame.parentEmitting && !frame.taken && evaluate(String(trimmed.dropFirst(6)), combos: combos)
+                frame.active = frame.parentEmitting && !frame.taken && evaluate(String(trimmed.dropFirst(6)), combos: combos, defined: definedNames)
                 frame.taken = frame.taken || frame.active
                 stack.append(frame)
             } else if trimmed.hasPrefix("#else") {
@@ -50,9 +55,11 @@ public enum ShaderPreprocessor {
             } else if emitting() {
                 if let fn = funcMacro(trimmed) {
                     funcMacros.append(fn)
+                    definedNames.insert(fn.name)
                 } else if let (name, value) = objectMacro(trimmed) {
                     let expanded = expandMacros(value, macros, funcMacros)
                     macros.append((name: name, value: expanded))
+                    definedNames.insert(name)
                     if let int = Int(expanded) { combos[name] = int }   // visible to a later #if NAME
                 } else {
                     output.append(macros.isEmpty && funcMacros.isEmpty ? line : expandMacros(line, macros, funcMacros))
@@ -274,19 +281,19 @@ public enum ShaderPreprocessor {
 
     /// Evaluate a `#if` condition against the combos: `||`, `&&`, `!`, the comparisons `== != <= >= < >`,
     /// `defined NAME`, parentheses, integer literals and bare combo names (missing reads as 0).
-    private static func evaluate(_ expression: String, combos: [String: Int]) -> Bool {
-        value(of: expression, combos) != 0
+    private static func evaluate(_ expression: String, combos: [String: Int], defined: Set<String> = []) -> Bool {
+        value(of: expression, combos, defined) != 0
     }
 
     /// The integer value of a condition sub-expression (0 = false, non-zero = true).
-    private static func value(of expression: String, _ combos: [String: Int]) -> Int {
+    private static func value(of expression: String, _ combos: [String: Int], _ defined: Set<String>) -> Int {
         let expr = expression.trimmingCharacters(in: .whitespaces)
         if expr.isEmpty { return 0 }
-        if let parts = splitTopLevel(expr, "||") { return parts.contains { value(of: $0, combos) != 0 } ? 1 : 0 }
-        if let parts = splitTopLevel(expr, "&&") { return parts.allSatisfy { value(of: $0, combos) != 0 } ? 1 : 0 }
+        if let parts = splitTopLevel(expr, "||") { return parts.contains { value(of: $0, combos, defined) != 0 } ? 1 : 0 }
+        if let parts = splitTopLevel(expr, "&&") { return parts.allSatisfy { value(of: $0, combos, defined) != 0 } ? 1 : 0 }
         for op in ["==", "!=", "<=", ">=", "<", ">"] {
             if let (lhs, rhs) = splitFirstTopLevel(expr, op) {
-                let a = value(of: lhs, combos), b = value(of: rhs, combos)
+                let a = value(of: lhs, combos, defined), b = value(of: rhs, combos, defined)
                 switch op {
                 case "==": return a == b ? 1 : 0
                 case "!=": return a != b ? 1 : 0
@@ -297,10 +304,12 @@ public enum ShaderPreprocessor {
                 }
             }
         }
-        if expr.hasPrefix("!") { return value(of: String(expr.dropFirst()), combos) == 0 ? 1 : 0 }
-        if expr.hasPrefix("("), expr.hasSuffix(")") { return value(of: String(expr.dropFirst().dropLast()), combos) }
+        if expr.hasPrefix("!") { return value(of: String(expr.dropFirst()), combos, defined) == 0 ? 1 : 0 }
+        if expr.hasPrefix("("), expr.hasSuffix(")") { return value(of: String(expr.dropFirst().dropLast()), combos, defined) }
         if expr.hasPrefix("defined") {
-            return combos[expr.dropFirst(7).trimmingCharacters(in: CharacterSet(charactersIn: " ()"))] != nil ? 1 : 0
+            // A name is defined if it was #define'd (any value, including none) or supplied as a combo.
+            let name = expr.dropFirst(7).trimmingCharacters(in: CharacterSet(charactersIn: " ()"))
+            return defined.contains(name) || combos[name] != nil ? 1 : 0
         }
         if let literal = Int(expr) { return literal }
         return combos[expr] ?? 0
