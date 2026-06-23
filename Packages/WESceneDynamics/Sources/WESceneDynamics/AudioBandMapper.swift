@@ -26,7 +26,7 @@ public final class AudioBandMapper {
 
     public init?(fftSize: Int = 1024) {
         guard fftSize >= 2, fftSize.nonzeroBitCount == 1 else { return nil }   // power of two
-        let log2n = vDSP_Length((fftSize as NSNumber).intValue.trailingZeroBitCount)
+        let log2n = vDSP_Length(fftSize.trailingZeroBitCount)
         guard let fft = vDSP.FFT(log2n: log2n, radix: .radix2, ofType: DSPSplitComplex.self) else { return nil }
         self.fftSize = fftSize
         self.halfN = fftSize / 2
