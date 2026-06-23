@@ -927,6 +927,17 @@ if let osc = ParticleSystem.parse(infOscParticle), let o = osc.oscillatePosition
 } else {
     Check.that("an oscillateposition system parses", false)
 }
+// A negative-overflow frequency bound (JSONSerialization accepts -1e309 → -inf) maps to the finite default
+// AFTER ordering — a non-finite lower bound combined with a small finite upper bound must NOT build an
+// inverted range (1 ... 0.5) that traps ClosedRange.init. Parsing must not crash and the range stays ordered.
+if let osc = ParticleSystem.parse(["emitter": [["name": "boxrandom", "rate": 20]],
+        "operator": [["name": "oscillatealpha", "frequencymin": -Double.infinity, "frequencymax": 0.5]]]),
+   let o = osc.oscillateAlpha {
+    Check.that("an inverted-after-clamp oscillator frequency stays a well-ordered finite range",
+               o.freq.lowerBound.isFinite && o.freq.upperBound.isFinite && o.freq.lowerBound <= o.freq.upperBound)
+} else {
+    Check.that("an oscillatealpha system with a non-finite frequency parses without trapping", false)
+}
 // Rotation: rotationrandom gives a full-circle starting orientation; angularvelocityrandom's z is the
 // screen-plane spin rate (rad/s). A system with neither leaves both ranges at zero (no spin).
 let spinParticle: [String: Any] = [
