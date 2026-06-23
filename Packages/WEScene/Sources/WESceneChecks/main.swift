@@ -373,8 +373,18 @@ let parallaxPkg = buildPKG([
     ("materials/mat.json", materialJSON), ("materials/t.tex", blueTex),
 ])
 if let package = try? ScenePackage.read(parallaxPkg), let document = try? SceneGraph.load(from: package) {
-    Check.that("a parallax-depth scene reports animation (keeps the loop running)",
-               renderer.prepare(document, package: package).hasAnimation == true)
+    let prep = renderer.prepare(document, package: package)
+    Check.that("a parallax-depth scene reports animation (keeps the loop running)", prep.hasAnimation == true)
+    // Regression (sweep-found): a non-finite render time (NaN/inf from a misbehaving clock) flows into the
+    // time-derived index math (the video-frame pick traps on Int(NaN)) and into the parallax sway as NaN,
+    // displacing layers. render() now sanitises a non-finite time to 0 (the still composite), so an infinite or
+    // NaN time renders identically to time 0 instead of trapping or producing NaN geometry.
+    let atZero = renderer.render(prep, width: 8, height: 8, time: 0)
+    let atInf = renderer.render(prep, width: 8, height: 8, time: .infinity)
+    let atNaN = renderer.render(prep, width: 8, height: 8, time: .nan)
+    Check.that("a non-finite render time renders (no trap, no NaN geometry)", atInf != nil && atNaN != nil)
+    Check.that("an infinite/NaN time renders identically to time 0 (sanitised to the still composite)",
+               atZero != nil && atInf?.rgba == atZero?.rgba && atNaN?.rgba == atZero?.rgba)
 }
 
 // Graceful degradation: an effect that blanks the layer is dropped at prepare, so the layer keeps its
