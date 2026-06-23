@@ -9,6 +9,13 @@
 import Foundation
 
 public enum WEShaderTranspiler {
+    /// Upper bound on an array uniform's element count, from the untrusted `[N]` in a shader. The emitted
+    /// MSL `Uniforms` struct and `UniformPacker` (which fills a buffer matching that struct) MUST clamp to
+    /// the SAME value, or every uniform after an over-long array lands at a different byte offset in the
+    /// struct than in the packed data and reads garbage. 1024 floats = 4 KB is far above any real WE array
+    /// (audio spectra are 16/32/64), so it never bites a genuine wallpaper.
+    public static let maxArrayElements = 1024
+
     /// Transpile a WE-dialect fragment shader to an MSL source string with a fragment function named
     /// `functionName`. Reuses `ShaderUniforms` to bind textures and a uniform buffer. When `pairedVertex`
     /// is given (the effect's own vertex), the stage_in struct mirrors THAT shader's varyings, so the two
@@ -67,7 +74,7 @@ public enum WEShaderTranspiler {
         if !scalars.isEmpty {
             msl += "struct Uniforms {\n"
             for uniform in scalars {
-                let array = uniform.arrayCount.map { "[\(min(max($0, 1), 1024))]" } ?? ""
+                let array = uniform.arrayCount.map { "[\(min(max($0, 1), maxArrayElements))]" } ?? ""
                 msl += "    \(mslType(uniform.type)) \(uniform.name)\(array);\n"
             }
             msl += "};\n\n"
@@ -133,7 +140,7 @@ public enum WEShaderTranspiler {
         if !scalars.isEmpty {
             msl += "struct Uniforms {\n"
             for uniform in scalars {
-                let array = uniform.arrayCount.map { "[\(min(max($0, 1), 1024))]" } ?? ""
+                let array = uniform.arrayCount.map { "[\(min(max($0, 1), maxArrayElements))]" } ?? ""
                 msl += "    \(mslType(uniform.type)) \(uniform.name)\(array);\n"
             }
             msl += "};\n\n"

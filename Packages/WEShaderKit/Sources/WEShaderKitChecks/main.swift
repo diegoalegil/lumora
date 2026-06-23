@@ -1044,9 +1044,23 @@ Check.that("array element values land at their float index",
 
 // A hostile shader can declare an absurd array size. Packing it must stay bounded — never overflow the
 // `components * count` arithmetic or attempt a multi-gigabyte allocation — by capping the element count.
+let cap = WEShaderTranspiler.maxArrayElements
 let hugeArray = UniformPacker.pack([ShaderUniform(type: "float", name: "g_Big", arrayCount: 2_000_000_000)], values: [:])
-Check.that("a huge float[N] count is capped, not allocated wholesale", hugeArray.count <= 65536 * 4 + 16)
+Check.that("a huge float[N] count is capped, not allocated wholesale", hugeArray.count == cap * 4)
 let maxArray = UniformPacker.pack([ShaderUniform(type: "vec4", name: "g_Max", arrayCount: Int.max)], values: [:])
-Check.that("an Int.max array count packs without trapping the multiply", maxArray.count <= 65536 * 16 + 16)
+Check.that("an Int.max array count packs without trapping the multiply", maxArray.count == cap * 16)
+
+// The packer's array cap MUST equal the transpiler's struct-member cap, or a uniform after an over-long
+// array lands at a different byte offset in the packed data than in the emitted struct and reads garbage.
+// Verify directly: an over-long g_Spectrum followed by g_Tint — the packed g_Tint must sit at exactly the
+// offset the emitted MSL struct declares (4 * cap, already 16-aligned).
+let layoutFrag = "uniform float g_Spectrum[\(cap + 976)]; // {\"material\":\"s\"}\nuniform vec4 g_Tint; // {\"material\":\"t\"}\nvarying vec4 v_TexCoord;\nvoid main() { gl_FragColor = g_Tint * g_Spectrum[0]; }"
+let layoutMSL = WEShaderTranspiler.fragmentToMSL(layoutFrag)
+Check.that("an over-long array clamps to the shared cap in the struct", layoutMSL.contains("float g_Spectrum[\(cap)]"))
+let layoutUniforms = ShaderUniforms.parse(layoutFrag).filter { !$0.type.hasPrefix("sampler") }
+let layoutPacked = UniformPacker.pack(layoutUniforms, values: ["t": "0.1 0.2 0.3 0.4"])
+Check.that("the packed uniform after the array sits at the struct's offset (caps agree)",
+           layoutPacked.count == cap * 4 + 16
+           && layoutPacked.withUnsafeBytes { $0.bindMemory(to: Float.self)[cap] } == 0.1)
 
 Check.summarize()

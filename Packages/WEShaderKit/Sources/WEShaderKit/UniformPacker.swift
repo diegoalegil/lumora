@@ -16,9 +16,11 @@ public enum UniformPacker {
             let info = layout(uniform.type)
             // `arrayCount` is the `[N]` from an untrusted shader. Cap it before the component arithmetic and
             // buffer growth below: a hostile `g_X[2000000000]` (or one near Int.max) would otherwise overflow
-            // `components * count` or ask `fit` for a multi-gigabyte allocation. Real WE array uniforms (audio
-            // spectra, small tables) are orders of magnitude below this ceiling, so it's a no-op for them.
-            let count = min(65536, max(1, uniform.arrayCount ?? 1))
+            // `components * count` or ask `fit` for a multi-gigabyte allocation. The cap MUST match the one the
+            // transpiler applies to the emitted struct member (`maxArrayElements`), or this packed data and
+            // that struct disagree on where every later uniform sits. Real WE array uniforms (audio spectra,
+            // small tables) are orders of magnitude below it, so it's a no-op for them.
+            let count = min(WEShaderTranspiler.maxArrayElements, max(1, uniform.arrayCount ?? 1))
             maxAlignment = max(maxAlignment, info.alignment)
             buffer.pad(to: align(buffer.count, to: info.alignment))
             let components: [Float]
