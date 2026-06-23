@@ -40,11 +40,13 @@ public struct ProjectManifest: Sendable, Equatable, Decodable {
         self.visibility = try c.decodeIfPresent(String.self, forKey: .visibility)
         self.contentRating = try c.decodeIfPresent(String.self, forKey: .contentRating)
         self.general = try c.decodeIfPresent(GeneralSection.self, forKey: .general)
-        // workshopid appears as an integer in most files but occasionally a string.
+        // workshopid appears as an integer in most files but occasionally a string. It's an optional, non-
+        // load-bearing identity field (WallpaperRef falls back to the folder name), so a malformed value must
+        // yield nil — NOT throw and sink the whole otherwise-playable manifest. Both reads use try?.
         if let i = try? c.decodeIfPresent(Int.self, forKey: .workshopID) {
             self.workshopID = String(i)
         } else {
-            self.workshopID = try c.decodeIfPresent(String.self, forKey: .workshopID)
+            self.workshopID = try? c.decodeIfPresent(String.self, forKey: .workshopID)
         }
     }
 
