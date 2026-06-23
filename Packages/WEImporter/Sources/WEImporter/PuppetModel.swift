@@ -48,8 +48,10 @@ public enum PuppetModel {
     /// MDLV0023 model that carries an extra normal/tangent block, e.g. scene 3577990983). The parser tries the
     /// candidates in listed order and takes the first whose stride evenly divides the declared vertex-block size
     /// (and whose index block then parses into a non-torn mesh), so a marker shared across strides resolves
-    /// rather than being rejected. When a block size divides by more than one stride, order decides — the
-    /// genuine 52-byte rigs are listed first. Every supported vertex format is exactly one entry here and the rest of the parser is
+    /// rather than being rejected. When a block size divides by more than one stride, the first that COMPOSES
+    /// wins — the genuine 52-byte rigs are listed first, so they keep priority when both would compose, but a
+    /// stride that only divides (and parses to a torn mesh) yields to the next candidate that actually composes.
+    /// Every supported vertex format is exactly one entry here and the rest of the parser is
     /// format-agnostic — adding a version/stride means adding an entry, nothing else.
     private static func vertexLayouts(version: Int, markerLead: UInt8, markerKind: UInt8) -> [VertexLayout] {
         switch (markerLead, markerKind) {
@@ -117,80 +119,96 @@ public enum PuppetModel {
             let vertexBytes = Int(u32(marker + 4))
             let vertexBase = marker + 8
             guard vertexBytes > 0, vertexBase + vertexBytes + 4 <= n else { return nil }
-            // A marker can map to more than one stride (e.g. `0e 00 81 01` is both a 52- and an 84-byte vertex);
-            // pick the candidate whose stride divides the declared block evenly. A wrong guess can't survive: the
-            // index-bounds, finite-float and torn-mesh guards below reject a mis-strided parse.
-            guard let layout = candidates.first(where: { vertexBytes % $0.stride == 0 }) else { return nil }
-            let stride = layout.stride, uvOff = layout.uvOff, boneOff = layout.boneOff, weightOff = layout.weightOff
-            let vertexCount = vertexBytes / stride
 
+            // The triangle-index block follows the vertex block; its size and offset are stride-independent.
             let indexOffset = vertexBase + vertexBytes
             let indexBytes = Int(u32(indexOffset))
             let indexBase = indexOffset + 4
             guard indexBytes > 0, indexBytes % 2 == 0, indexBase + indexBytes <= n else { return nil }
             let indexCount = indexBytes / 2
 
-            var positions = [SIMD2<Float>](); positions.reserveCapacity(vertexCount)
-            var uvs = [SIMD2<Float>](); uvs.reserveCapacity(vertexCount)
-            var boneIdx = [SIMD4<UInt32>](); boneIdx.reserveCapacity(vertexCount)
-            var weights = [SIMD4<Float>](); weights.reserveCapacity(vertexCount)
-            for v in 0 ..< vertexCount {
-                let o = vertexBase + v * stride
-                positions.append(SIMD2(f32(o), f32(o + 4)))
-                uvs.append(SIMD2(f32(o + uvOff), f32(o + uvOff + 4)))
-                // A flat-mesh layout (no skinning data) leaves the bone indices/weights zero — assemble finds
-                // no skeleton and the flat atlas is judged by the torn guard directly.
-                if let bo = boneOff { boneIdx.append(SIMD4(u32(o + bo), u32(o + bo + 4), u32(o + bo + 8), u32(o + bo + 12))) }
-                else { boneIdx.append(SIMD4(0, 0, 0, 0)) }
-                if let wo = weightOff { weights.append(SIMD4(f32(o + wo), f32(o + wo + 4), f32(o + wo + 8), f32(o + wo + 12))) }
-                else { weights.append(SIMD4(0, 0, 0, 0)) }
-            }
-            // The vertex block is untrusted bytes; a corrupt or variant `.mdl` can carry non-finite floats
-            // (NaN/Inf bit patterns) in the position or UV fields. Refuse such a mesh cleanly so the caller
-            // keeps the static preview instead of letting a NaN position reach the renderer.
-            guard positions.allSatisfy({ $0.x.isFinite && $0.y.isFinite }),
-                  uvs.allSatisfy({ $0.x.isFinite && $0.y.isFinite }) else { return nil }
+            // Parse the vertex+index blocks for one candidate stride, returning the mesh (its `assembled` flag
+            // set by the torn guard) or nil if this stride can't fit the block (non-finite floats / a vertex
+            // index out of range — both signs of a mis-strided parse).
+            func parse(_ layout: VertexLayout) -> PuppetMesh? {
+                let stride = layout.stride, uvOff = layout.uvOff, boneOff = layout.boneOff, weightOff = layout.weightOff
+                let vertexCount = vertexBytes / stride
 
-            var indices = [UInt32](); indices.reserveCapacity(indexCount)
-            for i in 0 ..< indexCount {
-                let idx = UInt32(raw.loadUnaligned(fromByteOffset: indexBase + i * 2, as: UInt16.self))
-                guard idx < UInt32(vertexCount) else { return nil }   // a bad index means we mis-parsed — bail
-                indices.append(idx)
-            }
-
-            // Skin the flat atlas into the assembled figure where the skeleton decodes; where it doesn't, the
-            // positions are left as the flat atlas — a pre-assembled or near-rigid rig is already its own
-            // figure. assemble's own result is advisory: the FINAL arbiter is the torn-mesh guard below, run on
-            // whatever positions we ended with (skinned or flat). This is what lets a near-rigid rig whose pose
-            // array we can't locate still render — its flat atlas already IS the character — while a scatter
-            // (parts packed far apart that genuinely needed a skin) is still rejected by the same guard.
-            assemble(&positions, boneIdx: boneIdx, weights: weights, data: raw, count: n)
-            // Torn-mesh guard (the sole "is this a coherent figure?" test). A correctly composed figure keeps
-            // its triangles roughly proportioned; a scatter leaves MANY triangles stretching across the whole
-            // bounds. Counting the FRACTION of triangles whose longest edge spans over half the bounds
-            // separates the two: a coherent rig has only a stray few (a thin staff, a power line, a balloon
-            // string), a scatter has a large share. Reject only when a substantial number AND fraction are
-            // stretched — so one thin prop doesn't sink an otherwise-composed character. A rejected mesh → the
-            // caller keeps the static preview.
-            var ok = positions.count > 2 && indices.count >= 3
-            if ok {
-                var lo = positions[0], hi = positions[0]
-                for p in positions { lo = SIMD2(min(lo.x, p.x), min(lo.y, p.y)); hi = SIMD2(max(hi.x, p.x), max(hi.y, p.y)) }
-                let diag = max(1, ((hi.x - lo.x) * (hi.x - lo.x) + (hi.y - lo.y) * (hi.y - lo.y)).squareRoot())
-                var longTris = 0, totalTris = 0
-                var i = 0
-                while i + 2 < indices.count {
-                    let a = Int(indices[i]), b = Int(indices[i + 1]), c = Int(indices[i + 2]); i += 3
-                    var triMax: Float = 0
-                    func edge(_ u: Int, _ v: Int) { let d = positions[u] - positions[v]; triMax = max(triMax, (d.x * d.x + d.y * d.y).squareRoot()) }
-                    edge(a, b); edge(b, c); edge(c, a)
-                    totalTris += 1
-                    if triMax / diag > 0.5 { longTris += 1 }
+                var positions = [SIMD2<Float>](); positions.reserveCapacity(vertexCount)
+                var uvs = [SIMD2<Float>](); uvs.reserveCapacity(vertexCount)
+                var boneIdx = [SIMD4<UInt32>](); boneIdx.reserveCapacity(vertexCount)
+                var weights = [SIMD4<Float>](); weights.reserveCapacity(vertexCount)
+                for v in 0 ..< vertexCount {
+                    let o = vertexBase + v * stride
+                    positions.append(SIMD2(f32(o), f32(o + 4)))
+                    uvs.append(SIMD2(f32(o + uvOff), f32(o + uvOff + 4)))
+                    // A flat-mesh layout (no skinning data) leaves the bone indices/weights zero — assemble finds
+                    // no skeleton and the flat atlas is judged by the torn guard directly.
+                    if let bo = boneOff { boneIdx.append(SIMD4(u32(o + bo), u32(o + bo + 4), u32(o + bo + 8), u32(o + bo + 12))) }
+                    else { boneIdx.append(SIMD4(0, 0, 0, 0)) }
+                    if let wo = weightOff { weights.append(SIMD4(f32(o + wo), f32(o + wo + 4), f32(o + wo + 8), f32(o + wo + 12))) }
+                    else { weights.append(SIMD4(0, 0, 0, 0)) }
                 }
-                if longTris > 8, Float(longTris) > Float(totalTris) * 0.1 { ok = false }   // many stretched triangles → a scatter
+                // The vertex block is untrusted bytes; a corrupt or variant `.mdl` can carry non-finite floats
+                // (NaN/Inf bit patterns) in the position or UV fields. Refuse such a mesh cleanly so the caller
+                // keeps the static preview instead of letting a NaN position reach the renderer.
+                guard positions.allSatisfy({ $0.x.isFinite && $0.y.isFinite }),
+                      uvs.allSatisfy({ $0.x.isFinite && $0.y.isFinite }) else { return nil }
+
+                var indices = [UInt32](); indices.reserveCapacity(indexCount)
+                for i in 0 ..< indexCount {
+                    let idx = UInt32(raw.loadUnaligned(fromByteOffset: indexBase + i * 2, as: UInt16.self))
+                    guard idx < UInt32(vertexCount) else { return nil }   // a bad index means we mis-parsed — bail
+                    indices.append(idx)
+                }
+
+                // Skin the flat atlas into the assembled figure where the skeleton decodes; where it doesn't, the
+                // positions are left as the flat atlas — a pre-assembled or near-rigid rig is already its own
+                // figure. assemble's own result is advisory: the FINAL arbiter is the torn-mesh guard below, run on
+                // whatever positions we ended with (skinned or flat). This is what lets a near-rigid rig whose pose
+                // array we can't locate still render — its flat atlas already IS the character — while a scatter
+                // (parts packed far apart that genuinely needed a skin) is still rejected by the same guard.
+                assemble(&positions, boneIdx: boneIdx, weights: weights, data: raw, count: n)
+                // Torn-mesh guard (the sole "is this a coherent figure?" test). A correctly composed figure keeps
+                // its triangles roughly proportioned; a scatter leaves MANY triangles stretching across the whole
+                // bounds. Counting the FRACTION of triangles whose longest edge spans over half the bounds
+                // separates the two: a coherent rig has only a stray few (a thin staff, a power line, a balloon
+                // string), a scatter has a large share. Reject only when a substantial number AND fraction are
+                // stretched — so one thin prop doesn't sink an otherwise-composed character. A rejected mesh → the
+                // caller keeps the static preview.
+                var ok = positions.count > 2 && indices.count >= 3
+                if ok {
+                    var lo = positions[0], hi = positions[0]
+                    for p in positions { lo = SIMD2(min(lo.x, p.x), min(lo.y, p.y)); hi = SIMD2(max(hi.x, p.x), max(hi.y, p.y)) }
+                    let diag = max(1, ((hi.x - lo.x) * (hi.x - lo.x) + (hi.y - lo.y) * (hi.y - lo.y)).squareRoot())
+                    var longTris = 0, totalTris = 0
+                    var i = 0
+                    while i + 2 < indices.count {
+                        let a = Int(indices[i]), b = Int(indices[i + 1]), c = Int(indices[i + 2]); i += 3
+                        var triMax: Float = 0
+                        func edge(_ u: Int, _ v: Int) { let d = positions[u] - positions[v]; triMax = max(triMax, (d.x * d.x + d.y * d.y).squareRoot()) }
+                        edge(a, b); edge(b, c); edge(c, a)
+                        totalTris += 1
+                        if triMax / diag > 0.5 { longTris += 1 }
+                    }
+                    if longTris > 8, Float(longTris) > Float(totalTris) * 0.1 { ok = false }   // many stretched triangles → a scatter
+                }
+
+                return PuppetMesh(positions: positions, uvs: uvs, indices: indices, assembled: ok)
             }
 
-            return PuppetMesh(positions: positions, uvs: uvs, indices: indices, assembled: ok)
+            // A marker can map to more than one stride (e.g. `0e 00 81 01` is both a 52- and an 84-byte vertex).
+            // Try each candidate whose stride divides the declared block, IN LISTED ORDER, and take the first
+            // that composes into a coherent figure — committing to the first divisor alone would silently
+            // regress an 84-byte rig whose vertex count makes its block size also divisible by 52. If none
+            // composes, fall back to the first that at least parses (assembled=false → caller keeps the preview).
+            var fallback: PuppetMesh?
+            for layout in candidates where vertexBytes % layout.stride == 0 {
+                guard let mesh = parse(layout) else { continue }
+                if mesh.assembled { return mesh }
+                if fallback == nil { fallback = mesh }
+            }
+            return fallback
         }
     }
 

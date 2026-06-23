@@ -744,6 +744,22 @@ Check.that("the 0e 00 81 01 compact-vertex marker is recognised (52-byte stride)
 // candidate stride that evenly divides the declared vertex-block size — here 84, not 52 — and compose it.
 Check.that("the 0e 00 81 01 marker also resolves as an 84-byte vertex (stride disambiguated by block size)",
            PuppetModel.parseMesh(flatPuppetMDL(gridVerts, gridTris, marker: [0x0e, 0x00, 0x81, 0x01], stride: 84, uvOff: 76))?.assembled == true)
+// When a vertex-block size divides evenly by BOTH candidate strides (a 13-vertex 84-byte rig: 13*84 = 1092
+// is also divisible by 52), the parser must not commit to the first divisor (52). It tries 52, finds it
+// doesn't compose, and falls back to 84. To make the 52 attempt fail cleanly, plant a NaN in each 84-byte
+// vertex's normal block (byte 52 — ignored at stride 84) which lands on a *position* x/y under the wrong
+// 52-byte stride, so the finite-float guard rejects the 52 parse and only the 84 parse composes.
+var verts13: [SIMD2<Float>] = []
+for i in 0 ..< 13 { verts13.append(SIMD2(Float((i % 5) * 10), Float((i / 5) * 10))) }
+var tris13: [(Int, Int, Int)] = []
+for c in 0 ..< 4 { tris13.append((c, c + 1, c + 5)); tris13.append((c + 1, c + 6, c + 5)) }       // rows 0–1
+for c in 0 ..< 2 { tris13.append((5 + c, 6 + c, 10 + c)); tris13.append((6 + c, 11 + c, 10 + c)) } // rows 1–2
+var collide = flatPuppetMDL(verts13, tris13, marker: [0x0e, 0x00, 0x81, 0x01], stride: 84, uvOff: 76)
+// vertexBase = 30 (MDLV0099 + pad to 0x15 + null material + 4-byte marker + 4-byte size); vertex-local byte 52.
+let nanBytes = f32bytes(.nan)
+for k in 0 ..< 13 { let o = 30 + k * 84 + 52; collide.replaceSubrange(o ..< o + 4, with: nanBytes) }
+Check.that("a 0e marker whose block divides by both strides falls back from 52 to the composing 84",
+           PuppetModel.parseMesh(collide)?.assembled == true)
 // A vertex marker the version→layout table doesn't know (here a made-up `05 00 80 01`) must degrade to nil —
 // the caller keeps the preview — never crash or guess a layout.
 Check.that("an unknown vertex marker → nil (graceful, no crash)",
