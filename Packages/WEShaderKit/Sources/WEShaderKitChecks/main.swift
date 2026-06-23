@@ -200,6 +200,38 @@ Check.that("truncates a same-width compound assigned to a narrower target", arit
 if let device = MTLCreateSystemDefaultDevice() {
     Check.that("harmonised arithmetic MSL compiles via Metal", (try? device.makeLibrary(source: arithMSL, options: nil))?.makeFunction(name: "we_vertex") != nil)
 }
+// A `(…)`-grouped operand hides its own vec2/vec4 mismatch from the top-level chain (WE writes
+// `(vec2 / g_*Resolution) * scalar`). Harmonising descends one paren level so the inner vec4 truncates,
+// whether the mismatch is inside the group alone or the group then disagrees with a wider sibling.
+let groupedTruncFrag = """
+varying vec4 v_TexCoord;
+uniform sampler2D g_Texture0;
+uniform vec4 g_Texture0Resolution;
+uniform float g_Strength;
+void main() {
+    vec2 strength = (vec2(500.0) / g_Texture0Resolution) * g_Strength * g_Strength;
+    vec4 wide = v_TexCoord;
+    vec2 da = wide * (g_Texture0Resolution.xy * g_Strength) * 0.001;
+    gl_FragColor = texSample2D(g_Texture0, strength + da);
+}
+"""
+let groupedTruncMSL = WEShaderTranspiler.fragmentToMSL(groupedTruncFrag)
+Check.that("truncates a vec4 inside a parenthesised operand (inner-only mismatch)",
+           groupedTruncMSL.contains("(float2(500.0) / u.g_Texture0Resolution.xy)"))
+Check.that("truncates a wider operand whose sibling is a parenthesised vec2 group",
+           groupedTruncMSL.contains("float2 da = wide.xy *"))
+Check.that("leaves a correctly-typed parenthesised arithmetic chain byte-identical", {
+    // (vec2 + vec2) * vec2 already type-checks: no operand may grow a swizzle.
+    let ok = WEShaderTranspiler.fragmentToMSL("""
+    varying vec4 v_TexCoord;
+    void main() { vec2 a = v_TexCoord.xy; vec2 r = (a + a) * a; gl_FragColor = vec4(r, 0.0, 1.0); }
+    """)
+    return ok.contains("float2 r = (a + a) * a;") && !ok.contains(").xy")
+}())
+if let device = MTLCreateSystemDefaultDevice() {
+    Check.that("a grouped-truncation shader compiles via Metal",
+               (try? device.makeLibrary(source: groupedTruncMSL, options: nil))?.makeFunction(name: "we_fragment") != nil)
+}
 // GLSL `discard;` (alpha-test / cutout fragments) lowers to MSL `discard_fragment();`.
 let discardFrag = """
 varying vec4 v_TexCoord;

@@ -331,14 +331,36 @@ public enum WEShaderTranspiler {
             let t = s.trimmingCharacters(in: .whitespaces)
             return (t.hasPrefix("-") || t.hasPrefix("+")) ? (String(t.first!), String(t.dropFirst())) : ("", t)
         }
-        let widths = operands.map { operandDim(signSplit($0).core, dims) }
+        // A `(…)`-grouped operand hides its own width mismatch from the chain (WE writes `(vec2 / vec4) * s`).
+        // Recurse into a fully-parenthesised core, harmonising its interior and typing it from the result, so
+        // the inner truncation lands AND the outer chain can see the group's width. Returns the original core
+        // and its plain width when the operand isn't a single balanced () group, so nothing else changes.
+        func resolveCore(_ core: String) -> (core: String, width: Int?) {
+            guard core.hasPrefix("("), core.hasSuffix(")") else { return (core, operandDim(core, dims)) }
+            var depth = 0
+            for (i, ch) in core.enumerated() {
+                if ch == "(" { depth += 1 } else if ch == ")" { depth -= 1; if depth == 0 && i != core.count - 1 { return (core, operandDim(core, dims)) } }
+            }
+            let inner = String(core.dropFirst().dropLast())
+            let harmonised = harmonizeArithmetic(inner, dims)
+            let width = operandDim(harmonised, dims) ?? expressionDim(harmonised, dims)
+            return ("(\(harmonised))", width)
+        }
+        let resolved = operands.map { resolveCore(signSplit($0).core) }
+        let widths = resolved.map(\.width)
         guard !widths.contains(where: { $0 == nil }) else { return expr }
+        // A mismatch can live only inside a `(…)` operand (so the outer chain is uniform) or across the outer
+        // operands. Fire only when one of those is true; otherwise return `expr` untouched, byte-for-byte, so a
+        // chain that already type-checks is never reflowed.
+        let innerChanged = zip(operands, resolved).contains { signSplit($0).core != $1.core }
         let vectorWidths = widths.compactMap { $0 }.filter { $0 > 1 }
-        guard let minVec = vectorWidths.min(), vectorWidths.contains(where: { $0 > minVec }) else { return expr }
+        let minVec: Int? = vectorWidths.min().flatMap { m in vectorWidths.contains(where: { $0 > m }) ? m : nil }
+        guard innerChanged || minVec != nil else { return expr }
         var pieces: [String] = []
-        for (operand, width) in zip(operands, widths) {
-            let (sign, core) = signSplit(operand)
-            if let width, width > minVec, width > 1 { pieces.append(sign + truncated(core, to: minVec)) }
+        for (operand, resolvedOperand) in zip(operands, resolved) {
+            let sign = signSplit(operand).sign
+            let (core, width) = resolvedOperand
+            if let minVec, let width, width > minVec, width > 1 { pieces.append(sign + truncated(core, to: minVec)) }
             else { pieces.append(sign + core) }
         }
         var result = pieces[0]
