@@ -1066,6 +1066,27 @@ if let cp = ParticleSystem.parse(["emitter": [["name": "boxrandom", "rate": 20]]
         "operator": [["name": "controlpointattract", "controlpoint": 1, "scale": -5000, "threshold": 64]]]) {
     Check.that("controlpointattract parses scale/threshold and the CP offset",
                cp.cpScale == -5000 && cp.cpThreshold == 64 && cp.cpOffset.x == 100 && cp.cpOffset.y == 50)
+    Check.that("a single controlpointattract yields exactly one attractor", cp.attractors.count == 1)
+}
+// Multiple controlpointattract operators (a real corpus pattern — e.g. workshop "birds": a short-range repel
+// + a long-range attract on the same point) must ALL be captured. Previously only the LAST survived (the
+// parser overwrote scalar fields), silently dropping the others; now they accumulate for the renderer to sum.
+if let cp2 = ParticleSystem.parse(["emitter": [["name": "boxrandom", "rate": 20]],
+        "controlpoint": [["id": 1, "offset": "0 -9999 0"], ["id": 2, "offset": "1500 0 0"]],
+        "operator": [
+            ["name": "controlpointattract", "controlpoint": 1, "scale": -600, "threshold": 50],
+            ["name": "controlpointattract", "controlpoint": 2, "scale": 500, "threshold": 5000]]]) {
+    Check.that("both controlpointattract operators are captured (not last-write-wins)", cp2.attractors.count == 2)
+    Check.that("the first attractor keeps its own scale/threshold/offset",
+               cp2.attractors[0].scale == -600 && cp2.attractors[0].threshold == 50 && cp2.attractors[0].offset.y == -9999)
+    Check.that("the second attractor resolves a DIFFERENT control point",
+               cp2.attractors[1].scale == 500 && cp2.attractors[1].threshold == 5000 && cp2.attractors[1].offset.x == 1500)
+}
+// Hardening: a crafted .pkg cannot accumulate an unbounded attractor array (cap 16).
+if let cpFlood = ParticleSystem.parse(["emitter": [["name": "boxrandom", "rate": 20]],
+        "controlpoint": [["id": 1, "offset": "0 0 0"]],
+        "operator": Array(repeating: ["name": "controlpointattract", "controlpoint": 1, "scale": 100, "threshold": 64], count: 64)]) {
+    Check.that("the attractor array is capped against a flood", cpFlood.attractors.count == 16)
 }
 // vortex (operator): orbit radii/speeds; distanceouter is forced above distanceinner.
 if let vx = ParticleSystem.parse(["emitter": [["name": "boxrandom", "rate": 20]],
@@ -1074,7 +1095,8 @@ if let vx = ParticleSystem.parse(["emitter": [["name": "boxrandom", "rate": 20]]
                vx.vortex?.offset.x == 10 && vx.vortex?.distanceInner == 100 && vx.vortex?.distanceOuter == 600 && vx.vortex?.speedInner == 172)
 }
 if let plain5 = ParticleSystem.parse(boxParticle) {
-    Check.that("a system without vortex/controlpoint leaves them empty", plain5.vortex == nil && plain5.cpScale == 0)
+    Check.that("a system without vortex/controlpoint leaves them empty",
+               plain5.vortex == nil && plain5.cpScale == 0 && plain5.attractors.isEmpty)
 }
 // Hardening: malformed/out-of-range numbers from an untrusted .pkg are clamped, never propagated.
 if let hard = ParticleSystem.parse(["emitter": [["name": "boxrandom", "rate": 20, "speedmin": 0, "speedmax": Double.infinity]],
