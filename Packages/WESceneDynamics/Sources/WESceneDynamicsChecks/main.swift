@@ -172,6 +172,19 @@ if let bars = SceneScriptRuntime(script: barScript, baseOrigin: SIMD3(100, 500, 
     Check.that("bar runtime constructs", false)
 }
 
+// Untrusted scene JS can set a transform component to NaN/±Inf (e.g. a divide by zero). The readback must
+// clamp every component to the layer default so a non-finite value never reaches the Metal bar vertex shader.
+if let nf = SceneScriptRuntime(script: "export function update(v){ thisLayer.origin = new Vec3(0/0, 1/0, 0); thisLayer.scale = new Vec3(-1/0, 1, 1); return 0; }") {
+    nf.runUpdate()
+    Check.that("non-finite scripted transforms are clamped finite", nf.scriptedLayers().allSatisfy {
+        $0.origin.x.isFinite && $0.origin.y.isFinite && $0.origin.z.isFinite
+            && $0.scale.x.isFinite && $0.scale.y.isFinite && $0.scale.z.isFinite
+            && $0.alpha.isFinite && $0.color.x.isFinite
+    })
+} else {
+    Check.that("non-finite scripted-transform runtime constructs", false)
+}
+
 Check.section("SceneScriptRuntime — execution watchdog (DoS guard)")
 // A hostile/buggy script must not hang the render thread: an infinite loop in update() has to be aborted by
 // the execution-time-limit watchdog and yield nil, all within a small multiple of the configured limit.
