@@ -49,6 +49,10 @@ public final class AudioBandMapper {
     public func bands(from samples: [Float], count: Int, previous: [Float]? = nil,
                       frameTime: Float = 1.0 / 60, sampleRate: Float = 48_000) -> [Float] {
         guard count > 0 else { return [] }
+        // A non-positive or non-finite sample rate makes the bin width zero/NaN, and `Int(lo / binHz)` would then
+        // trap on an infinite/NaN value. The capture rate is a fixed 48 kHz in practice; degrade to flat (silent)
+        // bands rather than crash should a caller ever pass a bogus rate.
+        guard sampleRate.isFinite, sampleRate > 0 else { return [Float](repeating: 0, count: count) }
         let power = magnitudeSpectrum(samples)               // halfN power bins
         let raw = logBands(power, count: count, sampleRate: sampleRate)
         let decay = max(0, min(1, exp(-max(0, frameTime) / releaseTau)))
