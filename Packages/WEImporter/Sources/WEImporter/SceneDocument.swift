@@ -36,17 +36,23 @@ public struct AlphaAnimation: Sendable, Equatable {
     public let keyframes: [AlphaKeyframe]   // sorted by frame
     public let fps: Double
     public let length: Double
+    /// WE's `single` mode plays the curve once and HOLDS the last keyframe; `loop` mode wraps. A non-looping
+    /// animation must not wrap, or a finished intro fade snaps back to its first value at every multiple of
+    /// `length` (a one-shot 0→1 fade-in would blink invisible forever).
+    public let isLooping: Bool
 
-    public init(keyframes: [AlphaKeyframe], fps: Double, length: Double) {
+    public init(keyframes: [AlphaKeyframe], fps: Double, length: Double, isLooping: Bool = true) {
         self.keyframes = keyframes
         self.fps = fps
         self.length = length
+        self.isLooping = isLooping
     }
 
-    /// The (linearly-interpolated, looping) alpha at `time` seconds.
+    /// The linearly-interpolated alpha at `time` seconds — wrapping for a loop animation, holding the last
+    /// keyframe past `length` for a single (play-once) one.
     public func value(at time: Double) -> Double {
         guard let first = keyframes.first, let last = keyframes.last, fps > 0, length > 0 else { return 1 }
-        let frame = (time * fps).truncatingRemainder(dividingBy: length)
+        let frame = isLooping ? (time * fps).truncatingRemainder(dividingBy: length) : (time * fps)
         if frame <= first.frame { return first.value }
         if frame >= last.frame { return last.value }
         for index in 0 ..< (keyframes.count - 1) {
@@ -573,6 +579,7 @@ public enum SceneGraph {
         let options = animation["options"] as? [String: Any] ?? [:]
         let fps = (options["fps"] as? NSNumber)?.doubleValue ?? 30
         let length = (options["length"] as? NSNumber)?.doubleValue ?? 0
+        let isLooping = (options["mode"] as? String) == "loop"   // single (or absent) plays once and holds
         let keyframes = curve.compactMap { keyframe -> AlphaKeyframe? in
             guard let frame = (keyframe["frame"] as? NSNumber)?.doubleValue,
                   let value = (keyframe["value"] as? NSNumber)?.doubleValue,
@@ -580,7 +587,7 @@ public enum SceneGraph {
             return AlphaKeyframe(frame: frame, value: value)
         }.sorted { $0.frame < $1.frame }
         guard !keyframes.isEmpty, length > 0, length.isFinite, fps.isFinite else { return nil }
-        return AlphaAnimation(keyframes: keyframes, fps: fps, length: length)
+        return AlphaAnimation(keyframes: keyframes, fps: fps, length: length, isLooping: isLooping)
     }
 
     /// A position/scale value that may be a plain `"x y z"` string or an animated `{ "value": "x y z",
@@ -600,6 +607,7 @@ public enum SceneGraph {
         let options = animation["options"] as? [String: Any] ?? [:]
         let fps = (options["fps"] as? NSNumber)?.doubleValue ?? 30
         let length = (options["length"] as? NSNumber)?.doubleValue ?? 0
+        let isLooping = (options["mode"] as? String) == "loop"   // single (or absent) plays once and holds
         func curve(_ key: String) -> AlphaAnimation? {
             guard let frames = animation[key] as? [[String: Any]], length > 0, length.isFinite, fps.isFinite else { return nil }
             let keyframes = frames.compactMap { keyframe -> AlphaKeyframe? in
@@ -609,7 +617,7 @@ public enum SceneGraph {
                 return AlphaKeyframe(frame: frame, value: value)
             }.sorted { $0.frame < $1.frame }
             guard !keyframes.isEmpty else { return nil }
-            return AlphaAnimation(keyframes: keyframes, fps: fps, length: length)
+            return AlphaAnimation(keyframes: keyframes, fps: fps, length: length, isLooping: isLooping)
         }
         let x = curve("c0"), y = curve("c1"), z = curve("c2")
         guard x != nil || y != nil || z != nil else { return nil }
