@@ -253,9 +253,10 @@ public final class EffectRenderer {
 
         let resolved = ShaderPreprocessor.resolve(fragmentSource,
             combos: ShaderPreprocessor.comboDefaults(fragmentSource).merging(effect.combos) { _, b in b })
-        let scalars = ShaderUniforms.parse(resolved).filter { !$0.type.hasPrefix("sampler") }
+        let uniforms = ShaderUniforms.parse(resolved)
+        let scalars = uniforms.filter { !$0.type.hasPrefix("sampler") }
         let fragmentBuffer = UniformPacker.pack(scalars, values: effect.constants)
-        let samplerCount = ShaderUniforms.parse(resolved).filter { $0.type.hasPrefix("sampler") }.count
+        let samplerCount = uniforms.filter { $0.type.hasPrefix("sampler") }.count
         // `samplerCount` is parsed from untrusted shader source; cap the extra-sampler array so a shader that
         // declares an absurd number of samplers can't drive a wildly oversized allocation. Metal binds far
         // fewer than this per stage, and every real WE effect uses only a handful, so it's a no-op for them.
