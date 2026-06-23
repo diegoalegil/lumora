@@ -196,6 +196,10 @@ public final class PreparedScene {
     public let puppetReady: Bool
     fileprivate let bloomStrength: Float    // scene-level bloom; 0 = none (the extra pass is skipped entirely)
     fileprivate let bloomThreshold: Float
+    /// True only if some layer can READ the audio spectrum — an audio-visualiser script group, or an effected
+    /// layer (an effect may declare g_AudioSpectrum*). When false the renderer skips building the six per-frame
+    /// audio-override arrays, since nothing would consume them. Computed once so it costs nothing per frame.
+    fileprivate let usesAudio: Bool
 
     fileprivate init(layers: [PreparedLayer], clearColor: SceneVec3, particles: [PreparedParticles],
                      orthoWidth: Double, orthoHeight: Double, puppetReady: Bool,
@@ -208,6 +212,7 @@ public final class PreparedScene {
         self.puppetReady = puppetReady
         self.bloomStrength = bloomStrength
         self.bloomThreshold = bloomThreshold
+        self.usesAudio = layers.contains { $0.scriptGroup != nil || !$0.effects.isEmpty }
     }
 
     /// How many layers will be drawn (0 means nothing resolved — the caller should show a fallback).
@@ -1294,7 +1299,8 @@ public final class SceneRenderer {
                        audio: AudioSpectrumProvider = SilentSpectrum()) -> RenderedFrame? {
         // Snapshot this frame's audio spectra as packer overrides (only non-zero when something is playing
         // and capture permission is granted; otherwise the arrays are zeros and audio shaders read flat).
-        currentAudioOverrides = Self.audioOverrides(audio)
+        // Skip the six array allocations entirely for a scene that can't read them (no script/effect layers).
+        currentAudioOverrides = scene.usesAudio ? Self.audioOverrides(audio) : [:]
         // How many target pixels each scene unit covers (the larger axis, since cover-fit scales one axis up):
         // text rasterises at this density so it's sharp on the real display rather than upscaled from 1×.
         currentPixelScale = max(Double(width) / max(1, scene.orthoWidth), Double(height) / max(1, scene.orthoHeight))

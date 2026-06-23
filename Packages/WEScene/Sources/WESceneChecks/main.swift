@@ -7,6 +7,7 @@ import CoreGraphics
 import ImageIO
 import WEImporter
 import WEScene
+import WECore
 
 // MARK: - Fixture helpers
 
@@ -54,6 +55,13 @@ import WEScene
     return (Int(frame.rgba[o]), Int(frame.rgba[o + 1]), Int(frame.rgba[o + 2]))
 }
 @MainActor func near(_ a: Int, _ b: Int, _ tol: Int = 4) -> Bool { abs(a - b) <= tol }
+
+/// An AudioSpectrumProvider that counts how many times the renderer asks for the spectrum — used to prove a
+/// non-audio scene never triggers the per-frame audio-override build. Single-threaded test use only.
+final class CountingSpectrum: AudioSpectrumProvider, @unchecked Sendable {
+    private(set) var count = 0
+    func spectrum(bands: Int, channel: AudioChannel) -> [Float] { count += 1; return [Float](repeating: 0, count: max(0, bands)) }
+}
 
 /// Encode a frame to a PNG file (dev tooling for eyeballing a render).
 @MainActor func writePNG(_ frame: RenderedFrame, to path: String) -> Bool {
@@ -314,6 +322,11 @@ if let package = try? ScenePackage.read(pkgData),
         let (pr, pg, pb) = centerRGB(still)
         Check.that("prepared still render (t=0) matches the composite (blue)", near(pr, 0) && near(pg, 0) && near(pb, 255))
     }
+    // An effect-free, script-free scene can't read the audio spectrum, so render() must NOT build the six
+    // per-frame audio-override arrays — it should never call the provider at all.
+    let counter = CountingSpectrum()
+    _ = renderer.render(prepared, width: 8, height: 8, time: 0, audio: counter)
+    Check.that("a non-audio scene never queries the audio spectrum", counter.count == 0)
 } else {
     Check.that("end-to-end scene produced a frame", false)
 }
