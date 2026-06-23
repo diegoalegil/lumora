@@ -42,7 +42,7 @@ public enum ShaderPreprocessor {
                 stack.append(Frame(parentEmitting: parent, taken: value, active: value))
             } else if trimmed.hasPrefix("#elif ") {
                 guard var frame = stack.popLast() else { continue }
-                frame.active = frame.parentEmitting && !frame.taken && evaluate(String(trimmed.dropFirst(6)), combos: combos, defined: definedNames)
+                frame.active = frame.parentEmitting && !frame.taken && evaluate(stripTrailingComment(String(trimmed.dropFirst(6))), combos: combos, defined: definedNames)
                 frame.taken = frame.taken || frame.active
                 stack.append(frame)
             } else if trimmed.hasPrefix("#else") {
@@ -272,8 +272,12 @@ public enum ShaderPreprocessor {
         return defaults
     }
 
-    /// The condition text of an `#if`/`#ifdef`/`#ifndef` line, normalised to an expression.
+    /// The condition text of an `#if`/`#ifdef`/`#ifndef` line, normalised to an expression. A trailing
+    /// `//`/`/*` comment is stripped first (GLSL/C strip comments before evaluating a directive) — WE's
+    /// shaders annotate branches like `#if TYPE == 4 // Cutout square`, and leaving the comment in makes the
+    /// right-hand side unparseable so the comparison silently reads as `… == 0` and the branch is mis-taken.
     private static func condition(_ line: String) -> String {
+        let line = stripTrailingComment(line).trimmingCharacters(in: .whitespaces)
         if line.hasPrefix("#ifdef ") { return "defined " + line.dropFirst(7).trimmingCharacters(in: .whitespaces) }
         if line.hasPrefix("#ifndef ") { return "!defined " + line.dropFirst(8).trimmingCharacters(in: .whitespaces) }
         return String(line.dropFirst(4)).trimmingCharacters(in: .whitespaces)   // after "#if "

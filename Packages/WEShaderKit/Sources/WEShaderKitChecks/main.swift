@@ -959,6 +959,19 @@ Check.that("evaluates ||", ShaderPreprocessor.resolve("#if A || B\nx\n#endif", c
 Check.that("evaluates a > comparison", ShaderPreprocessor.resolve("#if QUALITY > 2\nx\n#endif", combos: ["QUALITY": 3]) == "x")
 Check.that("evaluates unary ! and parentheses", ShaderPreprocessor.resolve("#if !(MASK)\nx\n#endif", combos: ["MASK": 0]) == "x")
 Check.that("evaluates C-style defined(NAME)", ShaderPreprocessor.resolve("#if defined(X)\ny\n#endif", combos: ["X": 0]) == "y")
+// Regression: WE's effect shaders annotate combo branches inline, e.g. `#if TYPE == 4 // Cutout square`.
+// A trailing // comment must be stripped before the condition is evaluated (as GLSL/C do). Leaving it in
+// makes the right-hand side unparseable, so the comparison silently reads as `… == 0` and EVERY branch
+// is mis-taken — frame_builder then emits a `float offset` from every TYPE block at once and MSL rejects
+// the redefinitions. Pin both the `==` form and a #ifdef with a trailing comment.
+Check.that("strips a trailing // comment before evaluating #if (inactive branch dropped)",
+           ShaderPreprocessor.resolve("#if TYPE == 4 // Cutout\nx\n#endif", combos: ["TYPE": 0]) == "")
+Check.that("strips a trailing // comment before evaluating #if (active branch kept)",
+           ShaderPreprocessor.resolve("#if TYPE == 4 // Cutout\nx\n#endif", combos: ["TYPE": 4]) == "x")
+Check.that("strips a trailing // comment on #elif",
+           ShaderPreprocessor.resolve("#if A == 1 // one\np\n#elif A == 2 // two\nq\n#endif", combos: ["A": 2]) == "q")
+Check.that("strips a trailing // comment on #ifdef",
+           ShaderPreprocessor.resolve("#ifdef HQ // high quality\ny\n#endif", combos: ["HQ": 0]) == "y")
 // Object-like `#define NAME value` is substituted into the lines after it (the WE headers lean on this:
 // `#define endGamma 2.2`). It only takes effect from its definition downward, matches whole words, and
 // an integer value also feeds a later `#if`. Function-like macros are left for the transpiler.
