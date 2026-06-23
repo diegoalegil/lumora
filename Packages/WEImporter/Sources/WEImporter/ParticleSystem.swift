@@ -125,7 +125,11 @@ public struct ParticleSystem: Sendable, Equatable {
         // the emitter origin. A scalar radius spreads across the screen (x/y) plane.
         var boxSize: SceneVec3
         if let radius = (emitter["distancemax"] as? NSNumber)?.doubleValue {
-            boxSize = SceneVec3(x: radius, y: radius, z: 0)
+            // Clamp finite, like every other untrusted particle scalar: a non-finite radius (e.g. `-1e309` →
+            // -inf) would otherwise reach the spawn math and emit a non-finite particle position to the GPU.
+            // (The string path below already sanitises via SceneVec3(parsing:); this scalar path must too.)
+            let r = clampFinite(radius, -100_000, 100_000, 0)
+            boxSize = SceneVec3(x: r, y: r, z: 0)
         } else {
             boxSize = vec3(emitter["distancemax"])
         }
