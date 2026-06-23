@@ -263,6 +263,10 @@ public final class SceneRenderer {
     // so a borrowed texture is never aliased while still in use.
     private var effectTexturePool: [Int: [MTLTexture]] = [:]
     private var effectTexturesInUse: [MTLTexture] = []
+    // The render size the pooled textures match. The pool is keyed by width/height, so after a display resize
+    // the old-size textures (each tens of MB at 4K) are never borrowed again — clear them on a size change
+    // instead of leaking them for the life of the wallpaper.
+    private var effectPoolSize = (width: 0, height: 0)
     // The audio spectra (g_AudioSpectrum16/32/64 Left/Right) for the frame being rendered, as packer
     // overrides keyed by uniform name. Set at the top of render() from the AudioSpectrumProvider; merged
     // into every effect pass's uniforms. Empty (no audio uniforms touched) when the source is silent.
@@ -1307,6 +1311,13 @@ public final class SceneRenderer {
     /// `time = 0` is the still composite (no sway).
     public func render(_ scene: PreparedScene, width: Int, height: Int, time: Double = 0,
                        audio: AudioSpectrumProvider = SilentSpectrum()) -> RenderedFrame? {
+        // The effect-texture pool is keyed by render size; after a display resize/rotation the old-size targets
+        // (tens of MB each at 4K) would be retained but never borrowed again. Drop the pool on a size change so
+        // it can't grow for the life of the wallpaper. (Within a size, it's reused frame-to-frame as intended.)
+        if effectPoolSize.width != width || effectPoolSize.height != height {
+            effectTexturePool.removeAll(keepingCapacity: true)
+            effectPoolSize = (width, height)
+        }
         // Snapshot this frame's audio spectra as packer overrides (only non-zero when something is playing
         // and capture permission is granted; otherwise the arrays are zeros and audio shaders read flat).
         // Skip the six array allocations entirely for a scene that can't read them (no script/effect layers).
