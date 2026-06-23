@@ -366,6 +366,14 @@ if let device = MTLCreateSystemDefaultDevice() {
     Check.that("scalar-mask sample MSL compiles via Metal", (try? device.makeLibrary(source: maskMSL, options: nil))?.makeFunction(name: "we_fragment") != nil)
 }
 
+// Regression (fuzzer-found): a malformed shader whose ')' precedes its '(' made globalHelperLambdas slice an
+// inverted Range (lowerBound > upperBound) and trap. A corrupt .pkg shader must degrade, not crash the loader —
+// reaching these assertions proves the transpile no longer traps, and it still emits the MSL scaffold.
+Check.that("an inverted-paren signature transpiles to a vertex scaffold without trapping",
+           WEShaderTranspiler.vertexToMSL("{}e)({g_}").contains("return out;"))
+Check.that("the same malformed signature is safe in the fragment path too",
+           WEShaderTranspiler.fragmentToMSL("{}e)({g_}").contains("return _fragColor;"))
+
 // coerceVectorTruncations' harmonisers run O(N^2) on one giant line, so a line over 8 KB is passed through
 // UNHARMONISED (the DoS guard). Verify that DETERMINISTICALLY, not by wall clock: a truncatable mix below the
 // threshold gets its vec4 arg narrowed to .xy, but the same construct padded past 8 KB is left untouched.
