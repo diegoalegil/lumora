@@ -328,6 +328,21 @@ Check.that("a local shadowing a varying is not qualified", varyShadowMSL.contain
 if let device = MTLCreateSystemDefaultDevice() {
     Check.that("a varying-shadowing local compiles", (try? device.makeLibrary(source: varyShadowMSL, options: nil)) != nil)
 }
+// The same shadowing rule must hold for a local that shadows a UNIFORM name — otherwise the local's own
+// declaration `float2 g_Color = …;` is rewritten to the invalid declarator `float2 u.g_Color = …;`.
+let uniformShadowShader = """
+varying vec4 v_TexCoord;
+uniform vec4 g_Color; // {"material":"color"}
+void main() {
+    vec2 g_Color = v_TexCoord.xy;
+    gl_FragColor = vec4(g_Color, 0.0, 1.0);
+}
+"""
+let uniformShadowMSL = WEShaderTranspiler.fragmentToMSL(uniformShadowShader)
+Check.that("a local shadowing a uniform is not qualified", uniformShadowMSL.contains("float2 g_Color =") && !uniformShadowMSL.contains("u.g_Color ="))
+if let device = MTLCreateSystemDefaultDevice() {
+    Check.that("a uniform-shadowing local compiles", (try? device.makeLibrary(source: uniformShadowMSL, options: nil)) != nil)
+}
 
 // Uniforms aren't always g_/u_ prefixed (tone mapping's are t_*). A helper referencing one must be hosted
 // as a capturing lambda inside main (so it sees the uniform buffer), not emitted as a free function.

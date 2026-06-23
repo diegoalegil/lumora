@@ -51,7 +51,10 @@ public enum WEShaderTranspiler {
         for varying in varyings where varying.count == nil && !shadowed.contains(varying.name) {
             qualifiers.append((varying.name, "in.\(varying.name)"))
         }
-        for uniform in scalars { qualifiers.append((uniform.name, "u.\(uniform.name)")) }
+        // Skip a uniform shadowed by a local of the same name (as the varyings above already do), or the
+        // local's own declaration `T name = …;` would be rewritten to the invalid declarator `T u.name`. The
+        // uniform stays a struct member (buffer layout preserved); the local just keeps its bare name.
+        for uniform in scalars where !shadowed.contains(uniform.name) { qualifiers.append((uniform.name, "u.\(uniform.name)")) }
         qualifiers.append(("gl_FragColor", "_fragColor"))
         // MSL exposes the fragment's window-space pixel coordinate through a [[position]] parameter — GLSL's
         // gl_FragCoord. Wire it only when the shader reads it. (MSL's origin is top-left vs GLSL's bottom-left;
@@ -122,7 +125,10 @@ public enum WEShaderTranspiler {
         for varying in varyings where varying.count == nil && !shadowed.contains(varying.name) {
             qualifiers.append((varying.name, "out.\(varying.name)"))
         }
-        for uniform in scalars { qualifiers.append((uniform.name, "u.\(uniform.name)")) }
+        // Skip a uniform shadowed by a local of the same name (as the varyings above already do), or the
+        // local's own declaration `T name = …;` would be rewritten to the invalid declarator `T u.name`. The
+        // uniform stays a struct member (buffer layout preserved); the local just keeps its bare name.
+        for uniform in scalars where !shadowed.contains(uniform.name) { qualifiers.append((uniform.name, "u.\(uniform.name)")) }
         qualifiers.append(("gl_Position", "out.position"))
 
         var body = rewriteTypes(rewriteIntrinsics(mainBody(of: resolved)))
