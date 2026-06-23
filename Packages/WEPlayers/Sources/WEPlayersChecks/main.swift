@@ -135,6 +135,14 @@ Check.that("blocks navigation to http", !confined.allows(URL(string: "http://evi
 Check.that("blocks a websocket", !confined.allows(URL(string: "wss://evil.example/x")))
 Check.that("blocks a file outside the folder", !confined.allows(URL(fileURLWithPath: "/etc/passwd")))
 Check.that("blocks a prefix-sibling folder", !confined.allows(URL(fileURLWithPath: "/Steam/workshop/431960/123-evil/x.html")))
+// A percent-encoded `..` traversal must NOT escape: `standardized` leaves %2e%2e uncollapsed (it decodes
+// only after, in .path), so the old check admitted this; standardizedFileURL decodes-then-collapses first.
+Check.that("blocks a percent-encoded ../ traversal",
+           !confined.allows(URL(string: "file:///Steam/workshop/431960/123/%2e%2e/%2e%2e/secret/x.html")))
+Check.that("blocks a plain ../ traversal",
+           !confined.allows(URL(string: "file:///Steam/workshop/431960/123/../../secret/x.html")))
+Check.that("allows a percent-encoded path that stays inside the folder",
+           confined.allows(URL(string: "file:///Steam/workshop/431960/123/a%20b/app.js")))
 Check.that("allows about:blank (teardown)", confined.allows(URL(string: "about:blank")))
 let schemeServed = WallpaperNavigationPolicy()
 Check.that("allows the private asset scheme", schemeServed.allows(URL(string: "lumora-asset://asset/index.html")))
