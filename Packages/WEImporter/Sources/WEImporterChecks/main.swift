@@ -839,6 +839,21 @@ if let pkg = try? ScenePackage.read(effectPkg), let doc = try? SceneGraph.load(f
     Check.that("effect captures the scene's combo override", layer.effects.first?.combos["BLENDMODE"] == 2)
     Check.that("effect captures the material's sampler bindings", layer.effects.first?.textures == [nil, "util/noise"])
 }
+// An effect's FBO downscale factor comes from untrusted effect.json and must land in the 1…16 the renderer
+// actually allocates — a 0 would size a zero/divide-by-zero buffer, a huge value would over-allocate. Pin the
+// clamp (no fbos appear in the effect above, so this is otherwise unexercised).
+let fboPkg = buildPKG(version: "PKGV0009", files: [
+    ("scene.json", Data(#"{"objects":[{"image":"models/m.json","effects":[{"file":"effects/pulse/effect.json","passes":[{}]}]}]}"#.utf8)),
+    ("models/m.json", Data(#"{"material":"materials/mat.json"}"#.utf8)),
+    ("materials/mat.json", Data(#"{"passes":[{"textures":["t"]}]}"#.utf8)),
+    ("effects/pulse/effect.json", Data(#"{"passes":[{"material":"materials/effects/pulse.json"}],"fbos":[{"name":"under","scale":0},{"name":"over","scale":1000},{"name":"ok","scale":4}]}"#.utf8)),
+    ("materials/effects/pulse.json", Data(#"{"passes":[{"shader":"effects/pulse","textures":["t"]}]}"#.utf8)),
+])
+if let pkg = try? ScenePackage.read(fboPkg), let doc = try? SceneGraph.load(from: pkg),
+   let fbos = doc.layers.first?.effects.first?.fbos {
+    Check.that("effect FBO scales clamp into the renderer's 1…16 range",
+               fbos.count == 3 && fbos[0].scale == 1 && fbos[1].scale == 16 && fbos[2].scale == 4)
+}
 
 Check.section("AlphaAnimation")
 let alphaAnim = AlphaAnimation(keyframes: [AlphaKeyframe(frame: 0, value: 0),
@@ -1107,6 +1122,13 @@ if let vx = ParticleSystem.parse(["emitter": [["name": "boxrandom", "rate": 20]]
         "operator": [["name": "vortex", "offset": "10 20 0", "distanceinner": 100, "distanceouter": 600, "speedinner": 172, "speedouter": 30]]]) {
     Check.that("vortex parses offset/radii/speeds",
                vx.vortex?.offset.x == 10 && vx.vortex?.distanceInner == 100 && vx.vortex?.distanceOuter == 600 && vx.vortex?.speedInner == 172)
+}
+// A crafted .pkg can set the outer radius below the inner; the parser forces it to at least inner + 1 so the
+// orbit band never inverts. The normal case above never exercises that clamp (600 > 100), so pin it here.
+if let vxBad = ParticleSystem.parse(["emitter": [["name": "boxrandom", "rate": 20]],
+        "operator": [["name": "vortex", "offset": "0 0 0", "distanceinner": 100, "distanceouter": 50]]]) {
+    Check.that("vortex outer radius is forced above the inner radius",
+               vxBad.vortex?.distanceInner == 100 && vxBad.vortex?.distanceOuter == 101)
 }
 if let plain5 = ParticleSystem.parse(boxParticle) {
     Check.that("a system without vortex/controlpoint leaves them empty",
