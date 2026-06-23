@@ -75,7 +75,6 @@ public struct ParticleSystem: Sendable, Equatable {
     public var rate: Double             // particles spawned per second
     public var origin: SceneVec3        // emitter centre (scene units)
     public var boxSize: SceneVec3       // half-extents a particle may spawn within (boxrandom)
-    public var isAdditive: Bool         // sprite blend mode
     public var materialPath: String?    // material → sprite texture
 
     public var lifetime: ClosedRange<Double>
@@ -157,7 +156,6 @@ public struct ParticleSystem: Sendable, Equatable {
             rate: max(0, (emitter["rate"] as? NSNumber)?.doubleValue ?? 0),
             origin: vec3(emitter["origin"]),
             boxSize: boxSize,
-            isAdditive: true,
             materialPath: materialOverride ?? (json["material"] as? String),
             lifetime: 1 ... 1, size: 10 ... 10,
             velocity: Range3(min: SceneVec3(x: 0, y: 0, z: 0), max: SceneVec3(x: 0, y: 0, z: 0)),
