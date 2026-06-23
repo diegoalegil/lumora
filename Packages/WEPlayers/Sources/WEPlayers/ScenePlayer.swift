@@ -34,6 +34,8 @@ public final class ScenePlayer: WallpaperRenderer {
     private var timer: Timer?
     private var elapsed = 0.0
     private var isPaused = false
+    private var lastDirective: PlaybackDirective?   // dedup identical directives so a burst of unchanged
+                                                    // policy signals doesn't trigger redundant full renders
     // System-audio spectrum for audio-reactive scenes. Capture only starts for a scene that actually uses
     // audio (so non-audio wallpapers never trigger the Screen Recording permission prompt); if permission
     // is denied the engine stays silent and the scene renders flat.
@@ -117,6 +119,13 @@ public final class ScenePlayer: WallpaperRenderer {
     }
 
     public func apply(_ directive: PlaybackDirective) {
+        // An unchanged directive leaves the scene exactly as it already is — re-applying it would call
+        // resume() → present(), a full synchronous GPU render + readback, for nothing. The policy engine
+        // re-emits the resolved directive to every display on any signal change (occlusion/thermal/power),
+        // so identical directives arrive in bursts; skip them. (A static scene still renders on view-ready
+        // via the host view's resize callback, so dedup can't leave it blank.)
+        guard directive != lastDirective else { return }
+        lastDirective = directive
         guard directive.renderingEnabled else { pause(); return }
         let rateChanged = directive.targetFPS != targetFPS
         let wasRunning = timer != nil
