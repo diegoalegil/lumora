@@ -15,6 +15,13 @@ public final class AudioBandMapper {
     private let fft: vDSP.FFT<DSPSplitComplex>
     private let hann: [Float]
 
+    // The log-spaced band→power-bin mapping depends only on (count, sampleRate) for a fixed fftSize, so the
+    // boundaries (and their pow() calls) are computed once per distinct pair and reused. In practice that's the
+    // three counts 16/32/64 at one sampleRate, i.e. a handful of entries filled on the first few frames. Safe
+    // without locking: a mapper is owned by a single thread (the audio capture queue), as documented above.
+    private struct BandKey: Hashable { let count: Int; let sampleRateBits: UInt32 }
+    private var binRangeCache: [BandKey: [(start: Int, end: Int)]] = [:]
+
     // Normalization window in decibels: below `floorDB` reads as 0, at/above `ceilDB` as 1. Silence
     // (zero power) falls far below the floor and clamps to exactly 0 — the contract that keeps an
     // audio-reactive shader flat (not flickering) when nothing is playing.
@@ -78,26 +85,44 @@ public final class AudioBandMapper {
         return power
     }
 
-    /// Fold the linear power bins into `count` logarithmically-spaced bands, normalized to 0…1 in dB.
-    private func logBands(_ power: [Float], count: Int, sampleRate: Float) -> [Float] {
+    /// The inclusive power-bin range `[start, end]` each of `count` log-spaced bands folds, memoized per
+    /// (count, sampleRate). A band narrower than one bin collapses to its nearest single bin — the same
+    /// fallback the summation used to take inline when its `[start, end]` came out empty.
+    private func binRanges(count: Int, sampleRate: Float) -> [(start: Int, end: Int)] {
+        let key = BandKey(count: count, sampleRateBits: sampleRate.bitPattern)
+        if let cached = binRangeCache[key] { return cached }
         let nyquist = sampleRate / 2
         let fLo: Float = 30
         let fHi = max(fLo * 2, nyquist)
         let binHz = sampleRate / Float(fftSize)
-        let norm = 1 / Float(fftSize * fftSize)              // bring |X|² into a stable range
-        var bands = [Float](repeating: 0, count: count)
+        var ranges: [(start: Int, end: Int)] = []
+        ranges.reserveCapacity(count)
         for b in 0 ..< count {
             let lo = fLo * pow(fHi / fLo, Float(b) / Float(count))
             let hi = fLo * pow(fHi / fLo, Float(b + 1) / Float(count))
-            var sum: Float = 0
-            var n = 0
-            var k = max(1, Int(lo / binHz))
+            let kStart = max(1, Int(lo / binHz))
             let kEnd = min(halfN - 1, Int(hi / binHz))
-            while k <= kEnd { sum += power[k]; n += 1; k += 1 }
-            if n == 0 {                                      // band narrower than a bin → nearest bin
+            if kStart <= kEnd {
+                ranges.append((kStart, kEnd))
+            } else {                                         // band narrower than a bin → nearest bin
                 let center = min(halfN - 1, max(1, Int((lo + hi) * 0.5 / binHz)))
-                sum = power[center]; n = 1
+                ranges.append((center, center))
             }
+        }
+        binRangeCache[key] = ranges
+        return ranges
+    }
+
+    /// Fold the linear power bins into `count` logarithmically-spaced bands, normalized to 0…1 in dB.
+    private func logBands(_ power: [Float], count: Int, sampleRate: Float) -> [Float] {
+        let norm = 1 / Float(fftSize * fftSize)              // bring |X|² into a stable range
+        let ranges = binRanges(count: count, sampleRate: sampleRate)
+        var bands = [Float](repeating: 0, count: count)
+        for b in 0 ..< count {
+            let range = ranges[b]
+            var sum: Float = 0
+            for k in range.start ... range.end { sum += power[k] }   // ascending, matching the original loop
+            let n = range.end - range.start + 1
             let mean = (sum / Float(n)) * norm
             let db = 10 * log10(mean + 1e-12)
             bands[b] = max(0, min(1, (db - floorDB) / (ceilDB - floorDB)))
