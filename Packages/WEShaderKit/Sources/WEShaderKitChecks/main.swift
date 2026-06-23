@@ -325,16 +325,17 @@ if let device = MTLCreateSystemDefaultDevice() {
     Check.that("scalar-mask sample MSL compiles via Metal", (try? device.makeLibrary(source: maskMSL, options: nil))?.makeFunction(name: "we_fragment") != nil)
 }
 
-// A pathologically long shader line (deeply nested mix()) made coerceVectorTruncations' recursive harmonisers
-// run O(N²) — a crafted .pkg shader nesting thousands deep froze wallpaper load (~14s here, minutes at scale).
-// The line-length guard now passes an absurdly long line through untouched, so this transpiles immediately.
-var nestedMix = "uv"
-for _ in 0 ..< 4000 { nestedMix = "mix(\(nestedMix),vec2(0.0),0.5)" }   // ~80KB single line
-let dosFrag = "varying vec4 v_TexCoord;\nvoid main(){ vec2 uv = v_TexCoord.xy; vec2 r = \(nestedMix); gl_FragColor = vec4(r, 0.0, 1.0); }"
-let dosStart = Date()
-_ = WEShaderTranspiler.fragmentToMSL(dosFrag)
-Check.that("a pathologically long shader line transpiles without an O(N^2) stall",
-           Date().timeIntervalSince(dosStart) < 2.0)
+// coerceVectorTruncations' harmonisers run O(N^2) on one giant line, so a line over 8 KB is passed through
+// UNHARMONISED (the DoS guard). Verify that DETERMINISTICALLY, not by wall clock: a truncatable mix below the
+// threshold gets its vec4 arg narrowed to .xy, but the same construct padded past 8 KB is left untouched.
+let dosTruncMSL = WEShaderTranspiler.fragmentToMSL(
+    "varying vec4 v_TexCoord;\nvoid main(){ vec2 vv = vec2(0.0); vec2 r = mix(v_TexCoord, vv, 0.5); gl_FragColor = vec4(r, 0.0, 1.0); }")
+Check.that("a short truncatable mix is harmonised (vec4 arg -> .xy)", dosTruncMSL.contains("mix(in.v_TexCoord.xy, vv"))
+let dosPad = String(repeating: " ", count: 9000)   // pushes the line past the 8 KB guard without adding tokens
+let dosLongMSL = WEShaderTranspiler.fragmentToMSL(
+    "varying vec4 v_TexCoord;\nvoid main(){ vec2 vv = vec2(0.0); vec2 r = mix(v_TexCoord, vv, 0.5)\(dosPad); gl_FragColor = vec4(r, 0.0, 1.0); }")
+Check.that("an over-8KB line skips the harmonisers (DoS guard fires, no .xy added)",
+           dosLongMSL.contains("mix(in.v_TexCoord, vv") && !dosLongMSL.contains("in.v_TexCoord.xy"))
 
 // GLSL's length(scalar) is its magnitude; MSL has no scalar overload (ambiguous), so rewrite to abs().
 // A length() of a genuine vector must be left alone.
