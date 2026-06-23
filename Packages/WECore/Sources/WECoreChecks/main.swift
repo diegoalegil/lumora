@@ -61,6 +61,11 @@ if let i = Check.noThrow("workshopid as int", {
 if let st = Check.noThrow("workshopid as string", {
     try ProjectManifest.decode(from: Data(#"{"type":"video","file":"a.mp4","workshopid":"456"}"#.utf8))
 }) { Check.that("string workshopid", st.workshopID == "456") }
+// A malformed workshopid type (bool/float/over-Int.max) must NOT sink an otherwise-valid manifest — it's an
+// optional, non-load-bearing field, so it should decode to nil and the wallpaper still loads.
+if let bad = Check.noThrow("a malformed workshopid doesn't reject the manifest", {
+    try ProjectManifest.decode(from: Data(#"{"type":"scene","file":"scene.pkg","workshopid":true}"#.utf8))
+}) { Check.that("a malformed workshopid decodes to nil", bad.workshopID == nil && bad.file == "scene.pkg") }
 
 if let ord = Check.noThrow("decode ordered properties", {
     try ProjectManifest.decode(from: Data(#"""
