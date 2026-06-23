@@ -276,6 +276,27 @@ Check.that("a non-finite lifetime clamps to the cap",
 Check.that("at least one slot is always allocated",
            SceneRenderer.particleInstanceCount(rate: 0.0001, lifetimeUpper: 0.0001, maxCount: 4000) == 1)
 
+// Regression (audit-found): a particle's per-cycle hash seed came from Int(time / lifetime), which traps when
+// that quotient exceeds Int.max (a huge or non-finite render time) — the kind of degenerate time a buggy clock or
+// a very long-lived session could produce. The particle render must complete at any time, not abort. A normal
+// time still renders, proving the fold is behaviour-preserving.
+let partPkg = buildPKG([
+    ("scene.json", Data(#"{"general":{"orthogonalprojection":{"width":8,"height":8},"clearcolor":"0 0 0"},"objects":[{"name":"p","particle":"models/p.json","origin":"4 4 0","visible":true}]}"#.utf8)),
+    ("models/p.json", Data(#"{"maxcount":50,"material":"materials/p.json","emitter":[{"name":"boxrandom","origin":"0 0 0","distancemax":"8 8 0","rate":100}],"initializer":[{"name":"lifetimerandom","min":1.0,"max":2.0},{"name":"sizerandom","min":1,"max":2}],"operator":[{"name":"movement","gravity":"0 -1 0"}]}"#.utf8)),
+    ("materials/p.json", Data(#"{"passes":[{"textures":["pt"]}]}"#.utf8)),
+    ("materials/pt.tex", buildTexRGBA(4, 4, solid(255, 255, 255, 16))),
+])
+if let pkg = try? ScenePackage.read(partPkg), let doc = try? SceneGraph.load(from: pkg) {
+    let prep = renderer.prepare(doc, package: pkg)
+    Check.that("a particle scene renders at a normal time", renderer.render(prep, width: 8, height: 8, time: 5) != nil)
+    Check.that("a particle scene renders at an extreme time without trapping (Int(cycle) fold)",
+               renderer.render(prep, width: 8, height: 8, time: 1e30) != nil)
+    Check.that("a particle scene renders at a non-finite time without trapping",
+               renderer.render(prep, width: 8, height: 8, time: .infinity) != nil)
+} else {
+    Check.that("particle regression scene loads", false)
+}
+
 // Aspect cover: a scene fills a differently-shaped target by scaling up the overflow axis (so it crops),
 // never stretching. Matching or degenerate aspects are identity.
 Check.that("a matching aspect is identity", SceneRenderer.coverScale(sceneAspect: 16.0 / 9, targetAspect: 16.0 / 9) == SIMD2<Float>(1, 1))

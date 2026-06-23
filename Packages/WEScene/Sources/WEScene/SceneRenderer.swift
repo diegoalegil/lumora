@@ -1129,7 +1129,11 @@ public final class SceneRenderer {
             let t = time + rand(slot, 102) * life          // staggered so they don't all spawn at once
             let cycle = (t / life).rounded(.down)
             let age = t - cycle * life
-            let seed = hash(slot, UInt32(truncatingIfNeeded: Int(cycle)))
+            // `cycle` can exceed Int.max (a tiny lifetime at a huge or non-finite render time), where `Int(cycle)`
+            // would trap. Only its low bits seed the per-cycle hash, so fold it into range without trapping —
+            // bit-identical to the old conversion for every realistic (sub-2^53) cycle.
+            let cycleSeed = cycle.isFinite ? UInt32(truncatingIfNeeded: Int(cycle.truncatingRemainder(dividingBy: 4_294_967_296))) : 0
+            let seed = hash(slot, cycleSeed)
 
             let spawnX = s.origin.x + s.boxSize.x * (rand(seed, 1) * 2 - 1)
             let spawnY = s.origin.y + s.boxSize.y * (rand(seed, 2) * 2 - 1)
