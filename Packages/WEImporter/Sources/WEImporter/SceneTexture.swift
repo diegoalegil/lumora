@@ -16,6 +16,15 @@ public enum TextureFormat: Int, Sendable, Equatable, CaseIterable {
     case dxt1 = 7       // BC1                        (-> Metal .bc1_rgba)
     case rg88 = 8       // two-channel 8-bit          (-> Metal .rg8Unorm)
     case r8 = 9         // single-channel 8-bit       (-> Metal .r8Unorm)
+
+    /// Bytes per 4×4 texel block for a block-compressed format (BC1=8, BC2/BC3=16); nil if uncompressed.
+    public var blockByteCount: Int? {
+        switch self {
+        case .dxt1: return 8
+        case .dxt3, .dxt5: return 16
+        case .rgba8888, .rg88, .r8: return nil
+        }
+    }
 }
 
 /// How a texture's mip levels are stored.

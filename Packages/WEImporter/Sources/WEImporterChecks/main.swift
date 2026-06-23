@@ -484,6 +484,12 @@ if let dec = Check.noThrow("decodes a DXT5 block mip", {
     Check.that("DXT5 format preserved (not expanded)", dec.format == .dxt5)
     Check.that("DXT5 block bytes preserved", dec.pixels == dxtBlock)
 }
+// A block-compressed mip must carry one block per 4×4 region: an 8×8 BC3 needs 4 blocks = 64 bytes; a single
+// 16-byte block is undersized and must be rejected by the decoder (not slip through to the GPU-upload guard).
+Check.throwsError("rejects an undersized block-compressed mip", {
+    try SceneTexture.decodeFirstMip(buildTexWithMip(version: "TEXB0004", format: 4, mipW: 8, mipH: 8,
+                                                    isCompressed: 0, decompressedSize: 16, payload: Data(repeating: 0xAB, count: 16)))
+})
 let png = makePNG(8, 6)
 Check.that("png fixture has the PNG signature", [UInt8](png.prefix(4)) == [0x89, 0x50, 0x4e, 0x47])
 if let dec = Check.noThrow("decodes an embedded PNG mip", {

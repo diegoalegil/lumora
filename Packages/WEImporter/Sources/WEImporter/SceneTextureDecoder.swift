@@ -91,6 +91,13 @@ public extension SceneTexture {
             guard payloadSize <= mipWidth * mipHeight * 4 else { throw SceneTextureError.decodeFailed }
             pixels = payload
         }
+        // A block-compressed mip must carry at least one block per 4×4 texel region; an undersized payload
+        // (e.g. one 16-byte block claiming to be an 8×8 BC3, which needs four) is malformed. Reject it here,
+        // next to the format knowledge, instead of relying solely on the GPU-upload consumer's size guard.
+        if let blockBytes = header.format?.blockByteCount {
+            let blocks = max(1, (mipWidth + 3) / 4) * max(1, (mipHeight + 3) / 4)
+            guard pixels.count >= blocks * blockBytes else { throw SceneTextureError.decodeFailed }
+        }
         return DecodedTexture(format: header.format ?? .rgba8888, width: mipWidth, height: mipHeight,
                               imageWidth: header.imageWidth, imageHeight: header.imageHeight, pixels: pixels)
     }
