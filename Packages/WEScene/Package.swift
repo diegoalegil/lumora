@@ -20,6 +20,6 @@ let package = Package(
     ],
     targets: [
         .target(name: "WEScene", dependencies: ["WECore", "WEImporter", "WEShaderKit", "WESceneDynamics"]),
-        .executableTarget(name: "WESceneChecks", dependencies: ["WEScene", "WEImporter"]),
+        .executableTarget(name: "WESceneChecks", dependencies: ["WEScene", "WEImporter", "WECore"]),
     ]
 )
