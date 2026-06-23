@@ -265,8 +265,12 @@ public struct ParticleSystem: Sendable, Equatable {
         let smax = clampFinite(num("scalemax", scaleDefault.1), -100_000, 100_000, scaleDefault.1)
         let pmin = clampFinite(num("phasemin", 0), -1024, 1024, 0)
         let pmax = clampFinite(num("phasemax", 1), -1024, 1024, 1)
+        // Clamp each bound to finite BEFORE ordering: a non-finite bound (e.g. frequencymin `-1e309` → -inf,
+        // which JSONSerialization accepts) maps to 1 here, and clamping AFTER min/max could leave the range
+        // inverted (`1 ... 0.5`), trapping ClosedRange.init. Pre-clamping both keeps min/max well-ordered.
         func clampF(_ v: Double) -> Double { v.isFinite ? max(0, min(30, v)) : 1 }
-        return Oscillator(freq: clampF(min(fmin, fmax)) ... clampF(max(fmin, fmax)),
+        let cfmin = clampF(fmin), cfmax = clampF(fmax)
+        return Oscillator(freq: min(cfmin, cfmax) ... max(cfmin, cfmax),
                           scale: min(smin, smax) ... max(smin, smax),
                           phase: min(pmin, pmax) ... max(pmin, pmax),
                           mask: vec3(op["mask"], default: 1))
