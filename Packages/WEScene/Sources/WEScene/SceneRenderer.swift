@@ -1319,6 +1319,11 @@ public final class SceneRenderer {
         // view's bounds can momentarily be 0 during window setup/teardown or a display reconfiguration. There's
         // nothing to draw at that size, so report no frame instead of crashing.
         guard width > 0, height > 0 else { return nil }
+        // A non-finite time (a NaN/inf from a misbehaving clock) flows into time-derived index math — the video
+        // frame pick (loopTime / frameDuration) and animation samplers — where Int(...) would trap. The app's
+        // clock is always finite; sanitise here so the whole render is robust to a degenerate time, not just the
+        // particle path. Time 0 is the still composite.
+        let time = time.isFinite ? time : 0
         // The effect-texture pool is keyed by render size; after a display resize/rotation the old-size targets
         // (tens of MB each at 4K) would be retained but never borrowed again. Drop the pool on a size change so
         // it can't grow for the life of the wallpaper. (Within a size, it's reused frame-to-frame as intended.)
