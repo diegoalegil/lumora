@@ -279,6 +279,47 @@ Check.that("an ivec uniform member lowers to int2, not raw ivec2", ivecMSL.conta
 if let device = MTLCreateSystemDefaultDevice() {
     Check.that("ivec-uniform MSL compiles via Metal", (try? device.makeLibrary(source: ivecMSL, options: nil))?.makeFunction(name: "we_fragment") != nil)
 }
+// The rest of mslType()'s matrix/vector cases are reached the same way — by typing a uniform struct member —
+// and Metal rejects the whole Uniforms struct if any one lowers to its raw GLSL spelling. Lock each so a
+// dropped switch case can't slip through (mat4 is covered implicitly by g_ModelViewProjectionMatrix everywhere).
+let mat2Frag = """
+varying vec4 v_TexCoord;
+uniform mat2 g_Transform; // {"material":"xf"}
+void main() { vec2 v = g_Transform * vec2(1.0, 0.0); gl_FragColor = vec4(v, 0.0, 1.0); }
+"""
+let mat2MSL = WEShaderTranspiler.fragmentToMSL(mat2Frag)
+Check.that("a mat2 uniform member lowers to float2x2, not raw mat2", mat2MSL.contains("float2x2 g_Transform") && !mat2MSL.contains("mat2"))
+let uvecFrag = """
+varying vec4 v_TexCoord;
+uniform uvec2 g_Grid; // {"material":"g"}
+uniform uvec3 g_Cells; // {"material":"c"}
+uniform uvec4 g_Mask; // {"material":"m"}
+void main() { gl_FragColor = vec4(float(g_Grid.x + g_Cells.y + g_Mask.w)); }
+"""
+let uvecMSL = WEShaderTranspiler.fragmentToMSL(uvecFrag)
+Check.that("uvec uniform members lower to uint2/uint3/uint4, not raw uvec",
+           uvecMSL.contains("uint2 g_Grid") && uvecMSL.contains("uint3 g_Cells") && uvecMSL.contains("uint4 g_Mask") && !uvecMSL.contains("uvec"))
+let bvec4Frag = """
+varying vec4 v_TexCoord;
+uniform bvec4 g_Flags; // {"material":"f"}
+void main() { gl_FragColor = any(g_Flags) ? vec4(1.0) : vec4(0.0); }
+"""
+let bvec4MSL = WEShaderTranspiler.fragmentToMSL(bvec4Frag)
+Check.that("a bvec4 uniform member lowers to bool4, not raw bvec4", bvec4MSL.contains("bool4 g_Flags") && !bvec4MSL.contains("bvec4"))
+// A comparison sampler binds as a depth texture (depth2d), not a colour texture2d — shadow-map shaders rely on it.
+let cmpFrag = """
+varying vec4 v_TexCoord;
+uniform sampler2DComparison g_ShadowMap; // {"material":"shadow"}
+void main() { gl_FragColor = vec4(0.0); }
+"""
+let cmpMSL = WEShaderTranspiler.fragmentToMSL(cmpFrag)
+Check.that("a sampler2DComparison binds as depth2d<float>, not texture2d", cmpMSL.contains("depth2d<float> g_ShadowMap"))
+if let device = MTLCreateSystemDefaultDevice() {
+    for (label, src) in [("mat2", mat2MSL), ("uvec", uvecMSL), ("bvec4", bvec4MSL)] {
+        Check.that("\(label)-uniform MSL compiles via Metal", (try? device.makeLibrary(source: src, options: nil))?.makeFunction(name: "we_fragment") != nil)
+    }
+}
+
 // gl_FragCoord (window-space pixel coordinate) wires to MSL's [[position]] fragment parameter.
 let fcFrag = """
 varying vec4 v_TexCoord;
@@ -980,6 +1021,11 @@ Check.that("a valueless #define is seen by #ifdef", ShaderPreprocessor.resolve("
 Check.that("a valueless #define is seen by defined()", ShaderPreprocessor.resolve("#define FEATURE\n#if defined(FEATURE)\ny\n#else\nn\n#endif", combos: [:]) == "y")
 Check.that("a function-like macro is seen by defined()", ShaderPreprocessor.resolve("#define BLUR(x) ((x)*2.0)\n#if defined(BLUR)\ny\n#else\nn\n#endif", combos: [:]) == "y")
 Check.that("a float-valued #define makes #ifndef false", ShaderPreprocessor.resolve("#define DEG2RAD 0.01745\n#ifndef DEG2RAD\ny\n#else\nn\n#endif", combos: [:]) == "n")
+// The ! prefix negates a whole sub-expression: !defined(X) must be the inverse of defined(X), not a no-op.
+Check.that("!defined(NAME) is false when NAME is defined (else branch taken)",
+           ShaderPreprocessor.resolve("#define F\n#if !defined(F)\nx\n#else\ny\n#endif", combos: [:]) == "y")
+Check.that("!defined(NAME) is true when NAME is undefined (then branch taken)",
+           ShaderPreprocessor.resolve("#if !defined(F)\nx\n#else\ny\n#endif", combos: [:]) == "x")
 // Regression: WE ships CRLF. Swift treats "\r\n" as one grapheme, so a naive split(separator:"\n")
 // never matches it and the whole shader collapses to one line — emptying every transpiled body.
 Check.that("normalises CRLF before resolving conditionals",
@@ -1098,6 +1144,19 @@ let mat3 = UniformPacker.pack([ShaderUniform(type: "mat3", name: "g_M", material
 let mat3Floats = mat3.withUnsafeBytes { Array($0.bindMemory(to: Float.self)) }
 Check.that("mat3 packs to 48 bytes with per-column padding",
            mat3.count == 48 && mat3Floats[3] == 0 && mat3Floats[4] == 4 && mat3Floats[8] == 7)
+// mat2 is two contiguous float2 columns (16 bytes, no per-column padding); a following uniform must land at
+// that 16-byte stride or it reads the matrix's tail. mat4 is 16 contiguous floats (64 bytes).
+let mat2Packed = UniformPacker.pack([
+    ShaderUniform(type: "mat2", name: "g_M2", material: "m"),
+    ShaderUniform(type: "float", name: "g_After", material: "a"),
+], values: ["m": "1 2 3 4", "a": "9"])
+let mat2Floats = mat2Packed.withUnsafeBytes { Array($0.bindMemory(to: Float.self)) }
+Check.that("mat2 packs 4 contiguous floats with the next uniform at its 16-byte stride",
+           mat2Floats[0] == 1 && mat2Floats[1] == 2 && mat2Floats[2] == 3 && mat2Floats[3] == 4 && mat2Floats[4] == 9)
+let mat4Packed = UniformPacker.pack([ShaderUniform(type: "mat4", name: "g_M4", material: "m")],
+                                    values: ["m": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16"])
+let mat4Floats = mat4Packed.withUnsafeBytes { Array($0.bindMemory(to: Float.self)) }
+Check.that("mat4 packs to 64 contiguous bytes", mat4Packed.count == 64 && mat4Floats[0] == 1 && mat4Floats[15] == 16)
 // The override path (how the renderer injects an animated g_Time) takes precedence over values/default.
 let overridden = UniformPacker.pack([ShaderUniform(type: "float", name: "g_Time", material: "t", defaultValue: "0")],
                                     values: ["t": "1"], overrides: ["g_Time": [5]])
