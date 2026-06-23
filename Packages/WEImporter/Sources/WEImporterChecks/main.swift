@@ -508,6 +508,20 @@ Check.throwsError("rejects an absurd decompressed size (allocation bound)", {
     try SceneTexture.decodeFirstMip(buildTexWithMip(version: "TEXB0003", format: 0, mipW: 4, mipH: 4,
                                                     isCompressed: 1, decompressedSize: 1_000_000_000, payload: Data(repeating: 0, count: 8)))
 })
+// A mip that decodes to MORE than one RGBA8 frame is a multi-frame texture we can't read as a single image —
+// the raw and the LZ4 branches each reject it. These guards (just over one 4x4=64-byte frame, under the 256MB
+// allocation bound) had no test; the boundary control (exactly one frame) must still decode.
+Check.throwsError("rejects a raw mip bigger than one RGBA8 frame", {
+    try SceneTexture.decodeFirstMip(buildTexWithMip(version: "TEXB0002", format: 0, mipW: 4, mipH: 4,
+                                                    isCompressed: 0, decompressedSize: 65, payload: Data(repeating: 1, count: 65)))
+})
+Check.that("a raw mip exactly one RGBA8 frame still decodes",
+           (try? SceneTexture.decodeFirstMip(buildTexWithMip(version: "TEXB0002", format: 0, mipW: 4, mipH: 4,
+                                                             isCompressed: 0, decompressedSize: 64, payload: Data(repeating: 1, count: 64)))) != nil)
+Check.throwsError("rejects an lz4 mip whose decompressed size exceeds one RGBA8 frame", {
+    try SceneTexture.decodeFirstMip(buildTexWithMip(version: "TEXB0003", format: 0, mipW: 4, mipH: 4,
+                                                    isCompressed: 1, decompressedSize: 65, payload: lz4Compress(Data(repeating: 1, count: 65))))
+})
 
 // MARK: - SceneGraph (scene.json -> renderable layers)
 
