@@ -251,6 +251,16 @@ print("WEScene: Metal device '\(renderer.device.name)', BC support: \(renderer.d
 Check.section("SceneRenderer")
 let red = SceneVec3(x: 1, y: 0, z: 0)
 
+// Regression (fuzzer-found): Metal aborts the whole process if a render target has a zero dimension, and a
+// view's bounds can momentarily be 0 during window setup/teardown or a display reconfiguration. render() must
+// return nil for a non-positive size, not crash — while a valid size still renders.
+Check.that("render(texture:) returns nil at zero width (no Metal abort)",
+           renderer.render(texture: nil, alpha: 1, clearColor: red, width: 0, height: 8) == nil)
+Check.that("render(texture:) returns nil at zero height",
+           renderer.render(texture: nil, alpha: 1, clearColor: red, width: 8, height: 0) == nil)
+Check.that("render(texture:) still renders at a valid size (guard didn't break the happy path)",
+           renderer.render(texture: nil, alpha: 1, clearColor: red, width: 8, height: 8) != nil)
+
 // A crafted particle system can declare an unbounded rate/lifetime; the steady-state slot count must
 // clamp into [1, maxcount] without trapping the Int conversion (rate × lifetime can overflow to inf).
 Check.that("a normal rate × lifetime gives the expected slot count",
@@ -322,6 +332,9 @@ if let package = try? ScenePackage.read(pkgData),
         let (pr, pg, pb) = centerRGB(still)
         Check.that("prepared still render (t=0) matches the composite (blue)", near(pr, 0) && near(pg, 0) && near(pb, 255))
     }
+    // The prepared render path also guards a zero dimension (it reaches the effect pass before the composite).
+    Check.that("render(prepared) returns nil at a zero dimension (no Metal abort)",
+               renderer.render(prepared, width: 0, height: 8, time: 0) == nil)
     // An effect-free, script-free scene can't read the audio spectrum, so render() must NOT build the six
     // per-frame audio-override arrays — it should never call the provider at all.
     let counter = CountingSpectrum()
