@@ -293,6 +293,17 @@ if let device = MTLCreateSystemDefaultDevice() {
     Check.that("scalar-mask sample MSL compiles via Metal", (try? device.makeLibrary(source: maskMSL, options: nil))?.makeFunction(name: "we_fragment") != nil)
 }
 
+// A pathologically long shader line (deeply nested mix()) made coerceVectorTruncations' recursive harmonisers
+// run O(N²) — a crafted .pkg shader nesting thousands deep froze wallpaper load (~14s here, minutes at scale).
+// The line-length guard now passes an absurdly long line through untouched, so this transpiles immediately.
+var nestedMix = "uv"
+for _ in 0 ..< 4000 { nestedMix = "mix(\(nestedMix),vec2(0.0),0.5)" }   // ~80KB single line
+let dosFrag = "varying vec4 v_TexCoord;\nvoid main(){ vec2 uv = v_TexCoord.xy; vec2 r = \(nestedMix); gl_FragColor = vec4(r, 0.0, 1.0); }"
+let dosStart = Date()
+_ = WEShaderTranspiler.fragmentToMSL(dosFrag)
+Check.that("a pathologically long shader line transpiles without an O(N^2) stall",
+           Date().timeIntervalSince(dosStart) < 2.0)
+
 // GLSL's length(scalar) is its magnitude; MSL has no scalar overload (ambiguous), so rewrite to abs().
 // A length() of a genuine vector must be left alone.
 let lenShader = """
