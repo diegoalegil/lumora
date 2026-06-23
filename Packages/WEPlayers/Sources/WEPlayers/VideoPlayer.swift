@@ -42,6 +42,12 @@ public final class VideoPlayer: WallpaperRenderer {
         guard wallpaper.type == Self.supportedType else {
             throw VideoPlayerError.unsupportedType(wallpaper.type)
         }
+        // load() may be called to RELOAD (per the WallpaperRenderer contract). Tear down any existing looper
+        // and clear the queue first — otherwise the prior AVPlayerLooper keeps its KVO/time observers on the
+        // shared queue player and two loopers fight over one queue. Harmless on first load (looper is nil).
+        looper?.disableLooping()
+        looper = nil
+        player.removeAllItems()
         // AVPlayerLooper drives the queue player for gapless looping of a single item.
         let item = AVPlayerItem(url: wallpaper.mainFileURL)
         looper = AVPlayerLooper(player: player, templateItem: item)
