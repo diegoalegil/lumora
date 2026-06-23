@@ -285,15 +285,22 @@ public enum ShaderPreprocessor {
         value(of: expression, combos, defined) != 0
     }
 
-    /// The integer value of a condition sub-expression (0 = false, non-zero = true).
-    private static func value(of expression: String, _ combos: [String: Int], _ defined: Set<String>) -> Int {
+    /// The deepest a `#if` condition sub-expression may nest (parens / leading `!`) before the recursive
+    /// evaluator bails. Real conditions nest a handful of levels; this is far above that yet well below the
+    /// ~25k-deep nesting that would overflow the call stack on a crafted shader. Mirrors KeyValuesParser.
+    private static let maxConditionDepth = 256
+
+    /// The integer value of a condition sub-expression (0 = false, non-zero = true). `depth` bounds the
+    /// paren/`!` recursion so an untrusted shader can't blow the stack with deeply nested parentheses.
+    private static func value(of expression: String, _ combos: [String: Int], _ defined: Set<String>, _ depth: Int = 0) -> Int {
+        guard depth < maxConditionDepth else { return 0 }   // over-nested → drop the branch, never crash
         let expr = expression.trimmingCharacters(in: .whitespaces)
         if expr.isEmpty { return 0 }
-        if let parts = splitTopLevel(expr, "||") { return parts.contains { value(of: $0, combos, defined) != 0 } ? 1 : 0 }
-        if let parts = splitTopLevel(expr, "&&") { return parts.allSatisfy { value(of: $0, combos, defined) != 0 } ? 1 : 0 }
+        if let parts = splitTopLevel(expr, "||") { return parts.contains { value(of: $0, combos, defined, depth + 1) != 0 } ? 1 : 0 }
+        if let parts = splitTopLevel(expr, "&&") { return parts.allSatisfy { value(of: $0, combos, defined, depth + 1) != 0 } ? 1 : 0 }
         for op in ["==", "!=", "<=", ">=", "<", ">"] {
             if let (lhs, rhs) = splitFirstTopLevel(expr, op) {
-                let a = value(of: lhs, combos, defined), b = value(of: rhs, combos, defined)
+                let a = value(of: lhs, combos, defined, depth + 1), b = value(of: rhs, combos, defined, depth + 1)
                 switch op {
                 case "==": return a == b ? 1 : 0
                 case "!=": return a != b ? 1 : 0
@@ -304,8 +311,8 @@ public enum ShaderPreprocessor {
                 }
             }
         }
-        if expr.hasPrefix("!") { return value(of: String(expr.dropFirst()), combos, defined) == 0 ? 1 : 0 }
-        if expr.hasPrefix("("), expr.hasSuffix(")") { return value(of: String(expr.dropFirst().dropLast()), combos, defined) }
+        if expr.hasPrefix("!") { return value(of: String(expr.dropFirst()), combos, defined, depth + 1) == 0 ? 1 : 0 }
+        if expr.hasPrefix("("), expr.hasSuffix(")") { return value(of: String(expr.dropFirst().dropLast()), combos, defined, depth + 1) }
         if expr.hasPrefix("defined") {
             // A name is defined if it was #define'd (any value, including none) or supplied as a combo.
             let name = expr.dropFirst(7).trimmingCharacters(in: CharacterSet(charactersIn: " ()"))

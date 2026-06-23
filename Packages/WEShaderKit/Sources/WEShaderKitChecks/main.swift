@@ -1006,6 +1006,13 @@ Check.that("a large macro value used many times expands within bounds", singlePa
 // the combo true every branch is active, so the guarded body survives.
 let deepIf = String(repeating: "#if A\n", count: 2000) + "kept\n" + String(repeating: "#endif\n", count: 2000)
 Check.that("deeply nested #if resolves without crashing", ShaderPreprocessor.resolve(deepIf, combos: ["A": 1]).contains("kept"))
+// A single #if condition with thousands of nested parens drives the RECURSIVE evaluator (not the frame
+// stack); it must bail at the depth cap, not overflow the call stack. (~25k parens SIGSEGVs without the cap.)
+let deepParens = "#if " + String(repeating: "(", count: 100_000) + "0" + String(repeating: ")", count: 100_000) + "\nkept\n#endif"
+Check.that("a deeply parenthesised #if condition doesn't overflow the stack",
+           !ShaderPreprocessor.resolve(deepParens, combos: [:]).contains("kept"))   // over-deep → 0 → branch dropped
+// A legitimately nested condition still evaluates correctly under the cap.
+Check.that("a normally nested condition still evaluates", ShaderPreprocessor.resolve("#if !((A))\nx\n#endif", combos: ["A": 0]) == "x")
 // Unbalanced conditionals (a stray #endif / #else with no open #if) must be tolerated, not trap.
 Check.that("a stray #endif is tolerated", ShaderPreprocessor.resolve("#endif\nkept", combos: [:]).contains("kept"))
 // An out-of-range numeric default in a uniform's JSON annotation must not trap String(Int(_:)).
