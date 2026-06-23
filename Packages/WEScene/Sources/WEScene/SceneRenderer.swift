@@ -1329,10 +1329,15 @@ public final class SceneRenderer {
         if effectRenderer != nil, ProcessInfo.processInfo.environment["LUMORA_NO_EFFECTS"] == nil {
             for (index, layer) in scene.layers.enumerated() where !layer.effects.isEmpty {
                 let center = animatedCenter(layer, time: time, swayX: swayX, swayY: swayY)
+                // The effect-input quad is a full-size transient target consumed entirely within this layer's
+                // synchronous effect chain (the chain's output replaces it and lands in effectResult). Borrow
+                // it from the per-frame pool instead of allocating a fresh ~33 MB texture every frame; it's
+                // returned by recycleEffectTextures() once the frame is composited.
                 guard var texture = renderQuadToTexture(currentTexture(layer, time: time), center: center,
                                                         halfExtent: layer.halfExtent, uvScale: layer.uvScale,
                                                         tint: layer.tint, width: width, height: height,
-                                                        rotA: layer.rotA, rotB: layer.rotB) else { continue }
+                                                        rotA: layer.rotA, rotB: layer.rotB,
+                                                        allocTarget: { w, h, fmt in self.borrowEffectTarget(width: w, height: h, pixelFormat: fmt) }) else { continue }
                 for effect in layer.effects {
                     guard let output = applyEffect(effect, to: texture, time: Float(time), width: width, height: height,
                         allocTarget: { w, h, fmt in self.borrowEffectTarget(width: w, height: h, pixelFormat: fmt) }) else { break }
@@ -1631,15 +1636,24 @@ public final class SceneRenderer {
     }
 
     /// Render one quad (a layer's texture at its placement, tint baked in, full opacity) onto a
-    /// transparent target, to feed an effect chain. Returns nil if the target can't be made.
+    /// transparent target, to feed an effect chain. Returns nil if the target can't be made. The target
+    /// comes from `allocTarget` (the per-frame pool in the live path, a fresh texture in the one-time dry
+    /// run); the pass clears it before drawing, so a recycled (dirty) texture is safe.
     private func renderQuadToTexture(_ source: MTLTexture, center: SIMD2<Float>, halfExtent: SIMD2<Float>,
                                      uvScale: SIMD2<Float>, tint: SIMD3<Float>, width: Int, height: Int,
-                                     rotA: SIMD2<Float> = SIMD2(1, 0), rotB: SIMD2<Float> = SIMD2(0, 1)) -> MTLTexture? {
-        let descriptor = MTLTextureDescriptor.texture2DDescriptor(
-            pixelFormat: .rgba8Unorm, width: width, height: height, mipmapped: false)
-        descriptor.usage = [.renderTarget, .shaderRead]
-        descriptor.storageMode = .shared
-        guard let texture = device.makeTexture(descriptor: descriptor),
+                                     rotA: SIMD2<Float> = SIMD2(1, 0), rotB: SIMD2<Float> = SIMD2(0, 1),
+                                     allocTarget: ((Int, Int, MTLPixelFormat) -> MTLTexture?)? = nil) -> MTLTexture? {
+        let texture: MTLTexture?
+        if let allocTarget {
+            texture = allocTarget(width, height, .rgba8Unorm)
+        } else {
+            let descriptor = MTLTextureDescriptor.texture2DDescriptor(
+                pixelFormat: .rgba8Unorm, width: width, height: height, mipmapped: false)
+            descriptor.usage = [.renderTarget, .shaderRead]
+            descriptor.storageMode = .shared
+            texture = device.makeTexture(descriptor: descriptor)
+        }
+        guard let texture,
               let commandBuffer = queue.makeCommandBuffer() else { return nil }
 
         let pass = MTLRenderPassDescriptor()
