@@ -156,6 +156,10 @@ Check.that("start at/past EOF is rejected", AssetByteRange.parse("bytes=1000-", 
 Check.that("malformed header is rejected", AssetByteRange.parse("bytes=abc-def", total: 1000) == nil)
 Check.that("non-range header is rejected", AssetByteRange.parse("garbage", total: 1000) == nil)
 Check.that("empty file serves no range", AssetByteRange.parse("bytes=0-", total: 0) == nil)
+// RFC 7233 suffix range: the last N bytes, clamped to the file start when N exceeds the length.
+Check.that("suffix range returns the last N bytes", AssetByteRange.parse("bytes=-500", total: 1000) == 500 ..< 1000)
+Check.that("over-large suffix clamps to the file start", AssetByteRange.parse("bytes=-5000", total: 1000) == 0 ..< 1000)
+Check.that("a bare suffix dash is rejected", AssetByteRange.parse("bytes=-", total: 1000) == nil)
 
 Check.section("ScenePlayer frame pacing")
 // The playback policy's targetFPS must actually drive the scene loop: 60 active, 30 on battery / low-power,

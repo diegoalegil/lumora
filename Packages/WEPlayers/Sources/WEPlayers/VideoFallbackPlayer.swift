@@ -58,12 +58,16 @@ public final class VideoFallbackPlayer: WallpaperRenderer {
     }
 }
 
-/// Parses an HTTP `Range: bytes=START-[END]` header into a half-open byte range within a file of `total`
-/// bytes (nil for anything malformed or out of range). A pure value so it can be tested without WebKit.
+/// Parses an HTTP `Range: bytes=START-[END]` or suffix `bytes=-N` header into a half-open byte range within a
+/// file of `total` bytes (nil for anything malformed or out of range). A pure value, tested without WebKit.
 public enum AssetByteRange {
     public static func parse(_ header: String, total: Int) -> Range<Int>? {
         guard total > 0, let spec = header.split(separator: "=").last.map(String.init) else { return nil }
         let parts = spec.split(separator: "-", omittingEmptySubsequences: false)
+        // Suffix range `bytes=-N` (RFC 7233): the last N bytes, clamped to the file start for an over-large N.
+        if parts.count == 2, parts[0].isEmpty, let len = Int(parts[1]), len > 0 {
+            return max(0, total - len) ..< total
+        }
         guard let start = parts.first.flatMap({ Int($0) }), start >= 0, start < total else { return nil }
         let end = (parts.count > 1 ? Int(parts[1]) : nil) ?? (total - 1)
         let clampedEnd = min(max(end, start), total - 1)
