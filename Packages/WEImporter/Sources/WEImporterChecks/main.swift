@@ -823,6 +823,27 @@ let parsedAlpha = try? SceneGraph.load(from: ScenePackage.read(buildPKG(version:
 ])))
 Check.that("an animated alpha is parsed onto the layer",
            parsedAlpha?.layers.first?.alphaAnimation?.keyframes.count == 2)
+// WE's `single` mode plays a curve once and HOLDS the last keyframe; only `loop` mode wraps. A one-shot
+// 0→1 fade-in over [0,90]@30fps (length 90 = 3.0s) must read 1 (held) past its end when single, but a
+// looping one snaps back to its first value at every multiple of the length.
+let singleFade = AlphaAnimation(keyframes: [AlphaKeyframe(frame: 0, value: 0), AlphaKeyframe(frame: 90, value: 1)],
+                                fps: 30, length: 90, isLooping: false)
+Check.that("a single (play-once) animation holds its last value past length",
+           singleFade.value(at: 3.0) == 1 && singleFade.value(at: 6.0) == 1)
+let loopFade = AlphaAnimation(keyframes: [AlphaKeyframe(frame: 0, value: 0), AlphaKeyframe(frame: 90, value: 1)],
+                              fps: 30, length: 90, isLooping: true)
+Check.that("a looping animation wraps back to its first value at length", loopFade.value(at: 3.0) == 0)
+// The looping flag is read from the animation's options.mode at parse time.
+@MainActor func parseAlphaMode(_ mode: String) -> AlphaAnimation? {
+    let json = "{\"objects\":[{\"image\":\"models/m.json\",\"alpha\":{\"value\":1,\"animation\":{\"c0\":[{\"frame\":0,\"value\":0},{\"frame\":90,\"value\":1}],\"options\":{\"fps\":30,\"length\":90,\"mode\":\"\(mode)\"}}}}]}"
+    return (try? SceneGraph.load(from: ScenePackage.read(buildPKG(version: "PKGV0009", files: [
+        ("scene.json", Data(json.utf8)),
+        ("models/m.json", Data(#"{"material":"materials/mat.json"}"#.utf8)),
+        ("materials/mat.json", Data(#"{"passes":[{"textures":["t"]}]}"#.utf8)),
+    ]))))?.layers.first?.alphaAnimation
+}
+Check.that("parse reads mode:single as a non-looping (held) animation", parseAlphaMode("single")?.value(at: 6.0) == 1)
+Check.that("parse reads mode:loop as a looping animation", parseAlphaMode("loop")?.value(at: 3.0) == 0)
 
 let posAnim = Vec3Animation(x: AlphaAnimation(keyframes: [AlphaKeyframe(frame: 0, value: 0),
                                                           AlphaKeyframe(frame: 60, value: 60)], fps: 60, length: 120),
