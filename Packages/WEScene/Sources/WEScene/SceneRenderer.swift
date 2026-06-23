@@ -73,7 +73,8 @@ private struct PreparedParticles {
 private enum EffectInput {
     case previous
     case buffer(String)
-    case aux(MTLTexture)
+    case aux(MTLTexture, content: SIMD2<Int>)   // a packaged aux (mask/normal) may be padded: carry its
+                                                // content dims so g_Texture<n>Resolution.zw is the real size
 }
 
 /// One compiled pass of an effect: the pipeline, whether it runs its own vertex over the grid, the uniform
@@ -249,7 +250,7 @@ public final class SceneRenderer {
     private let noiseTexture: MTLTexture           // util/noise aux default (procedural)
     private let haloTexture: MTLTexture            // soft radial glow for unshipped built-in sprites
     private let effectRenderer: EffectRenderer?   // compiles + runs per-layer post-process effects
-    private var auxCache: [String: MTLTexture] = [:]   // resolved packaged aux textures, by name
+    private var auxCache: [String: (texture: MTLTexture, content: SIMD2<Int>)] = [:]   // resolved aux, by name
     private var pooledOutput: MTLTexture?              // reused frame target (rendering is synchronous)
     private var pooledBackground: MTLTexture?          // reused composited-scene target for refractive scenes
     // Effect render targets are reused across frames instead of reallocated every frame. Rendering is fully
@@ -472,21 +473,26 @@ public final class SceneRenderer {
 
     /// Resolve a sampler's texture name to a texture: WE built-ins procedurally, packaged textures from
     /// the scene, anything unknown to white (so a missing aux never blanks the pass).
-    private func resolveAuxTexture(_ name: String?, package: ScenePackage) -> MTLTexture {
-        guard let name, !name.isEmpty else { return whiteTexture }
+    private func resolveAuxTexture(_ name: String?, package: ScenePackage) -> (texture: MTLTexture, content: SIMD2<Int>) {
+        // A procedural/full-content texture's content fills its whole buffer, so content == storage (ratio 1).
+        func full(_ t: MTLTexture) -> (texture: MTLTexture, content: SIMD2<Int>) { (t, SIMD2(t.width, t.height)) }
+        guard let name, !name.isEmpty else { return full(whiteTexture) }
         switch name {
-        case "util/white": return whiteTexture
-        case "util/black": return blackTexture
-        case let n where n.hasPrefix("util/noise") || n.hasSuffix("noise"): return noiseTexture
+        case "util/white": return full(whiteTexture)
+        case "util/black": return full(blackTexture)
+        case let n where n.hasPrefix("util/noise") || n.hasSuffix("noise"): return full(noiseTexture)
         default:
             if let cached = auxCache[name] { return cached }
             if let entry = package.entry(named: "materials/\(name).tex"),
                let decoded = try? SceneTexture.decodeFirstMip(entry.data),
                let texture = MetalTexture.make(decoded, device: device) {
-                auxCache[name] = texture
-                return texture
+                // A packaged mask/normal is stored in a POT buffer; its content sub-rect (imageWidth/Height)
+                // is what a shader's g_Texture<n>Resolution.zw/.xy remap needs, not the padded storage size.
+                let resolved = (texture, SIMD2(decoded.imageWidth, decoded.imageHeight))
+                auxCache[name] = resolved
+                return resolved
             }
-            return whiteTexture
+            return full(whiteTexture)
         }
     }
 
@@ -789,7 +795,7 @@ public final class SceneRenderer {
     /// content/POT crop (the sprite's content sub-rect of a power-of-two texture); (1,1) for a procedural
     /// or full-content sprite.
     private func spriteTexture(named name: String, package: ScenePackage) -> (texture: MTLTexture, uvScale: SIMD2<Float>)? {
-        if name.hasPrefix("util/") { return (resolveAuxTexture(name, package: package), SIMD2(1, 1)) }
+        if name.hasPrefix("util/") { return (resolveAuxTexture(name, package: package).texture, SIMD2(1, 1)) }
         // Packaged sprite from the scene takes priority.
         if let entry = package.entry(named: "materials/\(name).tex"),
            let decoded = try? SceneTexture.decodeFirstMip(entry.data),
@@ -819,16 +825,17 @@ public final class SceneRenderer {
 
     /// Built-in uniform values the renderer supplies to every effect stage: the animation clock, an
     /// identity model-view-projection (the effect quad already spans NDC), and each bound sampler's
-    /// resolution as (w, h, w, h) — the render targets are exact-size, so the padded-atlas ratio the
-    /// shaders derive from `.zw / .xy` is 1, and a downsample/blur sees its INPUT's real size.
-    private static func effectOverrides(time: Float, resolutions: [Int: SIMD2<Int>]) -> [String: [Float]] {
+    /// resolution as (storageW, storageH, contentW, contentH). `.xy` is the texel-size basis a downsample/
+    /// blur needs; `.zw` is the content sub-rect a padded aux mask/normal remaps UVs into (`.zw / .xy`). For
+    /// exact-size render targets the two are equal, so the ratio stays 1; for a POT-padded aux it's < 1.
+    private static func effectOverrides(time: Float, resolutions: [Int: (storage: SIMD2<Int>, content: SIMD2<Int>)]) -> [String: [Float]] {
         var overrides: [String: [Float]] = [
             "g_Time": [time],
             "g_ModelViewProjectionMatrix": [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1],
         ]
-        for (number, size) in resolutions {
-            let w = Float(size.x), h = Float(size.y)
-            overrides["g_Texture\(number)Resolution"] = [w, h, w, h]
+        for (number, res) in resolutions {
+            overrides["g_Texture\(number)Resolution"] =
+                [Float(res.storage.x), Float(res.storage.y), Float(res.content.x), Float(res.content.y)]
         }
         return overrides
     }
@@ -891,16 +898,18 @@ public final class SceneRenderer {
         var result = input
         for pass in effect.passes {
             var inputs: [(index: Int, texture: MTLTexture)] = []
-            var resolutions: [Int: SIMD2<Int>] = [:]
+            var resolutions: [Int: (storage: SIMD2<Int>, content: SIMD2<Int>)] = [:]
             for sampler in pass.samplers {
                 let texture: MTLTexture
+                let content: SIMD2<Int>
                 switch sampler.input {
-                case .previous: texture = input
-                case .buffer(let name): texture = buffers[name] ?? whiteTexture
-                case .aux(let aux): texture = aux
+                // Render targets (the effect input and intermediate FBOs) are exact-size: content == storage.
+                case .previous: texture = input; content = SIMD2(input.width, input.height)
+                case .buffer(let name): texture = buffers[name] ?? whiteTexture; content = SIMD2(texture.width, texture.height)
+                case .aux(let aux, let auxContent): texture = aux; content = auxContent
                 }
                 inputs.append((index: sampler.slot, texture: texture))
-                resolutions[sampler.number] = SIMD2(texture.width, texture.height)
+                resolutions[sampler.number] = (SIMD2(texture.width, texture.height), content)
             }
             let overrides = Self.effectOverrides(time: time, resolutions: resolutions)
                 .merging(currentAudioOverrides) { _, audio in audio }
@@ -997,7 +1006,8 @@ public final class SceneRenderer {
                         resolvedInput = .previous
                     } else {
                         let bound = (number >= 0 && number < pass.textures.count) ? pass.textures[number] : nil
-                        resolvedInput = .aux(resolveAuxTexture(bound ?? sampler.defaultValue, package: package))
+                        let aux = resolveAuxTexture(bound ?? sampler.defaultValue, package: package)
+                        resolvedInput = .aux(aux.texture, content: aux.content)
                     }
                     samplers.append((slot: slot, number: number, input: resolvedInput))
                 }
