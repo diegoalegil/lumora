@@ -905,6 +905,14 @@ if let sphere = ParticleSystem.parse(sphereParticle) {
 } else {
     Check.that("a sphere particle system parses", false)
 }
+// A non-finite scalar distancemax (inf/NaN, reachable via -1e309 etc. through JSONSerialization) must be
+// sanitised like every other untrusted scalar — never reach the spawn math as inf/NaN.
+if let s = ParticleSystem.parse(["emitter": [["name": "sphererandom", "distancemax": Double.infinity, "rate": 50]]]) {
+    Check.that("a non-finite sphere distancemax is clamped finite", s.boxSize.x.isFinite && s.boxSize.y.isFinite)
+}
+if let b = ParticleSystem.parse(["emitter": [["name": "boxrandom", "distancemax": Double.nan, "rate": 50]]]) {
+    Check.that("a NaN box distancemax is clamped finite", b.boxSize.x.isFinite && b.boxSize.y.isFinite)
+}
 Check.that("rejects a system with no emitter", ParticleSystem.parse(["maxcount": 10]) == nil)
 Check.that("rejects a system with a zero spawn rate",
            ParticleSystem.parse(["emitter": [["name": "boxrandom", "rate": 0]]]) == nil)
