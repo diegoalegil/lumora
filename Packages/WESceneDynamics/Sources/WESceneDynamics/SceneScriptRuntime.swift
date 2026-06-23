@@ -149,17 +149,22 @@ public final class SceneScriptRuntime {
         var result: [ScriptedLayer] = []
         for i in 0 ..< min(count, 4096) {
             guard let layer = array.objectAtIndexedSubscript(i), layer.isObject else { continue }
+            // The script is untrusted .pkg JS; it can set a transform component to NaN/±Inf (e.g. a divide by
+            // zero). Clamp each readback to the layer default so a non-finite value never reaches the Metal
+            // bar vertex shader as a non-finite position/scale (GPU-undefined), matching the renderer's own
+            // .isFinite convention.
+            func finite(_ x: Double, _ d: Float) -> Float { let f = Float(x); return f.isFinite ? f : d }
             func vec3(_ key: String, _ d: SIMD3<Float>) -> SIMD3<Float> {
                 guard let v = layer.objectForKeyedSubscript(key), v.isObject else { return d }
-                return SIMD3(Float(v.objectForKeyedSubscript("x")?.toDouble() ?? Double(d.x)),
-                             Float(v.objectForKeyedSubscript("y")?.toDouble() ?? Double(d.y)),
-                             Float(v.objectForKeyedSubscript("z")?.toDouble() ?? Double(d.z)))
+                return SIMD3(finite(v.objectForKeyedSubscript("x")?.toDouble() ?? Double(d.x), d.x),
+                             finite(v.objectForKeyedSubscript("y")?.toDouble() ?? Double(d.y), d.y),
+                             finite(v.objectForKeyedSubscript("z")?.toDouble() ?? Double(d.z), d.z))
             }
             result.append(ScriptedLayer(
                 origin: vec3("origin", .zero),
                 scale: vec3("scale", SIMD3(1, 1, 1)),
                 color: vec3("color", SIMD3(1, 1, 1)),
-                alpha: Float(layer.objectForKeyedSubscript("alpha")?.toDouble() ?? 1),
+                alpha: finite(layer.objectForKeyedSubscript("alpha")?.toDouble() ?? 1, 1),
                 model: layer.objectForKeyedSubscript("model").flatMap { $0.isString ? $0.toString() : nil },
                 alignment: layer.objectForKeyedSubscript("alignment").flatMap { $0.isString ? $0.toString() : nil }))
         }
