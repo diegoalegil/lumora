@@ -1311,6 +1311,10 @@ public final class SceneRenderer {
     /// `time = 0` is the still composite (no sway).
     public func render(_ scene: PreparedScene, width: Int, height: Int, time: Double = 0,
                        audio: AudioSpectrumProvider = SilentSpectrum()) -> RenderedFrame? {
+        // A zero (or negative) render size makes Metal abort the whole process on the texture descriptor — a
+        // view's bounds can momentarily be 0 during window setup/teardown or a display reconfiguration. There's
+        // nothing to draw at that size, so report no frame instead of crashing.
+        guard width > 0, height > 0 else { return nil }
         // The effect-texture pool is keyed by render size; after a display resize/rotation the old-size targets
         // (tens of MB each at 4K) would be retained but never borrowed again. Drop the pool on a size change so
         // it can't grow for the life of the wallpaper. (Within a size, it's reused frame-to-frame as intended.)
@@ -1721,6 +1725,9 @@ public final class SceneRenderer {
     /// Set up an offscreen target, run `draw` inside a clear render pass, and read the pixels back.
     private func withRenderPass(clearColor: SceneVec3, width: Int, height: Int,
                                 draw: (MTLRenderCommandEncoder) -> Void) -> RenderedFrame? {
+        // Metal aborts the process if a texture descriptor has a zero dimension; the public render entries that
+        // reach here (render(texture:)/render(decoded:)) take an untrusted size, so guard it here too.
+        guard width > 0, height > 0 else { return nil }
         // Reuse the frame target across renders of the same size: the animation loop renders the same
         // dimensions every frame and each render is synchronous (waitUntilCompleted), so the previous
         // frame is fully read back before the next reuses the texture — no per-frame 33 MB allocation.
