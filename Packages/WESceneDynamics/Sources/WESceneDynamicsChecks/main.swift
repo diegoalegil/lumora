@@ -137,6 +137,52 @@ if let thrower = SceneScriptRuntime(script: "export function update(v){ throw ne
 let audioish = SceneScriptRuntime(script: "var b = engine.registerAudioBuffers(engine.AUDIO_RESOLUTION_64); export function update(v){ return v; }")
 Check.that("an engine-using script loads against the stub", audioish != nil)
 
+// A real WE "3D clock" module: it `import`s WEMath and tilts itself toward the cursor with Vec3 arithmetic
+// (origin.subtract(cursor).divide(canvasSize).multiply(50) + WEMath.mix). JavaScriptCore can't run ES-module
+// `import`, so before this support the whole module failed to define update() and the editor placeholder
+// ("<3D Clock>") rendered instead of the time. Verify the module loads and update() returns the HH:MM:SS time.
+let clock3D = """
+'use strict';
+import * as WEMath from 'WEMath';
+let delimiter = ':';
+var shadowLayer;
+export function update(value) {
+    let time = new Date();
+    let hours = ("00" + time.getHours()).slice(-2);
+    let minutes = ("00" + time.getMinutes()).slice(-2);
+    let seconds = ("00" + time.getSeconds()).slice(-2);
+    value = hours + delimiter + minutes + delimiter + seconds;
+    var delta = thisLayer.origin.subtract(input.cursorWorldPosition);
+    delta = delta.divide(new Vec3(engine.canvasSize, 1));
+    var rotation = new Vec3(delta.y, -delta.x, 4 * WEMath.mix(delta.x, -delta.x, Math.min(1, Math.max(0, delta.y * 0.1 + 0.5)))).multiply(50);
+    thisLayer.angles = rotation;
+    shadowLayer.text = value;
+    return value;
+}
+export function init() {
+    shadowLayer = thisScene.createLayer({ text: 'shadow', color: '0 0 0', alpha: 1, pointsize: thisLayer.pointsize, font: thisLayer.font, perspective: true });
+    shadowLayer.origin = thisLayer.origin;
+}
+"""
+if let clock = SceneScriptRuntime(script: clock3D, baseOrigin: SIMD3(300, 200, 0)) {
+    Check.that("a WEMath-importing 3D-clock module loads (import stripped, helper provided)", clock.loaded)
+    let out = clock.updateString("")
+    Check.that("the 3D clock update() returns HH:MM:SS, not the placeholder (got \(out ?? "nil"))",
+               out != nil && out!.count == 8 && out!.filter { $0 == ":" }.count == 2)
+} else {
+    Check.that("3D-clock runtime constructs", false)
+}
+// WEMath helpers behave like their GLSL namesakes; Vec3 arithmetic returns the expected components.
+if let m = SceneScriptRuntime(script: """
+export function update(v) {
+    var a = new Vec3(1, 2, 3).add(new Vec3(4, 5, 6));       // (5,7,9)
+    var b = new Vec3(10, 20, 30).divide(new Vec3(2, 4, 5)); // (5,5,6)
+    return WEMath.clamp(WEMath.mix(0, 10, 0.5), 0, 4) + a.x + b.z; // 4 + 5 + 6 = 15
+}
+""") {
+    Check.that("WEMath + Vec3 arithmetic compute correctly", m.updateNumber(0) == 15)
+}
+
 Check.section("SceneScriptRuntime — scene-graph (audio bars)")
 // A representative WE audio-bar visualiser: declares properties, clones thisLayer into N bars in init(),
 // and sets each bar's height from the 64-band audio buffer in update(). Shape from the real bar scripts.
