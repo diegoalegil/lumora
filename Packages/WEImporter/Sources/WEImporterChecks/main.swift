@@ -591,6 +591,17 @@ if let pkg = try? ScenePackage.read(mediaPkg), let doc = try? SceneGraph.load(fr
     Check.that("a media-playback visibility widget is dropped at load (not drawn, like WE with no music)",
                doc.layers.isEmpty)
 }
+// A layer merely NAMED (or image-pathed) with a media-ish token but carrying NO media-event SCRIPT must NOT be
+// mistaken for a now-playing widget — the detection scans bound script source only, not names/paths.
+let mediaNameScene = #"{"objects":[{"name":"mediaThumbnailChanged_bg","image":"models/m.json","visible":true}]}"#
+let mediaNamePkg = buildPKG(version: "PKGV0009", files: [
+    ("scene.json", Data(mediaNameScene.utf8)), ("models/m.json", modelJSON),
+    ("materials/mat.json", materialJSON), ("materials/mytex.tex", Data("x".utf8)),
+])
+if let pkg = try? ScenePackage.read(mediaNamePkg), let doc = try? SceneGraph.load(from: pkg) {
+    Check.that("a layer named with a media token but no media script is kept (no false-positive hide)",
+               doc.layers.count == 1)
+}
 // A now-playing widget whose VISIBILITY is ungated (no visible script — defaults shown) but whose bound
 // property/text script subscribes to media events (album art tinted on mediaThumbnailChanged, a song-title
 // text returning mediaData) must still be dropped: its graphic only means anything with music, so WE shows

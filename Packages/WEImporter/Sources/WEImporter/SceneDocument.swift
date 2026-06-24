@@ -456,7 +456,7 @@ public enum SceneGraph {
     /// (registerAudioBuffers / AUDIO_RESOLUTION) and merely tint by the album art — without music they already
     /// collapse to zero height, so they must keep rendering normally.
     static func isMediaPlayerWidget(_ object: [String: Any]) -> Bool {
-        let scripts = allStrings(in: object)
+        let scripts = boundScriptText(in: object)
         let mediaEvents = ["mediaPlaybackChanged", "mediaThumbnailChanged", "mediaPropertiesChanged",
                            "MediaPlaybackEvent", "MediaThumbnailEvent", "MediaPropertiesEvent"]
         guard mediaEvents.contains(where: { scripts.contains($0) }) else { return false }
@@ -464,15 +464,20 @@ public enum SceneGraph {
         return true
     }
 
-    /// Concatenate every String value reachable in an object's JSON (names, paths, and — what we care about —
-    /// the bound property/text scripts), so a single substring scan can spot which WE callbacks a layer wires
-    /// up. Bounded: one scene object holds a handful of KB of script at most.
-    private static func allStrings(in object: [String: Any]) -> String {
+    /// Concatenate only the SCRIPT source bound anywhere in an object's JSON — the value of every `"script"`
+    /// key (a property binding's `{value, script}`, a text field's script, etc.) — so a substring scan can spot
+    /// which WE callbacks a layer wires up. Deliberately NOT the object's names or image/material paths: a layer
+    /// merely *named* or *pathed* with a media-ish token (e.g. `materials/mediaThumbnail_bg.tex`) must not be
+    /// mistaken for a now-playing widget. Bounded: one object holds a handful of KB of script at most.
+    private static func boundScriptText(in object: [String: Any]) -> String {
         var out = ""
         func walk(_ any: Any) {
-            if let s = any as? String { out += s; out += "\n" }
-            else if let d = any as? [String: Any] { for v in d.values { walk(v) } }
-            else if let a = any as? [Any] { for v in a { walk(v) } }
+            if let d = any as? [String: Any] {
+                if let s = d["script"] as? String { out += s; out += "\n" }
+                for (k, v) in d where k != "script" { walk(v) }
+            } else if let a = any as? [Any] {
+                for v in a { walk(v) }
+            }
         }
         walk(object)
         return out

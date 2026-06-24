@@ -165,9 +165,13 @@ public final class SceneScriptRuntime {
         // imports WEMath would fail to define update() and the editor placeholder ("<3D Clock>") would render
         // instead of the time. Neutralise the module wrappers: drop each `import` line (the helper it names is
         // provided as a prelude global) and strip the `export ` keyword so the declarations become plain globals.
+        // The import match ends at the statement's `;` (or end of line) so any code after a same-line import is
+        // preserved. `export ` is stripped only at a STATEMENT BOUNDARY — start of line, or right after `;`/`{`/`}`
+        // — which still neutralises a mid-line `…; export function…` yet leaves an "export " INSIDE a string
+        // literal (e.g. `return "export function …";`, preceded by `"`) intact.
         let moduleStripped = script
-            .replacingOccurrences(of: "(?m)^[ \\t]*import\\b[^\\n]*$", with: "", options: .regularExpression)
-            .replacingOccurrences(of: "export ", with: "")
+            .replacingOccurrences(of: "(?m)^[ \\t]*import\\b[^;\\n]*(?:;|$)", with: "", options: .regularExpression)
+            .replacingOccurrences(of: "(?m)(^[ \\t]*|[;{}][ \\t]*)export[ \\t]+", with: "$1", options: .regularExpression)
         context.evaluateScript(moduleStripped)
 
         if let props = context.objectForKeyedSubscript("scriptProperties"), !props.isUndefined,

@@ -1228,7 +1228,9 @@ public final class SceneRenderer {
             // life-fraction span, holding flat outside it. Default ramp (1→1) leaves the size unchanged.
             let sizeT = s.sizeEndTime > s.sizeStartTime
                 ? max(0, min(1, (lifeFrac - s.sizeStartTime) / (s.sizeEndTime - s.sizeStartTime))) : 1
-            var size = baseSize * lerp(s.sizeStart, s.sizeEnd, sizeT)
+            // A negative size (a malformed `sizerandom` min/max or a negative sizechange in untrusted .pkg JSON)
+            // would flip the sprite quad's half-extent and render it inverted/garbled — clamp to non-negative.
+            var size = max(0, baseSize * lerp(s.sizeStart, s.sizeEnd, sizeT))
             // Oscillators (oscillatealpha/size/position): a per-particle sine at frequency f, phase ph. Alpha
             // and size map the 0…1 envelope into their multiplier range; position displaces along its mask by
             // amp·sin. Each picks f/phase/amp from its parsed ranges via its own rand channels (20–26).
