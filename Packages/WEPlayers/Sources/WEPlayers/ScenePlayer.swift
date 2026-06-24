@@ -82,11 +82,15 @@ public final class ScenePlayer: WallpaperRenderer {
     /// scene.json or in a `scripts/*.js` file, not in a shader.
     private static func usesAudio(_ package: ScenePackage) -> Bool {
         for entry in package.entries {
-            guard let text = String(data: entry.data, encoding: .utf8) else { continue }
             let path = entry.path
-            if path.hasSuffix(".frag") || path.hasSuffix(".vert") {
+            let isShader = path.hasSuffix(".frag") || path.hasSuffix(".vert")
+            let isScript = path.hasSuffix(".js") || path == "scene.json"
+            // Only shader/script entries can reference audio. Check the suffix BEFORE decoding, so a multi-MB
+            // .tex atlas or embedded .mp4 isn't materialised as a UTF-8 string on the load path.
+            guard isShader || isScript, let text = String(data: entry.data, encoding: .utf8) else { continue }
+            if isShader {
                 if text.contains("g_AudioSpectrum") || text.contains("audioprocessing") { return true }
-            } else if path.hasSuffix(".js") || path == "scene.json" {
+            } else {
                 if text.contains("registerAudioBuffers") || text.contains("AUDIO_RESOLUTION") { return true }
             }
         }
