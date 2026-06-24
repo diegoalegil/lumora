@@ -26,14 +26,20 @@ public struct WallpaperRouter: Sendable {
         return ResolvedWallpaper(ref: ref, type: type, manifest: manifest, mainFileURL: mainFileURL)
     }
 
-    /// True when `url`, after collapsing any `.`/`..`, still points to a location strictly inside
-    /// `folder`. Comparison is purely lexical (`.standardized`, not `.standardizedFileURL`): the latter
-    /// resolves symlinks only for paths that exist on disk, which would compare an existing folder
-    /// against a not-yet-existing asset inconsistently. The trailing-slash guard rejects a sibling
-    /// whose name merely shares the prefix (`/library/wall` is not "inside" `/library/wallpaper`).
+    /// True when `url` points to a location strictly inside `folder`. Two layers, both must hold:
+    /// 1. Lexical: collapse `.`/`..` WITHOUT touching the filesystem (`.standardized`) so an absolute or
+    ///    `../` escape is rejected even when the asset doesn't exist on disk yet.
+    /// 2. Symlink-resolved: the bundle is untrusted Workshop content, so it could contain a symlinked
+    ///    subfolder pointing back out; resolve symlinks on both sides and re-check. `resolvingSymlinksInPath`
+    ///    resolves the existing prefix (the folder and any real subfolders) consistently for both URLs and
+    ///    leaves a not-yet-existing leaf in place, so the comparison stays well-defined.
+    /// The trailing-slash guard rejects a sibling whose name merely shares the prefix (`/library/wall` is
+    /// not "inside" `/library/wallpaper`).
     static func path(_ url: URL, isWithin folder: URL) -> Bool {
         let base = folder.standardized.path
-        return url.standardized.path.hasPrefix(base + "/")
+        guard url.standardized.path.hasPrefix(base + "/") else { return false }
+        let resolvedBase = folder.resolvingSymlinksInPath().standardized.path
+        return url.resolvingSymlinksInPath().standardized.path.hasPrefix(resolvedBase + "/")
     }
 
     /// Load `project.json` from a folder and resolve in one step.

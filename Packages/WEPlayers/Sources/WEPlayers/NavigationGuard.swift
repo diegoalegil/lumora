@@ -19,7 +19,9 @@ public struct WallpaperNavigationPolicy: Sendable, Equatable {
     /// - Parameter directory: when set, a `file://` navigation must resolve inside it. Pass `nil` when
     ///   the page is served over a private scheme whose handler already constrains what it serves.
     public init(confinedTo directory: URL? = nil) {
-        self.allowedDirectoryPath = directory?.standardizedFileURL.path
+        // Resolve symlinks here too so the allowed directory and a candidate URL are compared in the same,
+        // fully-resolved form (see `allows`).
+        self.allowedDirectoryPath = directory?.standardizedFileURL.resolvingSymlinksInPath().path
     }
 
     /// Whether navigating to `url` is allowed.
@@ -30,8 +32,10 @@ public struct WallpaperNavigationPolicy: Sendable, Equatable {
             // Use standardizedFileURL, not standardized: `standardized` collapses only the LITERAL `.`/`..`
             // in the URL string without percent-decoding first, so a `%2e%2e` escape survives it and `.path`
             // then decodes it to `..` — a traversal `hasPrefix(dir)` would wrongly admit. standardizedFileURL
-            // builds from the decoded file path, collapses `..`, and resolves symlinks for existing components.
-            let p = url.standardizedFileURL.path
+            // builds from the decoded file path and collapses `..`, but it does NOT resolve symlinks, so a
+            // symlink inside the wallpaper folder pointing outside would still pass the prefix check; resolve
+            // symlinks too (the allowed directory is resolved the same way at init).
+            let p = url.standardizedFileURL.resolvingSymlinksInPath().path
             return p == dir || p.hasPrefix(dir + "/")
         }
         return true  // local custom scheme, data:, or an unconfined file load

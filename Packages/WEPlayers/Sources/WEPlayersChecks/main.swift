@@ -147,6 +147,26 @@ Check.that("allows about:blank (teardown)", confined.allows(URL(string: "about:b
 let schemeServed = WallpaperNavigationPolicy()
 Check.that("allows the private asset scheme", schemeServed.allows(URL(string: "lumora-asset://asset/index.html")))
 Check.that("still blocks remote without confinement", !schemeServed.allows(URL(string: "https://evil.example")))
+// An untrusted bundle can plant a symlink: a real symlinked subfolder pointing OUT of the wallpaper folder
+// must not let a file://<folder>/link/... navigation escape. Needs a real on-disk symlink to exercise.
+do {
+    let fm = FileManager.default
+    let root = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+        .appendingPathComponent("lumora-navguard-\(getpid())", isDirectory: true)
+    let inside = root.appendingPathComponent("wp", isDirectory: true)
+    let outside = root.appendingPathComponent("secret", isDirectory: true)
+    try? fm.createDirectory(at: inside, withIntermediateDirectories: true)
+    try? fm.createDirectory(at: outside, withIntermediateDirectories: true)
+    try? Data("ok".utf8).write(to: inside.appendingPathComponent("index.html"))
+    try? Data("secret".utf8).write(to: outside.appendingPathComponent("x.html"))
+    let link = inside.appendingPathComponent("link")
+    try? fm.createSymbolicLink(at: link, withDestinationURL: outside)
+    let policy = WallpaperNavigationPolicy(confinedTo: inside)
+    Check.that("allows a real in-folder asset", policy.allows(inside.appendingPathComponent("index.html")))
+    Check.that("blocks a symlinked subfolder escaping the wallpaper folder",
+               !policy.allows(link.appendingPathComponent("x.html")))
+    try? fm.removeItem(at: root)
+}
 
 Check.section("AssetByteRange (video fallback Range serving)")
 Check.that("open-ended range runs to EOF", AssetByteRange.parse("bytes=100-", total: 1000) == 100 ..< 1000)

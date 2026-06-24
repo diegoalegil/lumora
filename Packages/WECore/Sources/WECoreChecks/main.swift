@@ -181,6 +181,30 @@ let siblingManifest = ProjectManifest(title: "x", rawType: "video", file: "../86
 Check.throwsError("router rejects prefix-sibling escape", {
     try router.resolve(ref: WallpaperRef(folderURL: folder, manifest: siblingManifest), manifest: siblingManifest)
 }, satisfies: { $0 is RoutingError })
+// A real symlinked subfolder inside the bundle pointing OUT of the folder must be rejected too — the lexical
+// check alone would admit it. Needs a real on-disk symlink to exercise.
+do {
+    let fm = FileManager.default
+    let root = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+        .appendingPathComponent("lumora-router-\(getpid())", isDirectory: true)
+    let wp = root.appendingPathComponent("wp", isDirectory: true)
+    let outside = root.appendingPathComponent("outside", isDirectory: true)
+    try? fm.createDirectory(at: wp, withIntermediateDirectories: true)
+    try? fm.createDirectory(at: outside, withIntermediateDirectories: true)
+    try? fm.createSymbolicLink(at: wp.appendingPathComponent("link"), withDestinationURL: outside)
+    // The leaf must exist for there to be anything to leak (and for symlink resolution to bite), mirroring a
+    // real "read a file that lives outside the bundle" attack.
+    try? Data("secret".utf8).write(to: outside.appendingPathComponent("bg.mp4"))
+    let symManifest = ProjectManifest(title: "x", rawType: "video", file: "link/bg.mp4")
+    Check.throwsError("router rejects a symlinked subfolder escaping the folder", {
+        try router.resolve(ref: WallpaperRef(folderURL: wp, manifest: symManifest), manifest: symManifest)
+    }, satisfies: { ($0 as? RoutingError) == .unsafeMainFile(file: "link/bg.mp4") })
+    let okManifest = ProjectManifest(title: "x", rawType: "video", file: "real/bg.mp4")
+    try? fm.createDirectory(at: wp.appendingPathComponent("real"), withIntermediateDirectories: true)
+    Check.that("router allows a real nested asset under a temp folder",
+               (try? router.resolve(ref: WallpaperRef(folderURL: wp, manifest: okManifest), manifest: okManifest)) != nil)
+    try? fm.removeItem(at: root)
+}
 let nestedManifest = ProjectManifest(title: "x", rawType: "video", file: "assets/bg.mp4")
 if let nested = Check.noThrow("router allows nested in-folder asset", {
     try router.resolve(ref: WallpaperRef(folderURL: folder, manifest: nestedManifest), manifest: nestedManifest)
