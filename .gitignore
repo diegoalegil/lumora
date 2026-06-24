@@ -17,6 +17,13 @@ DerivedData/
 we-refs/
 **/we-refs/
 
+# Local Wallpaper Engine content (copyrighted Workshop wallpapers the user owns, used only as local test
+# fixtures) must never be committed. Versioned here as a fail-closed guard so it holds on a fresh checkout,
+# not only via a machine-local .git/info/exclude.
+431960/
+we-wallpapers/
+**/431960/
+
 # Parity corpus: FAIL-CLOSED. Ignore EVERYTHING under the corpus (copyrighted wallpaper pixels /
 # assets / captured frames) and re-include ONLY the manifest + markdown docs. This avoids the
 # allowlist-of-extensions trap where a new capture format (.mov/.gif/.heic/.tga/…) sneaks in.
