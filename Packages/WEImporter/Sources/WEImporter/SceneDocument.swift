@@ -285,6 +285,9 @@ public enum SceneGraph {
 
         let general = root["general"] as? [String: Any] ?? [:]
         let ortho = general["orthogonalprojection"] as? [String: Any] ?? [:]
+        // The scene's half-extents — the fallback spawn box for a boxrandom particle emitter that ships no
+        // distancemax (so its sprites spread across the wallpaper like Wallpaper Engine, not pile at a point).
+        let sceneBox = SceneVec3(x: Double(int(ortho["width"])) / 2, y: Double(int(ortho["height"])) / 2, z: 0)
         let clearColor = SceneVec3(parsing: general["clearcolor"] as? String ?? "0 0 0")
         // Scene-level bloom: only when the flag is on AND the strength is meaningful (many scenes ship
         // `bloom:true` with strength 0). Clamp both against malformed values.
@@ -342,7 +345,7 @@ public enum SceneGraph {
                let particleJSON = json(package.entry(named: particlePath)) {
                 let objectOrigin = worldOrigin(object, 0)
                 particleSystems.append(contentsOf:
-                    collectParticleSystems(from: particleJSON, at: objectOrigin, in: package, depth: 0))
+                    collectParticleSystems(from: particleJSON, at: objectOrigin, in: package, depth: 0, sceneBox: sceneBox))
                 continue
             }
             // A text object (clock, label, counter, …) draws rendered glyphs, not a packed texture. Its
@@ -706,9 +709,10 @@ public enum SceneGraph {
     /// and is offset by its (usually zero) origin. Depth-bounded so a cyclic or pathologically nested `.pkg`
     /// can't recurse without limit; a child that can't be parsed is simply skipped.
     private static func collectParticleSystems(from particleJSON: [String: Any], at worldOrigin: SceneVec3,
-                                               in package: ScenePackage, depth: Int) -> [ParticleSystem] {
+                                               in package: ScenePackage, depth: Int,
+                                               sceneBox: SceneVec3? = nil) -> [ParticleSystem] {
         var out: [ParticleSystem] = []
-        if var system = ParticleSystem.parse(particleJSON) {
+        if var system = ParticleSystem.parse(particleJSON, sceneBox: sceneBox) {
             system.origin = SceneVec3(x: system.origin.x + worldOrigin.x,
                                       y: system.origin.y + worldOrigin.y,
                                       z: system.origin.z + worldOrigin.z)
@@ -719,7 +723,7 @@ public enum SceneGraph {
             guard let name = child["name"] as? String, let childJSON = json(package.entry(named: name)) else { continue }
             let off = vec(child["origin"])   // a child's emitter origin is relative to the parent (usually 0)
             let childWorld = SceneVec3(x: worldOrigin.x + off.x, y: worldOrigin.y + off.y, z: worldOrigin.z + off.z)
-            out.append(contentsOf: collectParticleSystems(from: childJSON, at: childWorld, in: package, depth: depth + 1))
+            out.append(contentsOf: collectParticleSystems(from: childJSON, at: childWorld, in: package, depth: depth + 1, sceneBox: sceneBox))
         }
         return out
     }

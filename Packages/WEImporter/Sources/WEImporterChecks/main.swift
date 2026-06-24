@@ -1042,6 +1042,19 @@ if let system = ParticleSystem.parse(boxParticle) {
 } else {
     Check.that("a box particle system parses", false)
 }
+// A boxrandom emitter with NO distancemax adopts the scene half-extents as its spawn box, so its sprites spread
+// across the wallpaper like Wallpaper Engine instead of piling into a dense blob at the emitter origin.
+let noBoxEmitter: [String: Any] = ["emitter": [["name": "boxrandom", "rate": 50]]]
+if let s = ParticleSystem.parse(noBoxEmitter, sceneBox: SceneVec3(x: 960, y: 540, z: 0)) {
+    Check.that("boxrandom without distancemax adopts the scene box", s.boxSize.x == 960 && s.boxSize.y == 540)
+}
+if let s0 = ParticleSystem.parse(noBoxEmitter) {
+    Check.that("boxrandom without distancemax or a scene box stays a point (back-compat)", s0.boxSize.x == 0 && s0.boxSize.y == 0)
+}
+if let s2 = ParticleSystem.parse(["emitter": [["name": "boxrandom", "rate": 50, "distancemax": "100 80 0"]]],
+                                  sceneBox: SceneVec3(x: 960, y: 540, z: 0)) {
+    Check.that("an explicit box distancemax overrides the scene-box default", s2.boxSize.x == 100 && s2.boxSize.y == 80)
+}
 // A sphere emitter's distancemax is a bare JSON NUMBER (this is how the real library encodes it), not a
 // string — the parse must read the scalar radius and spread it across x/y, not drop it to zero.
 let sphereParticle: [String: Any] = [

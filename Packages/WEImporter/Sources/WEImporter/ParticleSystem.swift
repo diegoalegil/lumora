@@ -126,8 +126,12 @@ public struct ParticleSystem: Sendable, Equatable {
     public var cpOffset: SceneVec3 { attractors.first?.offset ?? SceneVec3(x: 0, y: 0, z: 0) }
     public var vortex: Vortex?   // vortex operator: orbit particles about a centre (nil = none)
 
-    /// Parse a particle system from its JSON object, or nil if it lacks an emitter we can drive.
-    public static func parse(_ json: [String: Any], materialOverride: String? = nil) -> ParticleSystem? {
+    /// Parse a particle system from its JSON object, or nil if it lacks an emitter we can drive. `sceneBox`
+    /// (the scene's half-extents) is the fallback spawn box for a `boxrandom` emitter that ships NO `distancemax`
+    /// — Wallpaper Engine spreads such an emitter across the scene (a fine ambient field), whereas defaulting to
+    /// a zero box would pile every particle at the emitter origin (a dense blob/orb instead of a distributed field).
+    public static func parse(_ json: [String: Any], materialOverride: String? = nil,
+                             sceneBox: SceneVec3? = nil) -> ParticleSystem? {
         guard let emitters = json["emitter"] as? [[String: Any]], let emitter = emitters.first else { return nil }
 
         // distancemax is a box's half-extents, or (for a sphere emitter) a scalar radius — spread it
@@ -149,6 +153,13 @@ public struct ParticleSystem: Sendable, Equatable {
         }
         if kind.hasPrefix("sphere"), boxSize.y == 0, boxSize.z == 0 {
             boxSize = SceneVec3(x: boxSize.x, y: boxSize.x, z: 0)
+        }
+        // A boxrandom emitter that ships NO distancemax (the key is absent, not "0 0 0") should spread across the
+        // scene, not collapse to a point — WE renders these as a fine field over the whole wallpaper, while a zero
+        // box piles every sprite at the emitter origin (the dense magenta-square "orbs" bug). Only apply when the
+        // key is truly absent and a scene box is known, so an explicit "0 0 0" point emitter is left untouched.
+        if kind.hasPrefix("box"), emitter["distancemax"] == nil, let sceneBox, sceneBox.x > 0, sceneBox.y > 0 {
+            boxSize = sceneBox
         }
 
         var system = ParticleSystem(
