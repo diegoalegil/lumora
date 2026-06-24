@@ -117,12 +117,21 @@ public struct ScenePackage: Sendable, Equatable {
         let blobBase = cursor
         var entries: [ScenePackageEntry] = []
         entries.reserveCapacity(min(count, 4096))
+        // The per-entry bounds check confirms each blob lies inside the file, but entry offsets may overlap, so
+        // it does not bound the TOTAL bytes copied: a crafted .pkg whose many entries all point at one large
+        // blob copies it once per entry, amplifying a tiny file into gigabytes of resident memory. A real WE
+        // package is contiguous (the blobs tile the region exactly once), so the copied total is about the file
+        // size; cap it at a small multiple of the data with a fixed floor for small files.
+        let copyBudget = max(64 << 20, data.count * 2)
+        var copied = 0
         for entry in table {
             let start = blobBase + entry.offset
             let end = start + entry.size
             guard entry.offset >= 0, entry.size >= 0, end <= data.count else {
                 throw ScenePackageError.entryOutOfBounds(path: entry.path)
             }
+            copied += entry.size
+            guard copied <= copyBudget else { throw ScenePackageError.truncated }
             let slice = data.subdata(in: base + start ..< base + end)
             entries.append(ScenePackageEntry(path: entry.path, data: slice))
         }

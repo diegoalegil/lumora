@@ -338,6 +338,26 @@ Check.throwsError("rejects an entry pointing out of bounds", {
     d.append(le32(1)); d.append(Data("x".utf8)); d.append(le32(0)); d.append(le32(9_999))
     return try ScenePackage.read(d)
 }, satisfies: { if case ScenePackageError.entryOutOfBounds = $0 { return true }; return false })
+// A crafted package whose many TOC entries all point at the SAME blob (overlapping offset 0): every entry is
+// in-bounds on its own, but copying each one would amplify a ~1 MB file into tens of MB of resident memory.
+// The cumulative-size cap must reject it instead of copying past the budget.
+Check.throwsError("rejects cumulative-size amplification from overlapping entries", {
+    let blobSize = 1 << 20          // 1 MB blob, reused by every entry
+    let entryCount = 70             // 70 × 1 MB = 70 MB copied, past the 64 MB floor
+    var d = le32(8); d.append(Data("PKGV0009".utf8))
+    d.append(le32(entryCount))
+    for _ in 0 ..< entryCount {
+        d.append(le32(1)); d.append(Data("x".utf8))    // 1-byte path
+        d.append(le32(0))                              // offset 0 — every entry overlaps the same blob
+        d.append(le32(blobSize))                       // size = the whole blob (in-bounds individually)
+    }
+    d.append(Data(count: blobSize))                    // the single shared blob
+    return try ScenePackage.read(d)
+}, satisfies: { if case ScenePackageError.truncated = $0 { return true }; return false })
+// A legitimately large contiguous package (each blob tiles the region exactly once) stays under the cap.
+Check.that("accepts a large contiguous package within the cumulative cap",
+           (try? ScenePackage.read(buildPKG(version: "PKGV0009",
+               files: (0 ..< 8).map { ("f\($0)", Data(count: 1 << 20)) })))?.entries.count == 8)
 
 // MARK: - SceneTexture (.tex header reader)
 
