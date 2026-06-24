@@ -527,7 +527,7 @@ public final class SceneRenderer {
         descriptor.vertexFunction = vertex
         descriptor.fragmentFunction = fragment
         let color = descriptor.colorAttachments[0]!
-        color.pixelFormat = .rgba8Unorm
+        color.pixelFormat = .rgba8Unorm_srgb   // matches the sRGB composite target (linear blending)
         color.isBlendingEnabled = true
         color.rgbBlendOperation = .add
         color.alphaBlendOperation = .add
@@ -551,7 +551,7 @@ public final class SceneRenderer {
         descriptor.fragmentFunction = fragment
         descriptor.vertexDescriptor = vertexDescriptor
         let color = descriptor.colorAttachments[0]!
-        color.pixelFormat = .rgba8Unorm
+        color.pixelFormat = .rgba8Unorm_srgb   // matches the sRGB composite target (linear blending)
         color.isBlendingEnabled = true
         color.rgbBlendOperation = .add
         color.alphaBlendOperation = .add
@@ -573,7 +573,7 @@ public final class SceneRenderer {
         descriptor.vertexFunction = vertex
         descriptor.fragmentFunction = fragment
         let color = descriptor.colorAttachments[0]!
-        color.pixelFormat = .rgba8Unorm
+        color.pixelFormat = .rgba8Unorm_srgb   // matches the sRGB composite target (linear blending)
         color.isBlendingEnabled = true
         color.rgbBlendOperation = .add
         color.alphaBlendOperation = .add
@@ -1787,7 +1787,7 @@ public final class SceneRenderer {
             output = pooled
         } else {
             let descriptor = MTLTextureDescriptor.texture2DDescriptor(
-                pixelFormat: .rgba8Unorm, width: width, height: height, mipmapped: false)
+                pixelFormat: .rgba8Unorm_srgb, width: width, height: height, mipmapped: false)   // sRGB: layers blend in linear light, encode to sRGB on store (matches WE)
             descriptor.usage = [.renderTarget, .shaderRead]
             descriptor.storageMode = .shared
             guard let made = device.makeTexture(descriptor: descriptor) else { return nil }
