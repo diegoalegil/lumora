@@ -442,12 +442,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         settingsController.show()
     }
 
+    /// The preview image for a wallpaper: the manifest's named `preview` if it's on disk, else the first of the
+    /// common preview file names that exists (WE writes preview.gif as often as preview.jpg), else nil.
+    private func previewURL(for wallpaper: ResolvedWallpaper) -> URL? {
+        let folder = wallpaper.ref.folderURL
+        let fm = FileManager.default
+        if let named = wallpaper.manifest.preview, !named.isEmpty {
+            let url = folder.appendingPathComponent(named)
+            if fm.fileExists(atPath: url.path) { return url }
+        }
+        for name in ["preview.gif", "preview.jpg", "preview.png", "preview.jpeg"] {
+            let url = folder.appendingPathComponent(name)
+            if fm.fileExists(atPath: url.path) { return url }
+        }
+        return nil
+    }
+
     /// The installed wallpapers as display items for the settings Library grid.
     private func libraryItems() -> [WallpaperListItem] {
         playableWallpapers.map { wallpaper in
             WallpaperListItem(id: wallpaper.ref.id,
                               title: WallpaperLibrary.displayTitle(wallpaper),
-                              thumbnailURL: wallpaper.ref.folderURL.appendingPathComponent("preview.jpg"))
+                              thumbnailURL: previewURL(for: wallpaper))
         }
     }
 
