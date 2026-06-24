@@ -218,6 +218,9 @@ public final class PreparedScene {
     /// How many layers will be drawn (0 means nothing resolved — the caller should show a fallback).
     public var layerCount: Int { layers.count }
 
+    /// How many particle systems will be drawn (systems whose sprite couldn't be resolved faithfully are dropped).
+    public var particleCount: Int { particles.count }
+
     /// True if the scene has anything to draw — image layers or particles. A particle-only scene has no
     /// layers but still renders its sprites over the clear colour.
     public var isRenderable: Bool { !layers.isEmpty || !particles.isEmpty }
@@ -786,7 +789,15 @@ public final class SceneRenderer {
               let pass = (material["passes"] as? [[String: Any]])?.first
         else { return nil }
         let names = (pass["textures"] as? [Any])?.compactMap { $0 as? String } ?? []
-        guard let first = names.first, let sprite = spriteTexture(named: first, package: package) else { return nil }
+        guard let first = names.first else { return nil }
+        // Light-shaft / god-ray / beam sprites: WE draws these additively as faint volumetric rays whose look
+        // depends on the layer behind them and a soft falloff we don't reproduce; a packaged shaft sprite drawn
+        // straight is a hard bright streak/flare nothing like the scene in WE. The built-in procedural path
+        // already omits these (worse to draw a wrong bright blob than to leave the effect out); apply the same
+        // rule to a PACKAGED shaft sprite so it isn't rendered as a blown-out flare. (Halo/fog/glow/ember stay.)
+        let shaftLike = ["shaft", "beam", "godray", "god_ray", "lightray", "light_ray", "light_shaft"]
+        if shaftLike.contains(where: first.lowercased().contains) { return nil }
+        guard let sprite = spriteTexture(named: first, package: package) else { return nil }
         // Rain-on-glass droplets (REFRACT combo + a normal map) distort the scene behind each sprite. We
         // refract by sampling the composited background displaced by the droplet's normal map (see the
         // refractive render branch). Needs the second texture; without it we can't refract faithfully, so

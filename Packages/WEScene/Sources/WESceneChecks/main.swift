@@ -293,8 +293,24 @@ if let pkg = try? ScenePackage.read(partPkg), let doc = try? SceneGraph.load(fro
                renderer.render(prep, width: 8, height: 8, time: 1e30) != nil)
     Check.that("a particle scene renders at a non-finite time without trapping",
                renderer.render(prep, width: 8, height: 8, time: .infinity) != nil)
+    Check.that("a normal particle system is kept", prep.particleCount == 1)
 } else {
     Check.that("particle regression scene loads", false)
+}
+// A light-shaft / beam particle sprite renders in WE as a faint volumetric god-ray whose look depends on a soft
+// falloff and the layer behind it; drawn straight as a packaged additive sprite it's a hard bright flare nothing
+// like the scene (e.g. the balloon-girl wallpaper's blown-out streak over the balcony). Drop the system — the
+// same policy the built-in procedural sprites already use — rather than composite a wrong bright blob.
+let shaftPkg = buildPKG([
+    ("scene.json", Data(#"{"general":{"orthogonalprojection":{"width":8,"height":8},"clearcolor":"0 0 0"},"objects":[{"name":"s","particle":"models/s.json","origin":"4 4 0","visible":true}]}"#.utf8)),
+    ("models/s.json", Data(#"{"maxcount":16,"material":"materials/s.json","emitter":[{"name":"boxrandom","origin":"0 0 0","distancemax":"8 8 0","rate":50}],"initializer":[{"name":"lifetimerandom","min":1.0,"max":2.0}]}"#.utf8)),
+    ("materials/s.json", Data(#"{"passes":[{"blending":"additive","textures":["particle/light/light_shafts_0"]}]}"#.utf8)),
+])
+if let pkg = try? ScenePackage.read(shaftPkg), let doc = try? SceneGraph.load(from: pkg) {
+    Check.that("a light-shaft particle sprite is dropped (faint god-ray we can't match, not a bright flare)",
+               renderer.prepare(doc, package: pkg).particleCount == 0)
+} else {
+    Check.that("shaft particle scene loads", false)
 }
 
 // Aspect cover: a scene fills a differently-shaped target by scaling up the overflow axis (so it crops),
