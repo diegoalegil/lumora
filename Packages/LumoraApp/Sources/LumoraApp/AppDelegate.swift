@@ -417,6 +417,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         UserDefaults.standard.set(isPaused, forKey: Self.pausedKey)
         signalSource?.userPaused = isPaused
         coordinator?.evaluate()
+        // Pausing stops the renderers via the policy, but the playlist rotation runs off the wall clock, so
+        // without this it would keep advancing (and cross-fading) while "paused" and silently skip ahead.
+        // Freeze/resume the schedule too; resume carries over the elapsed time so nothing is cut short.
+        let now = ProcessInfo.processInfo.systemUptime
+        if isPaused { playlistCoordinator?.pause(now: now) } else { playlistCoordinator?.resume(now: now) }
         updateMenuState()
     }
 
