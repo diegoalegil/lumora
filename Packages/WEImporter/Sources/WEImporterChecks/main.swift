@@ -922,6 +922,24 @@ if let pkg = try? ScenePackage.read(effectPkg), let doc = try? SceneGraph.load(f
     Check.that("effect captures the scene's combo override", layer.effects.first?.combos["BLENDMODE"] == 2)
     Check.that("effect captures the material's sampler bindings", layer.effects.first?.textures == [nil, "util/noise"])
 }
+// An effect toggled off by a user property (`visible:{value:false}`, or a bare `false`) is disabled by default
+// in Wallpaper Engine — applied only when the user enables it. Lumora has no UI to flip it, so a default-off
+// effect must be SKIPPED (not rendered), matching WE's fresh-load state; an always-on (`true`/missing/`{value:true}`)
+// effect is kept. Two effects on one layer, one off, exercises the filter precisely.
+let effVisScene = #"{"objects":[{"image":"models/m.json","effects":[{"file":"effects/pulse/effect.json","visible":{"user":"glow","value":false},"passes":[{}]},{"file":"effects/pulse/effect.json","visible":{"user":"grade","value":true},"passes":[{}]},{"file":"effects/pulse/effect.json","visible":false,"passes":[{}]},{"file":"effects/pulse/effect.json","passes":[{}]}]}]}"#
+let effVisPkg = buildPKG(version: "PKGV0009", files: [
+    ("scene.json", Data(effVisScene.utf8)),
+    ("models/m.json", Data(#"{"material":"materials/mat.json"}"#.utf8)),
+    ("materials/mat.json", Data(#"{"passes":[{"textures":["t"]}]}"#.utf8)),
+    ("materials/t.tex", Data("x".utf8)),
+    ("effects/pulse/effect.json", Data(#"{"passes":[{"material":"materials/effects/pulse.json"}]}"#.utf8)),
+    ("materials/effects/pulse.json", Data(#"{"passes":[{"shader":"effects/pulse","textures":["t"]}]}"#.utf8)),
+])
+if let pkg = try? ScenePackage.read(effVisPkg), let doc = try? SceneGraph.load(from: pkg), let layer = doc.layers.first {
+    // Of the 4 effects: glow {value:false} skipped, grade {value:true} kept, bare false skipped, bare-absent kept → 2.
+    Check.that("default-off effects (visible.value:false / bare false) are skipped, always-on kept (2 of 4)",
+               layer.effects.count == 2)
+}
 // An effect's FBO downscale factor comes from untrusted effect.json and must land in the 1…16 the renderer
 // actually allocates — a 0 would size a zero/divide-by-zero buffer, a huge value would over-allocate. Pin the
 // clamp (no fbos appear in the effect above, so this is otherwise unexercised).

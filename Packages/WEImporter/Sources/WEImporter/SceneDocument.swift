@@ -519,10 +519,26 @@ public enum SceneGraph {
     /// wired through named `fbos`). Each pass → its material → shader, combos and aux textures; the pass's
     /// `target` and `bind` come from the effect.json. The user's `constantshadervalues` and combo overrides
     /// (e.g. the blend mode) are shared across the passes.
+    /// Whether an effect entry's `visible` field leaves it enabled by default. `true`/missing → on; a bare
+    /// `false` or a `{ "user": …, "value": false }` property binding → off (WE applies it only when the user
+    /// enables the property, which Lumora has no way to do, so the default state governs).
+    static func isEffectEnabled(_ visible: Any?) -> Bool {
+        if let flag = visible as? Bool { return flag }
+        if let dict = visible as? [String: Any], let flag = dict["value"] as? Bool { return flag }
+        return true
+    }
+
     static func effects(of object: [String: Any], in package: ScenePackage) -> [LayerEffect] {
         guard let entries = object["effects"] as? [[String: Any]] else { return [] }
         var result: [LayerEffect] = []
         for entry in entries {
+            // An effect can be toggled off by a user property: its `visible` is then a `{ "user": …, "value": false }`
+            // binding (or a bare `false`) whose `value` is the default state. Wallpaper Engine applies the effect
+            // only when that property is enabled, so a default-off effect (an optional colour tint, a background
+            // blur, a "fire colour" overlay) is NOT drawn on a fresh load. Lumora has no UI to flip it, so the
+            // default governs — skip a default-off effect rather than rendering one WE leaves off. A bare `true`,
+            // a `{ value: true }`, or a missing `visible` is always-on.
+            guard isEffectEnabled(entry["visible"]) else { continue }
             guard let file = entry["file"] as? String,
                   let effect = json(package.entry(named: file)),
                   let effectPasses = effect["passes"] as? [[String: Any]], !effectPasses.isEmpty else { continue }
