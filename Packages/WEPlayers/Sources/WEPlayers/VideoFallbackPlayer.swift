@@ -55,6 +55,7 @@ public final class VideoFallbackPlayer: WallpaperRenderer {
         webView.stopLoading()
         webView.loadHTMLString("", baseURL: nil)
         webView.removeFromSuperview()
+        handler.release()   // drop the memory-mapped video
     }
 }
 
@@ -94,6 +95,14 @@ final class AssetSchemeHandler: NSObject, WKURLSchemeHandler {
         self.html = html
         self.fileData = try? Data(contentsOf: fileURL, options: .mappedIfSafe)
         self.mime = VideoFallbackHTML.mimeType(forExtension: fileURL.pathExtension)
+    }
+
+    /// Drop the memory-mapped file when the player tears down, so an unmounted wallpaper doesn't keep a
+    /// (possibly large) video mapped in.
+    func release() {
+        fileURL = nil
+        fileData = nil
+        html = ""
     }
 
     func webView(_ webView: WKWebView, start urlSchemeTask: any WKURLSchemeTask) {

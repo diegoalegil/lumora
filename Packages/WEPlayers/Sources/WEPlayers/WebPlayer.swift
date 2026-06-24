@@ -88,7 +88,12 @@ public final class WebPlayer: WallpaperRenderer {
         let target = wallpaper.mainFileURL, folder = wallpaper.ref.folderURL
         Self.withBlockRemoteRules { [weak self] rules in
             guard let self else { return }
-            if let rules { self.webView.configuration.userContentController.add(rules) }
+            if let rules {
+                // Loading a second wallpaper on the same player would otherwise stack a duplicate rule list;
+                // the only content rules here are these block-remote ones, so clearing first is safe.
+                self.webView.configuration.userContentController.removeAllContentRuleLists()
+                self.webView.configuration.userContentController.add(rules)
+            }
             // Grant read access to the wallpaper folder so the page can reach its css/js/image assets.
             self.webView.loadFileURL(target, allowingReadAccessTo: folder)
         }
