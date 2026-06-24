@@ -433,10 +433,12 @@ do {
     Check.that("diff: an unchanged display is left alone", !diff.started.contains("D1") && !diff.restarted.contains("D1"))
     let removed = PlaybackPlanDiff(from: old, to: PlaybackPlan(byDisplay: ["D1": p1]))
     Check.that("diff: a dropped display stops", removed.stopped == ["D2"])
-    // editing a playlist (same id) does not restart it
+    // editing the active playlist (same id, changed contents) restarts it so the edit takes effect
     var edited = p1; edited.name = "P1-edited"
-    Check.that("editing a playlist's contents (same id) does not restart it",
-               PlaybackPlanDiff(from: PlaybackPlan(byDisplay: ["D1": p1]), to: PlaybackPlan(byDisplay: ["D1": edited])).isEmpty)
+    Check.that("editing the active playlist's contents restarts it",
+               PlaybackPlanDiff(from: PlaybackPlan(byDisplay: ["D1": p1]), to: PlaybackPlan(byDisplay: ["D1": edited])).restarted == ["D1"])
+    Check.that("a byte-identical plan still leaves the display running (no gratuitous flash)",
+               PlaybackPlanDiff(from: PlaybackPlan(byDisplay: ["D1": p1]), to: PlaybackPlan(byDisplay: ["D1": p1])).isEmpty)
 }
 
 Check.summarize()

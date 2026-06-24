@@ -32,8 +32,9 @@ public struct PlaybackPlan: Equatable, Sendable {
 }
 
 /// What changed between two plans, so the host updates only the affected displays: `started` displays gain a
-/// playlist, `stopped` lose theirs, `restarted` switched to a DIFFERENT playlist (by id). A display whose
-/// playlist kept the same id — even if its contents were edited — is left running (not in any list).
+/// playlist, `stopped` lose theirs, `restarted` changed which playlist runs OR had the running playlist EDITED
+/// (different id, items, interval, mode, or transition). A display whose playlist value is byte-for-byte
+/// unchanged is left running (not in any list), so an unrelated settings change never flashes it.
 public struct PlaybackPlanDiff: Equatable, Sendable {
     public let started: [String]
     public let stopped: [String]
@@ -43,7 +44,10 @@ public struct PlaybackPlanDiff: Equatable, Sendable {
         var started: [String] = [], stopped: [String] = [], restarted: [String] = []
         for (uuid, playlist) in new.byDisplay {
             if let existing = old.byDisplay[uuid] {
-                if existing.id != playlist.id { restarted.append(uuid) }
+                // Compare the whole value, not just the id: editing the active playlist's contents/interval/
+                // transition must take effect, which it can't if the controller (which captures them at init)
+                // is left untouched.
+                if existing != playlist { restarted.append(uuid) }
             } else {
                 started.append(uuid)
             }
