@@ -284,8 +284,10 @@ public struct ParticleSystem: Sendable, Equatable {
                 system.hasColorChange = true
                 system.colorChangeStart = vec3(op["startvalue"], default: 1)
                 system.colorChangeEnd = vec3(op["endvalue"], default: 1)
-                system.colorChangeStartTime = (op["starttime"] as? NSNumber)?.doubleValue ?? 0
-                system.colorChangeEndTime = (op["endtime"] as? NSNumber)?.doubleValue ?? 1
+                // Clamp the times to a finite [0,1] like the size operator above — a non-finite or out-of-range
+                // value from a bad .pkg would otherwise drive the tint interpolation into NaN.
+                system.colorChangeStartTime = clampFinite((op["starttime"] as? NSNumber)?.doubleValue ?? 0, 0, 1, 0)
+                system.colorChangeEndTime = clampFinite((op["endtime"] as? NSNumber)?.doubleValue ?? 1, 0, 1, 1)
             default: break
             }
         }
