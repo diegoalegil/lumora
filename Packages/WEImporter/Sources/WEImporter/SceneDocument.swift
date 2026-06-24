@@ -334,16 +334,15 @@ public enum SceneGraph {
             // nothing playing. Skip the whole layer. This generalises the visibility-script case (handled in
             // isVisible) to widgets whose visibility is ungated but whose graphic only means anything with music.
             if isMediaPlayerWidget(object) { continue }
-            // A particle object spawns sprites instead of drawing an image; collect it and move on.
+            // A particle object spawns sprites instead of drawing an image; collect it (and any child
+            // sub-emitters — an ember's glow, a shooting-star's trail, a magic charge's rays — which WE
+            // spawns alongside the parent) and move on.
             if let particlePath = object["particle"] as? String,
                isVisible(object["visible"]),
-               let particleJSON = json(package.entry(named: particlePath)),
-               var system = ParticleSystem.parse(particleJSON) {
+               let particleJSON = json(package.entry(named: particlePath)) {
                 let objectOrigin = worldOrigin(object, 0)
-                system.origin = SceneVec3(x: system.origin.x + objectOrigin.x,
-                                          y: system.origin.y + objectOrigin.y,
-                                          z: system.origin.z + objectOrigin.z)
-                particleSystems.append(system)
+                particleSystems.append(contentsOf:
+                    collectParticleSystems(from: particleJSON, at: objectOrigin, in: package, depth: 0))
                 continue
             }
             // A text object (clock, label, counter, …) draws rendered glyphs, not a packed texture. Its
@@ -677,6 +676,31 @@ public enum SceneGraph {
     private static func json(_ entry: ScenePackageEntry?) -> [String: Any]? {
         guard let entry else { return nil }
         return (try? JSONSerialization.jsonObject(with: entry.data)) as? [String: Any]
+    }
+
+    /// Parse a particle system AND its child sub-emitters into a flat list, each positioned at the parent
+    /// emitter's world origin. WE particle `children` are secondary systems spawned alongside the parent (an
+    /// ember's `emberglow`, a shooting-star's trail, a `magic_charge`'s rays); rendering them adds the
+    /// secondary effect the scene shows in Wallpaper Engine. Each child resolves its own `particles/…json`
+    /// and is offset by its (usually zero) origin. Depth-bounded so a cyclic or pathologically nested `.pkg`
+    /// can't recurse without limit; a child that can't be parsed is simply skipped.
+    private static func collectParticleSystems(from particleJSON: [String: Any], at worldOrigin: SceneVec3,
+                                               in package: ScenePackage, depth: Int) -> [ParticleSystem] {
+        var out: [ParticleSystem] = []
+        if var system = ParticleSystem.parse(particleJSON) {
+            system.origin = SceneVec3(x: system.origin.x + worldOrigin.x,
+                                      y: system.origin.y + worldOrigin.y,
+                                      z: system.origin.z + worldOrigin.z)
+            out.append(system)
+        }
+        guard depth < 4 else { return out }
+        for child in (particleJSON["children"] as? [[String: Any]]) ?? [] {
+            guard let name = child["name"] as? String, let childJSON = json(package.entry(named: name)) else { continue }
+            let off = vec(child["origin"])   // a child's emitter origin is relative to the parent (usually 0)
+            let childWorld = SceneVec3(x: worldOrigin.x + off.x, y: worldOrigin.y + off.y, z: worldOrigin.z + off.z)
+            out.append(contentsOf: collectParticleSystems(from: childJSON, at: childWorld, in: package, depth: depth + 1))
+        }
+        return out
     }
     /// A vector property that may be a plain `"x y z"` string or a `{ "value": "x y z", "script"/"animation": … }`
     /// binding — take the base value either way (the script/animation drives it on top at render time). Without
