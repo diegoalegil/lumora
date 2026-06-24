@@ -10,6 +10,7 @@ fail=0
 run() { echo; echo "── $1 ───────────────────────────────────────────"; shift; "$@" || fail=1; }
 
 run "Firewall audit" bash Scripts/audit_licenses.sh
+run "Firewall self-test" bash Scripts/test_audit_firewall.sh
 run "WECore checks"  bash -c 'cd Packages/WECore && swift run -q WECoreChecks'
 run "WallpaperShell checks" bash -c 'cd Packages/WallpaperShell && swift run -q WallpaperShellChecks'
 run "WEImporter checks" bash -c 'cd Packages/WEImporter && swift run -q WEImporterChecks'
