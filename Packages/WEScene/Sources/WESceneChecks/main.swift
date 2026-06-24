@@ -241,9 +241,16 @@ if CommandLine.arguments.count > 1 {
 // MARK: - Render checks
 
 guard let renderer = SceneRenderer() else {
-    print("⚠︎ no Metal device available — skipping WEScene render checks (not a failure)")
-    print("\n────────────────────────────────────────\nALL 0 CHECKS PASSED")
-    exit(0)
+    // No Metal device → not one render check can run. Fail LOUD so a headless CI can't silently report
+    // "ALL GREEN" with zero render coverage; an intentional GPU-less run can opt out with LUMORA_ALLOW_NO_METAL.
+    if ProcessInfo.processInfo.environment["LUMORA_ALLOW_NO_METAL"] != nil {
+        print("⚠︎ no Metal device — WEScene render checks SKIPPED (0 ran); allowed via LUMORA_ALLOW_NO_METAL")
+        print("\n────────────────────────────────────────\nRENDER CHECKS SKIPPED (no Metal device, 0 ran)")
+        exit(0)
+    }
+    FileHandle.standardError.write(Data("✗ no Metal device — 0 of the WEScene render checks ran. Set LUMORA_ALLOW_NO_METAL=1 to allow skipping.\n".utf8))
+    print("\n────────────────────────────────────────\nRENDER CHECKS DID NOT RUN (no Metal device)")
+    exit(1)
 }
 
 print("WEScene: Metal device '\(renderer.device.name)', BC support: \(renderer.device.supportsBCTextureCompression)")
