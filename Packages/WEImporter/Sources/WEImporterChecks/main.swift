@@ -974,7 +974,7 @@ Check.throwsError("rejects invalid scene.json",
                   satisfies: { if case SceneGraphError.invalidSceneJSON = $0 { return true }; return false })
 
 let effectPkg = buildPKG(version: "PKGV0009", files: [
-    ("scene.json", Data(#"{"objects":[{"image":"models/m.json","effects":[{"file":"effects/pulse/effect.json","passes":[{"combos":{"BLENDMODE":2},"constantshadervalues":{"ui_editor_properties_pulse_speed":2.9,"ui_editor_properties_tint_high":"0.9 0.8 0.7"}}]}]}]}"#.utf8)),
+    ("scene.json", Data(#"{"objects":[{"image":"models/m.json","effects":[{"file":"effects/pulse/effect.json","passes":[{"combos":{"BLENDMODE":2},"constantshadervalues":{"ui_editor_properties_pulse_speed":2.9,"ui_editor_properties_tint_high":"0.9 0.8 0.7","ui_editor_properties_tint_low":{"user":"newprop","value":"0.1 0.2 0.3"}}}]}]}]}"#.utf8)),
     ("models/m.json", Data(#"{"material":"materials/mat.json"}"#.utf8)),
     ("materials/mat.json", Data(#"{"passes":[{"textures":["t"]}]}"#.utf8)),
     ("materials/t.tex", Data("x".utf8)),
@@ -989,6 +989,9 @@ if let pkg = try? ScenePackage.read(effectPkg), let doc = try? SceneGraph.load(f
     Check.that("effect is named for its folder", layer.effects.first?.name == "pulse")
     Check.that("effect captures a numeric constant", layer.effects.first?.constants["ui_editor_properties_pulse_speed"] == "2.9")
     Check.that("effect captures a vector constant", layer.effects.first?.constants["ui_editor_properties_tint_high"] == "0.9 0.8 0.7")
+    // A user-property-bound constant `{ "user": …, "value": … }` must be unwrapped to its value, not dropped
+    // (dropping it falls the effect back to its shader default — e.g. a tint bg washing red, scene 3195212886).
+    Check.that("effect unwraps a user-bound constant to its value", layer.effects.first?.constants["ui_editor_properties_tint_low"] == "0.1 0.2 0.3")
     Check.that("effect captures the scene's combo override", layer.effects.first?.combos["BLENDMODE"] == 2)
     Check.that("effect captures the material's sampler bindings", layer.effects.first?.textures == [nil, "util/noise"])
 }

@@ -643,6 +643,11 @@ public enum SceneGraph {
         switch value {
         case let string as String: return string
         case let number as NSNumber: return number.stringValue
+        // A `constantshadervalues` entry is often a user-property binding `{ "user": …, "value": <string|number> }`
+        // (a tint colour, a strength slider, …) rather than a bare literal. Unwrap to its value; otherwise the
+        // constant is dropped and the effect falls back to its shader default — e.g. a tint background washing
+        // RED instead of the bound lavender (scene 3195212886).
+        case let object as [String: Any]: return constantString(object["value"])
         default: return nil
         }
     }
