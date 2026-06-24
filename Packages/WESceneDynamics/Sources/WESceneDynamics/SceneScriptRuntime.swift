@@ -50,6 +50,11 @@ public final class SceneScriptRuntime {
         // per-frame script yet trips a spin loop in a fraction of a frame.
         lumora_set_js_execution_time_limit(context.jsGlobalContextRef, Self.executionTimeLimitSeconds)
 
+        // A corrupt .pkg could carry a non-finite base origin/colour/alpha; interpolated raw it becomes the
+        // JS literal `nan`/`inf`, a syntax error that aborts the WHOLE prelude (so even valid scripts break).
+        // Coerce to a finite number first.
+        func jsNum(_ x: Float) -> String { x.isFinite ? "\(x)" : "0" }
+
         let prelude = """
         function Vec2(x, y) {
             if (x !== null && typeof x === 'object' && 'x' in x) { this.x = x.x || 0; this.y = (y === undefined ? (x.y || 0) : y); return; }
@@ -120,8 +125,8 @@ public final class SceneScriptRuntime {
             Object.defineProperty(L, 'parallaxDepth', { get: function () { return _p; }, set: function (v) { _p = __copyVec(v); }, enumerable: true });
             __layers.push(L); return L;
         }
-        var thisLayer = __mkLayer(null, new Vec3(\(baseOrigin.x), \(baseOrigin.y), \(baseOrigin.z)),
-                                  new Vec3(\(baseColor.x), \(baseColor.y), \(baseColor.z)), \(baseAlpha));
+        var thisLayer = __mkLayer(null, new Vec3(\(jsNum(baseOrigin.x)), \(jsNum(baseOrigin.y)), \(jsNum(baseOrigin.z))),
+                                  new Vec3(\(jsNum(baseColor.x)), \(jsNum(baseColor.y)), \(jsNum(baseColor.z))), \(jsNum(baseAlpha)));
         var thisScene = {
             getLayerIndex: function (l) { return Math.max(0, __layers.indexOf(l)); },
             createLayer: function (model) { return __mkLayer(model, thisLayer.origin.copy(), thisLayer.color.copy(), thisLayer.alpha); },
@@ -170,6 +175,10 @@ public final class SceneScriptRuntime {
         // — which still neutralises a mid-line `…; export function…` yet leaves an "export " INSIDE a string
         // literal (e.g. `return "export function …";`, preceded by `"`) intact.
         let moduleStripped = script
+            // A `import { a, b } from 'X';` whose braces span newlines isn't caught by the line form below
+            // (which stops at the first newline), leaving dangling tokens that abort the module. Strip the
+            // whole brace import first: the `{…}` may contain newlines, ending at the statement's `;`.
+            .replacingOccurrences(of: "(?m)^[ \\t]*import\\b[^;{}]*\\{[^}]*\\}[^;\\n]*;?", with: "", options: .regularExpression)
             .replacingOccurrences(of: "(?m)^[ \\t]*import\\b[^;\\n]*(?:;|$)", with: "", options: .regularExpression)
             .replacingOccurrences(of: "(?m)(^[ \\t]*|[;{}][ \\t]*)export[ \\t]+", with: "$1", options: .regularExpression)
         context.evaluateScript(moduleStripped)

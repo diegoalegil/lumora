@@ -206,6 +206,27 @@ export function update(v) {
 """) {
     Check.that("WEMath + Vec3 arithmetic compute correctly", m.updateNumber(0) == 15)
 }
+// A multi-line `import { ... } from 'X'` (braces spanning newlines) must be stripped too, not just the
+// single-line form — otherwise the dangling tokens abort the module and update() is never defined.
+if let multi = SceneScriptRuntime(script: """
+import {
+    mix,
+    clamp
+} from 'WEMath';
+export function update(v) { return WEMath.clamp(WEMath.mix(0, 10, 0.5), 0, 4); }
+""") {
+    Check.that("a multi-line brace import is stripped and the module loads", multi.loaded && multi.updateNumber(0) == 4)
+} else {
+    Check.that("multi-line-import runtime constructs", false)
+}
+// A non-finite base origin/colour/alpha (a corrupt .pkg) must not abort the prelude: it's coerced to a finite
+// number so a valid script still loads and runs.
+if let nf = SceneScriptRuntime(script: "export function update(v){ return 0.5; }",
+                               baseOrigin: SIMD3(.nan, .infinity, 0), baseColor: SIMD3(1, -.infinity, 1), baseAlpha: .nan) {
+    Check.that("a non-finite base value doesn't break the prelude", nf.loaded && nf.updateNumber(0) == 0.5)
+} else {
+    Check.that("non-finite-base runtime constructs", false)
+}
 
 Check.section("SceneScriptRuntime — scene-graph (audio bars)")
 // A representative WE audio-bar visualiser: declares properties, clones thisLayer into N bars in init(),
