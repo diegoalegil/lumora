@@ -471,11 +471,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// restore the saved state) and whenever the settings UI changes them.
     private func applyPreferences(_ prefs: Preferences) {
         NSApp.setActivationPolicy(prefs.showDockIcon ? .regular : .accessory)
-        do {
-            try loginItem.setEnabled(prefs.launchAtLogin)
-        } catch {
-            // Don't modal-alert here — applyPreferences also runs at launch. The menu toggle surfaces approval.
-            NSLog("Lumora: couldn't change Launch at Login: \(error.localizedDescription)")
+        // applyPreferences also runs at every launch; only (un)register the login item when the desired state
+        // actually differs from the current registration, instead of churning SMAppService each time.
+        if prefs.launchAtLogin != loginItem.isEnabled {
+            do {
+                try loginItem.setEnabled(prefs.launchAtLogin)
+            } catch {
+                // Don't modal-alert here. The menu toggle surfaces approval.
+                NSLog("Lumora: couldn't change Launch at Login: \(error.localizedDescription)")
+            }
         }
         updateMenuState()
     }
