@@ -1074,7 +1074,12 @@ public final class SceneRenderer {
                     vertexScalars: vertexScalars, constants: effect.constants,
                     target: pass.target, samplers: samplers))
             }
-            guard graphOK, !preparedPasses.isEmpty else { continue }
+            guard graphOK, !preparedPasses.isEmpty else {
+                if ProcessInfo.processInfo.environment["LUMORA_LOG_DROPS"] != nil {
+                    FileHandle.standardError.write(Data("DROP-EFFECT \(effect.name)\n".utf8))
+                }
+                continue
+            }
             compiled.append(PreparedEffect(passes: preparedPasses, fbos: effect.fbos))
         }
         guard !compiled.isEmpty else { return [] }
