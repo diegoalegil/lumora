@@ -83,6 +83,9 @@ public final class AudioEngine: NSObject, AudioSpectrumProvider, SCStreamDelegat
             self?.accumLeft.removeAll(keepingCapacity: true)
             self?.accumRight.removeAll(keepingCapacity: true)
             self?.prev = Snapshot()
+            // Reset to silence again ON the capture queue: it's serial, so this runs after any in-flight
+            // sample buffer, giving silence the last word even if one slipped through.
+            self?.state.withLock { $0 = Snapshot() }
         }
     }
 
@@ -127,10 +130,15 @@ public final class AudioEngine: NSObject, AudioSpectrumProvider, SCStreamDelegat
     public func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer,
                        of type: SCStreamOutputType) {
         guard type == .audio, sampleBuffer.isValid else { return }
+        // A buffer can land on this queue just after stop() reset us to silence; drop it so it can't re-run the
+        // FFT and repopulate non-zero bands (stop()'s capture-queue reset then has the last word).
+        guard control.withLockUnchecked({ $0.running }) else { return }
         guard let (left, right) = Self.extractStereo(sampleBuffer) else { return }
         accumLeft.append(contentsOf: left)
         accumRight.append(contentsOf: right)
-        guard accumLeft.count >= windowSize else { return }
+        // Need a full window in BOTH channels — otherwise `.suffix(windowSize)` would hand the mapper a short,
+        // zero-padded right window.
+        guard accumLeft.count >= windowSize, accumRight.count >= windowSize else { return }
 
         let now = CACurrentMediaTimeOrZero()
         let dt = Float(max(0, min(0.5, now - lastTime)))
