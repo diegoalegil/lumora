@@ -359,6 +359,18 @@ public final class SceneRenderer {
         float4 t = tex.sample(samp, in.uv);
         return float4(t.rgb * in.color.rgb, t.a * in.color.a);
     }
+    // Glow particles use a SCREEN blend, not a raw additive one: Wallpaper Engine accumulates glows in HDR and
+    // tone-maps the frame, so a cluster of overlapping glows reads as a soft bright spot, not a hard flat-white
+    // disc. Screen — result = glow·(1-dst) + dst = 1-(1-glow)(1-dst) — reproduces that: identical to additive for
+    // a lone faint glow on a dark area, but it soft-saturates where many glows pile up instead of clamping to a
+    // blown-out white blob (the "flash on the character's face" case). Output is premultiplied by alpha so the
+    // pipeline's `oneMinusDestinationColor` source factor forms the screen equation.
+    fragment float4 lumora_particle_screen(POut in [[stage_in]],
+                                           texture2d<float> tex [[texture(0)]], sampler samp [[sampler(0)]]) {
+        float4 t = tex.sample(samp, in.uv);
+        float a = t.a * in.color.a;
+        return float4(t.rgb * in.color.rgb * a, a);
+    }
     // A refractive droplet (rain on glass): inside the sprite's shape (albedo alpha), show the composited
     // background sampled at a screen position displaced by the droplet's surface normal — so the scene
     // bends through the water — plus a faint specular highlight. Outside the shape it's transparent.
@@ -389,12 +401,13 @@ public final class SceneRenderer {
                   let fragmentFunction = library.makeFunction(name: "lumora_scene_fragment"),
                   let particleVertex = library.makeFunction(name: "lumora_particle_vertex"),
                   let particleFragment = library.makeFunction(name: "lumora_particle_fragment"),
+                  let particleScreenFragment = library.makeFunction(name: "lumora_particle_screen"),
                   let over = Self.makePipeline(device: device, vertex: vertexFunction,
                                                fragment: fragmentFunction, additive: false),
                   let additive = Self.makePipeline(device: device, vertex: vertexFunction,
                                                    fragment: fragmentFunction, additive: true),
                   let particleAdd = Self.makeParticlePipeline(device: device, vertex: particleVertex,
-                                                              fragment: particleFragment, additive: true),
+                                                              fragment: particleScreenFragment, additive: true, screen: true),
                   let particleOver = Self.makeParticlePipeline(device: device, vertex: particleVertex,
                                                                fragment: particleFragment, additive: false),
                   let particleRefractFragment = library.makeFunction(name: "lumora_particle_refract"),
@@ -549,9 +562,13 @@ public final class SceneRenderer {
         return try? device.makeRenderPipelineState(descriptor: descriptor)
     }
 
-    /// The instanced particle pipeline: additive (glow) or alpha-over (solid sprites) blend.
+    /// The instanced particle pipeline: a glow blend (screen, soft-saturating) or alpha-over (solid sprites).
+    /// `screen` glows take a SCREEN blend — `glow·(1-dst) + dst` — fed a premultiplied fragment, so dense
+    /// overlapping glows compress toward white instead of hard-clamping to a flat blown-out disc; for a lone
+    /// faint glow it is indistinguishable from a raw additive blend. `additive` without `screen` is the legacy
+    /// raw add (kept for callers that pass it); alpha-over is straight transparency for solid sprites.
     private static func makeParticlePipeline(device: MTLDevice, vertex: MTLFunction, fragment: MTLFunction,
-                                             additive: Bool) -> MTLRenderPipelineState? {
+                                             additive: Bool, screen: Bool = false) -> MTLRenderPipelineState? {
         let descriptor = MTLRenderPipelineDescriptor()
         descriptor.vertexFunction = vertex
         descriptor.fragmentFunction = fragment
@@ -560,10 +577,18 @@ public final class SceneRenderer {
         color.isBlendingEnabled = true
         color.rgbBlendOperation = .add
         color.alphaBlendOperation = .add
-        color.sourceRGBBlendFactor = .sourceAlpha
-        color.sourceAlphaBlendFactor = .one   // straight-alpha: don't square the source alpha
-        color.destinationRGBBlendFactor = additive ? .one : .oneMinusSourceAlpha
-        color.destinationAlphaBlendFactor = additive ? .one : .oneMinusSourceAlpha
+        if screen {
+            // Premultiplied source × (1 − dst) + dst = 1 − (1 − glow)(1 − dst): soft additive that can't blow out.
+            color.sourceRGBBlendFactor = .oneMinusDestinationColor
+            color.sourceAlphaBlendFactor = .oneMinusDestinationAlpha
+            color.destinationRGBBlendFactor = .one
+            color.destinationAlphaBlendFactor = .one
+        } else {
+            color.sourceRGBBlendFactor = .sourceAlpha
+            color.sourceAlphaBlendFactor = .one   // straight-alpha: don't square the source alpha
+            color.destinationRGBBlendFactor = additive ? .one : .oneMinusSourceAlpha
+            color.destinationAlphaBlendFactor = additive ? .one : .oneMinusSourceAlpha
+        }
         return try? device.makeRenderPipelineState(descriptor: descriptor)
     }
 
