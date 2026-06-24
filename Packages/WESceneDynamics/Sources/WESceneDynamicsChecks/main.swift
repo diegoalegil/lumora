@@ -137,6 +137,19 @@ if let thrower = SceneScriptRuntime(script: "export function update(v){ throw ne
 let audioish = SceneScriptRuntime(script: "var b = engine.registerAudioBuffers(engine.AUDIO_RESOLUTION_64); export function update(v){ return v; }")
 Check.that("an engine-using script loads against the stub", audioish != nil)
 
+// Stripping the ES-module `export ` keyword must NOT corrupt an "export " that appears inside a STRING LITERAL
+// (a script that returns or builds source text). Only a real statement-boundary `export ` is neutralised.
+if let strLit = SceneScriptRuntime(script: "export function update(v){ return \"export function x(){}\"; }") {
+    Check.that("export inside a string literal is preserved (not stripped)",
+               strLit.updateString("") == "export function x(){}")
+} else {
+    Check.that("string-literal-export script loads", false)
+}
+// A mid-line `export` after a `;` is still neutralised (statement-boundary strip, not just line-start).
+if let midline = SceneScriptRuntime(script: "var k = 1; export function update(v){ return v; }") {
+    Check.that("a mid-line export (after ;) still loads", midline.updateString("ok") == "ok")
+}
+
 // A real WE "3D clock" module: it `import`s WEMath and tilts itself toward the cursor with Vec3 arithmetic
 // (origin.subtract(cursor).divide(canvasSize).multiply(50) + WEMath.mix). JavaScriptCore can't run ES-module
 // `import`, so before this support the whole module failed to define update() and the editor placeholder
