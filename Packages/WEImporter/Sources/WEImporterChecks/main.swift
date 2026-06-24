@@ -575,6 +575,22 @@ if let pkg = try? ScenePackage.read(inlinePkg), let doc = try? SceneGraph.load(f
     Check.that("an inline visible.script becomes the layer's driverScript",
                doc.layers.first?.driverScript?.contains("function update") == true)
 }
+// A media-player widget (album-art tile, now-playing overlay, controls) drives its visibility with a script that
+// stays hidden — targetAlpha 0 — until music plays (mediaPlaybackChanged / mediaThumbnailChanged). Lumora has no
+// media playback, so the steady state is hidden, exactly like Wallpaper Engine with nothing playing; the layer
+// must be dropped, not drawn as the static placeholder the `value:true` field reports. (A non-media visible
+// script — an audio visualiser — is NOT a media widget and is kept as a driver, per the test above.)
+let mediaScript = "'use strict';\\nexport function mediaPlaybackChanged(e){}\\nexport function mediaThumbnailChanged(e){ thisLayer.texture = e.texture; }\\nexport function update(){}"
+let mediaScene = #"{"objects":[{"name":"albumart","image":"models/m.json","visible":{"value":true,"script":"INLINE"}}]}"#
+    .replacingOccurrences(of: "INLINE", with: mediaScript)
+let mediaPkg = buildPKG(version: "PKGV0009", files: [
+    ("scene.json", Data(mediaScene.utf8)), ("models/m.json", modelJSON),
+    ("materials/mat.json", materialJSON), ("materials/mytex.tex", Data("x".utf8)),
+])
+if let pkg = try? ScenePackage.read(mediaPkg), let doc = try? SceneGraph.load(from: pkg) {
+    Check.that("a media-playback visibility widget is marked hidden (the renderer skips it, like WE with no music)",
+               doc.layers.first?.visible == false)
+}
 let pathScene = #"{"objects":[{"name":"viz","image":"models/m.json","scale":{"value":"1 1 1","script":"scripts/bars.js"}}]}"#
 let pathPkg = buildPKG(version: "PKGV0009", files: [
     ("scene.json", Data(pathScene.utf8)), ("models/m.json", modelJSON),

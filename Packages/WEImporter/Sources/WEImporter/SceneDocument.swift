@@ -445,7 +445,18 @@ public enum SceneGraph {
     /// A `visible` field is a Bool, or a `{ "user": …, "value": Bool }` property binding — read either.
     private static func isVisible(_ value: Any?) -> Bool {
         if let flag = value as? Bool { return flag }
-        if let dict = value as? [String: Any], let flag = dict["value"] as? Bool { return flag }
+        if let dict = value as? [String: Any] {
+            // A media-player widget (album-art tile, now-playing overlay, controls) drives its own visibility
+            // with a script that keeps it hidden — `targetAlpha = 0` — until music plays (mediaPlaybackChanged /
+            // mediaThumbnailChanged fire). Lumora has no media playback, so the steady state is hidden, exactly
+            // like Wallpaper Engine with nothing playing. Honour that instead of drawing the static placeholder
+            // (a blank white album-art box, dark fade overlays) the `value` field still reports as visible.
+            if let script = dict["script"] as? String,
+               script.contains("mediaPlayback") || script.contains("MediaPlaybackEvent") || script.contains("mediaThumbnail") {
+                return false
+            }
+            if let flag = dict["value"] as? Bool { return flag }
+        }
         return true
     }
 
