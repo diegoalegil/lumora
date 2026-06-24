@@ -6,8 +6,9 @@
 import Foundation
 
 /// A puppet's renderable mesh: per-vertex model-space position and atlas UV plus a triangle index list.
-/// The positions are already in assembled model space (the bind pose), so this alone draws the character
-/// correctly composed from its sprite-atlas parts — skeletal animation deforms it on top.
+/// The positions are already in assembled model space (the bind pose), so this draws the character correctly
+/// composed from its sprite-atlas parts. NOTE: it renders in the STATIC bind pose — the engine does not yet
+/// parse or play the skeletal animation track, so a puppet that animates in Wallpaper Engine is shown still.
 public struct PuppetMesh: Sendable, Equatable {
     public let positions: [SIMD2<Float>]   // model-space x, y per vertex
     public let uvs: [SIMD2<Float>]         // atlas texcoord per vertex

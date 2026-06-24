@@ -88,7 +88,7 @@ struct LibrarySettingsView: View {
             if items.isEmpty {
                 ContentUnavailableView("No wallpapers found",
                                        systemImage: "photo.on.rectangle.angled",
-                                       description: Text("Subscribe to wallpapers in Steam's Wallpaper Engine, or import a folder."))
+                                       description: Text("Lumora plays the Wallpaper Engine wallpapers Steam has already synced to this Mac. Subscribe to some in Wallpaper Engine and they'll appear here."))
             } else {
                 ScrollView {
                     LazyVGrid(columns: columns, spacing: 16) {
