@@ -754,19 +754,22 @@ if let pkg = try? ScenePackage.read(alignPkg), let doc = try? SceneGraph.load(fr
     Check.that("a layer's alignment is parsed", doc.layers.first?.alignment == "bottomleft")
 }
 // A text layer's point size comes from untrusted scene.json. A finite value is honoured; a non-finite one
-// (an overflowing `1e400` parses to infinity) must fall back to the default so the glyph quads don't vanish.
+// (an overflowing exponent parses to infinity) must fall back to the default so the glyph quads don't vanish.
 let textSizePkg = buildPKG(version: "PKGV0009", files: [
     ("scene.json", Data(#"{"objects":[{"name":"t","text":"Hi","pointsize":48}]}"#.utf8)),
 ])
 if let pkg = try? ScenePackage.read(textSizePkg), let doc = try? SceneGraph.load(from: pkg) {
     Check.that("a text layer's finite point size is kept", doc.layers.first?.pointSize == 48)
 }
+// The scene graph is decoded strictly, so an overflowing exponent is rejected outright (unlike the particle
+// ops, which go through lenient JSONSerialization and clamp ±inf). That makes the non-finite point-size clamp
+// unreachable via JSON — belt-and-suspenders — so assert the ACTUAL behaviour: the document is rejected. (The
+// old fixture used `1e400` and silently never ran, masking that the fallback is unexercisable from JSON.)
 let badSizePkg = buildPKG(version: "PKGV0009", files: [
-    ("scene.json", Data(#"{"objects":[{"name":"t","text":"Hi","pointsize":1e400}]}"#.utf8)),
+    ("scene.json", Data(#"{"objects":[{"name":"t","text":"Hi","pointsize":1e309}]}"#.utf8)),
 ])
-if let pkg = try? ScenePackage.read(badSizePkg), let doc = try? SceneGraph.load(from: pkg) {
-    Check.that("a non-finite point size falls back to the default", doc.layers.first?.pointSize == 32)
-}
+Check.that("an overflowing point size is rejected by the strict scene decoder",
+           ((try? ScenePackage.read(badSizePkg)).flatMap { try? SceneGraph.load(from: $0) }) == nil)
 // A scripted/animated vector property is `{ "value": "x y z", "script": … }` — the base value must survive
 // (it would otherwise fall back to the default, giving the layer the wrong scale/colour/rotation).
 let scriptedVecScene = #"{"objects":[{"name":"v","image":"models/m.json","scale":{"value":"2 3 1","script":"s.js"},"color":{"value":"0.5 0.25 0.1"}}]}"#

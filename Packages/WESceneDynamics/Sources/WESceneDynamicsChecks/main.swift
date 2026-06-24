@@ -114,9 +114,9 @@ if let runtime = SceneScriptRuntime(script: clockScript) {
     Check.that("extracts declared properties (defaults)",
                (runtime.properties["delimiter"] as? String) == ":" && (runtime.properties["use24hFormat"] as? Bool) == true)
     let out = runtime.updateString("")
-    // Compare against the same HH:MM the runtime's Date() produced (allow the minute to roll over once).
-    let f = DateFormatter(); f.dateFormat = "HH:mm"
-    Check.that("a clock update() returns the current HH:MM (got \(out ?? "nil"))",
+    // The runtime formats its own `new Date()` internally; the test can't share that exact instant, so verify
+    // the HH:MM shape rather than a value comparison.
+    Check.that("a clock update() returns an HH:MM string (got \(out ?? "nil"))",
                out != nil && out!.count == 5 && out!.contains(":"))
 } else {
     Check.that("clock runtime constructs", false)
@@ -310,13 +310,20 @@ if let spinner = SceneScriptRuntime(script: "export function update(v){ while(tr
     Check.that("an infinite-loop update() is aborted (returns nil)", result == nil)
     Check.that("it doesn't run unbounded (\(String(format: "%.2f", elapsed))s, under a generous ceiling)",
                elapsed < SceneScriptRuntime.executionTimeLimitSeconds * 40)
-    // The runtime must still be usable afterwards — the limit bounds each call, it doesn't poison the context.
-    Check.that("the runtime survives the abort (a later call still works)", spinner.updateNumber(0) == nil)
+    // The watchdog bounds each call, it doesn't poison JavaScriptCore process-wide: a FRESH runtime must still
+    // execute normally after an abort (re-calling the spinner would just abort again — that proves nothing).
+    if let healthy = SceneScriptRuntime(script: "export function update(v){ return 0.5; }") {
+        Check.that("a fresh runtime still works after an abort", healthy.updateNumber(0) == 0.5)
+    } else {
+        Check.that("post-abort runtime constructs", false)
+    }
 } else {
     Check.that("spinner runtime constructs", false)
 }
-// An infinite loop in init() must not hang construction either (init runs under the same limit).
+// An infinite loop in init() must not hang construction either (init runs under the same limit). Construction
+// reaching here at all proves no hang; assert a real post-condition — the runtime still loads and update() runs.
 let initSpin = SceneScriptRuntime(script: "export function init(){ while(true){} }\nexport function update(v){ return v; }")
-Check.that("an infinite-loop init() doesn't hang construction", initSpin != nil || initSpin == nil)  // reaching here = no hang
+Check.that("an infinite-loop init() doesn't hang construction and update() still runs",
+           initSpin != nil && initSpin?.updateString("ok") == "ok")
 
 Check.summarize()
