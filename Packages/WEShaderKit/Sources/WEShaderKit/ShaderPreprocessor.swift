@@ -315,6 +315,22 @@ public enum ShaderPreprocessor {
                 }
             }
         }
+        // Arithmetic / bitwise sub-expressions (`#if COMBO + 1 == 2`, `#if FLAGS & 2`). Split lowest-precedence
+        // first so the recursion binds tighter operators last; handled after comparisons so e.g. `A * 2 == 4`
+        // evaluates the product first. Overflow- and divide-by-zero-safe. `-` (unary ambiguity) and shifts
+        // (`<<`/`>>` would clash with the `<`/`>` split above) are intentionally not evaluated.
+        for op in ["|", "&", "+", "*", "/"] {
+            if let (lhs, rhs) = splitFirstTopLevel(expr, op) {
+                let a = value(of: lhs, combos, defined, depth + 1), b = value(of: rhs, combos, defined, depth + 1)
+                switch op {
+                case "|": return a | b
+                case "&": return a & b
+                case "+": return a &+ b
+                case "*": return a &* b
+                default:  return b != 0 ? a / b : 0
+                }
+            }
+        }
         if expr.hasPrefix("!") { return value(of: String(expr.dropFirst()), combos, defined, depth + 1) == 0 ? 1 : 0 }
         if expr.hasPrefix("("), expr.hasSuffix(")") { return value(of: String(expr.dropFirst().dropLast()), combos, defined, depth + 1) }
         if expr.hasPrefix("defined") {

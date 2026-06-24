@@ -1093,6 +1093,11 @@ Check.that("evaluates ||", ShaderPreprocessor.resolve("#if A || B\nx\n#endif", c
 Check.that("evaluates a > comparison", ShaderPreprocessor.resolve("#if QUALITY > 2\nx\n#endif", combos: ["QUALITY": 3]) == "x")
 Check.that("evaluates unary ! and parentheses", ShaderPreprocessor.resolve("#if !(MASK)\nx\n#endif", combos: ["MASK": 0]) == "x")
 Check.that("evaluates C-style defined(NAME)", ShaderPreprocessor.resolve("#if defined(X)\ny\n#endif", combos: ["X": 0]) == "y")
+// Arithmetic / bitwise operands must be evaluated, not read as one unknown name (which silently drops the branch).
+Check.that("evaluates additive arithmetic", ShaderPreprocessor.resolve("#if A + 1 == 2\nx\n#endif", combos: ["A": 1]) == "x")
+Check.that("evaluates a bitwise & (set bit keeps the branch)", ShaderPreprocessor.resolve("#if FLAGS & 2\nx\n#endif", combos: ["FLAGS": 6]) == "x")
+Check.that("a zero bitwise & drops the branch", ShaderPreprocessor.resolve("#if FLAGS & 2\nx\n#endif", combos: ["FLAGS": 1]) == "")
+Check.that("multiplication binds tighter than ==", ShaderPreprocessor.resolve("#if A * 2 == 4\nx\n#endif", combos: ["A": 2]) == "x")
 // Regression: WE's effect shaders annotate combo branches inline, e.g. `#if TYPE == 4 // Cutout square`.
 // A trailing // comment must be stripped before the condition is evaluated (as GLSL/C do). Leaving it in
 // makes the right-hand side unparseable, so the comparison silently reads as `… == 0` and EVERY branch
