@@ -209,7 +209,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         guard let coordinator = playlistCoordinator else { return }
         let connected = screenManager.windows.keys.compactMap { ScreenManager.displayUUID(for: $0) }
         let selection = playlistStore.selectedPlaylist
-        coordinator.apply(PlaybackPlan(active: selection, connectedDisplays: connected),
+        // Never leave the desktop blank when playlist playback is on but no playlist is usable yet: fall back to
+        // rotating the whole installed library. As soon as the user picks/fills a real playlist, rotationTick
+        // notices the selection change and re-plans to it.
+        let effective: Playlist?
+        if let selection, !selection.items.isEmpty {
+            effective = selection
+        } else if !playableWallpapers.isEmpty {
+            effective = Playlist(name: "All Wallpapers", items: playableWallpapers.map { WallpaperReference(id: $0.ref.id) })
+        } else {
+            effective = nil
+        }
+        coordinator.apply(PlaybackPlan(active: effective, connectedDisplays: connected),
                           now: ProcessInfo.processInfo.systemUptime)
         appliedSelection = selection
     }
