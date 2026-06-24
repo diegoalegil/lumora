@@ -194,6 +194,19 @@ do {
     Check.that("a .none transition is an instant cut",
                rec.made.count == 3 && rec.made[1].torndown && switcher.currentReference == c && rec.made[2].opacity == 1)
 }
+// A directive pushed by the playback policy is sticky: a surface mounted LATER (a switch or a playlist rotation
+// while the display is occluded / on battery) starts in that directive, not at full rate.
+do {
+    let rec = SurfaceRecorder()
+    let switcher = DisplaySwitcher { ref in let s = RecordingSurface(ref); rec.made.append(s); return s }
+    let a = WallpaperReference(id: "a"), b = WallpaperReference(id: "b")
+    switcher.apply(a, transition: .init(kind: .none, duration: 0), now: 0)
+    switcher.apply(.paused)                          // the display gets occluded / goes on battery
+    Check.that("the live surface receives the directive", rec.made[0].directives.last == .paused)
+    switcher.apply(b, transition: .init(kind: .none, duration: 0), now: 10)   // mount a new surface afterwards
+    Check.that("a surface mounted after the directive starts in it, not full-rate",
+               rec.made.count == 2 && rec.made[1].directives.first == .paused)
+}
 // Re-applying the wallpaper that is currently fading IN must also be a no-op — no redundant surface, no
 // self-fade restart. (Before the fix the guard only checked `current`, so a mid-fade re-apply re-allocated.)
 do {

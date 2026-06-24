@@ -44,6 +44,11 @@ public final class DisplaySwitcher {
     private var current: WallpaperSurface?
     private var incoming: WallpaperSurface?
     private var transition = TransitionController()
+    /// The most recent playback directive, re-applied to every newly-mounted surface. A surface starts its
+    /// renderer at full rate, but a switch or playlist rotation can mount one while the display is occluded, on
+    /// battery, or thermally throttled — without this, the new surface would burn full FPS until the next
+    /// unrelated power/occlusion event re-pushed the directive.
+    private var lastDirective: PlaybackDirective = .active
 
     /// - Parameter makeSurface: builds (and mounts) a surface for a wallpaper reference. The real app returns a
     ///   window-backed surface; tests return a recording double.
@@ -66,6 +71,9 @@ public final class DisplaySwitcher {
         if currentReference == reference { return }
         if isTransitioning { finishTransition() }   // collapse an in-flight fade before starting the next
         let surface = makeSurface(reference)
+        // Start in the current policy, not always full-rate. A surface's renderer naturally resumes at full
+        // rate, so only push a non-default directive (paused/throttled) — otherwise the mount is already correct.
+        if lastDirective != .active { surface.apply(lastDirective) }
         if settings.kind == .crossfade, settings.effectiveDuration > 0, current != nil {
             surface.setOpacity(0)
             incoming = surface
@@ -89,6 +97,7 @@ public final class DisplaySwitcher {
     /// Forward a playback directive to the live surface(s). During a cross-fade both the outgoing and
     /// incoming surfaces get it, so neither stalls mid-transition.
     public func apply(_ directive: PlaybackDirective) {
+        lastDirective = directive
         current?.apply(directive)
         incoming?.apply(directive)
     }
