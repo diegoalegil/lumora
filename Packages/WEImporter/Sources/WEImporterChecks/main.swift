@@ -558,6 +558,35 @@ if let pkg = Check.noThrow("parses the scene package", { try ScenePackage.read(s
     Check.that("a non-puppet scene is not flagged", doc.usesPuppet == false)
 }
 
+// A per-object `colorBlendMode` overrides the material's `blending`. WE mode 31 is an additive glow used by
+// lens flares and light "outline" layers; drawn as plain alpha-over, a full-screen glow's dark backing field
+// paints over the whole scene and blacks it out (the Shinobu Kocho scene, 3265802028: an "Outline" and an
+// "Artwork" object share ONE translucent material, split only by the Outline's colorBlendMode 31). So the 31
+// layer must composite additive while a sibling with no override keeps the material's translucent blend.
+let blendMatJSON = Data(#"{"passes":[{"blending":"translucent","shader":"genericimage4","textures":["mytex"]}]}"#.utf8)
+let blendSceneJSON = Data(#"{"general":{"orthogonalprojection":{"width":1920,"height":1080},"clearcolor":"0 0 0"},"objects":[{"name":"glow","image":"models/m.json","origin":"960 540 0","colorBlendMode":31,"visible":true},{"name":"plain","image":"models/m.json","origin":"960 540 0","visible":true}]}"#.utf8)
+let blendPkg = buildPKG(version: "PKGV0009", files: [
+    ("scene.json", blendSceneJSON), ("models/m.json", modelJSON),
+    ("materials/mat.json", blendMatJSON), ("materials/mytex.tex", Data("x".utf8)),
+])
+if let pkg = try? ScenePackage.read(blendPkg), let doc = try? SceneGraph.load(from: pkg) {
+    Check.that("colorBlendMode 31 overrides a translucent material to additive",
+               doc.layers.first(where: { $0.name == "glow" })?.blending == "additive")
+    Check.that("an object with no colorBlendMode keeps its material's translucent blend",
+               doc.layers.first(where: { $0.name == "plain" })?.blending == "translucent")
+}
+// Every other colorBlendMode (e.g. 2, the butterflies in that same scene) must fall through to the material's
+// own blend — only the additive-glow family is remapped, so no other mode's current behaviour changes.
+let cbm2SceneJSON = Data(#"{"general":{"orthogonalprojection":{"width":1920,"height":1080},"clearcolor":"0 0 0"},"objects":[{"name":"flutter","image":"models/m.json","origin":"960 540 0","colorBlendMode":2,"visible":true}]}"#.utf8)
+let cbm2Pkg = buildPKG(version: "PKGV0009", files: [
+    ("scene.json", cbm2SceneJSON), ("models/m.json", modelJSON),
+    ("materials/mat.json", blendMatJSON), ("materials/mytex.tex", Data("x".utf8)),
+])
+if let pkg = try? ScenePackage.read(cbm2Pkg), let doc = try? SceneGraph.load(from: pkg) {
+    Check.that("a non-glow colorBlendMode keeps the material's blend",
+               doc.layers.first?.blending == "translucent")
+}
+
 // A puppet-rigged object (its model references a bone/mesh .mdl) flags the whole scene, so the player can
 // fall back to the static preview instead of drawing the unassembled body-part atlas.
 let puppetModelJSON = Data(#"{"material":"materials/mat.json","puppet":"models/m_puppet.mdl"}"#.utf8)

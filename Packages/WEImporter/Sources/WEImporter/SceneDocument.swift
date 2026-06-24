@@ -396,6 +396,11 @@ public enum SceneGraph {
             // rotation (the child's own angle x/y are kept; only the screen-plane z is compounded).
             let wt = worldTransform(object, 0)
             let localAngles = vec(object["angles"])
+            // A per-object `colorBlendMode` (Wallpaper Engine's Photoshop-style layer blend) overrides the
+            // material pass's `blending` string. When it denotes an additive/glow blend, honour that — a glow
+            // (lens flare, light outline) composited as plain alpha-over paints its dark backing field over
+            // the scene instead of glowing through it, which on a full-screen layer blacks the frame out.
+            let blendOverride = Self.additiveColorBlendMode(object["colorBlendMode"]) ? "additive" : nil
             layers.append(SceneLayer(
                 name: object["name"] as? String ?? "",
                 texturePath: material.texture,
@@ -410,7 +415,7 @@ public enum SceneGraph {
                 originAnimation: vec3Animation(object["origin"]),
                 parallaxDepth: vec(object["parallaxDepth"]),
                 visible: isVisible(object["visible"]),
-                blending: material.blending,
+                blending: blendOverride ?? material.blending,
                 shader: material.shader,
                 effects: effects(of: object, in: package),
                 puppetPath: puppetPath,
@@ -428,6 +433,17 @@ public enum SceneGraph {
             bloomStrength: bloomStrength,
             bloomThreshold: bloomThreshold
         )
+    }
+
+    /// Whether an object's `colorBlendMode` denotes an additive/glow composite (Wallpaper Engine's per-object
+    /// blend, which overrides the material's `blending`). WE's modes are a Photoshop-style enum; mode 31 is the
+    /// additive glow used by lens flares and light "outline" layers across this library, and is the only value
+    /// that visibly breaks under our default alpha-over (its dark backing field paints over the scene). Every
+    /// other value falls through to the material's own blend, preserving today's behaviour — unmapped modes
+    /// (normal, the darken/multiply family, etc.) are not yet distinguished from their material default.
+    static func additiveColorBlendMode(_ raw: Any?) -> Bool {
+        guard let mode = (raw as? NSNumber)?.intValue else { return false }
+        return mode == 31
     }
 
     /// A SceneScript bound to one of an image object's transform/visibility properties drives the scene graph
