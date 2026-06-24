@@ -1,5 +1,9 @@
 # Windows reference-capture SOP (pixel-parity harness)
 
+> ⚠️ **Aspirational / not yet implemented.** This documents the *planned* capture procedure for a pixel-parity
+> harness that does not exist yet — there is no SSIM/MAE runner, the corpus manifest holds only placeholders,
+> and nothing in `check_all.sh` measures parity. It is a future-work plan, not a current process.
+
 The authoritative parity target is **Wallpaper Engine running on Windows** (you own it). This SOP
 makes captures reproducible so macOS output can be diffed against them deterministically. The
 `linux-wallpaperengine` binary is only a *secondary* black-box cross-check (it has its own bugs and

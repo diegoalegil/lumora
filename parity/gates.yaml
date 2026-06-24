@@ -1,3 +1,7 @@
+# ⚠️ ASPIRATIONAL / NOT YET IMPLEMENTED. These are the PLANNED parity gates. There is currently no runner
+# that measures SSIM/MAE against a reference corpus — the manifest holds placeholder entries, and nothing in
+# check_all.sh consumes this file. It documents the intended definition of done; it does not gate anything yet.
+#
 # Pixel-parity gates — the honest, tiered "definition of done" per subsystem.
 # Bit-exact equality across D3D11/HLSL (Windows) vs Metal/MSL (macOS) is physically impossible
 # (different rasterizer, FP precision, filtering, gamma), so each tier has a MEASURED SSIM ceiling.

@@ -1,5 +1,6 @@
 {
   "$schema": "internal://lumora/parity-corpus/v1",
+  "_status": "ASPIRATIONAL / NOT YET POPULATED — every entry below is a placeholder (EXAMPLE_ ids, sha256:null). The register_frames.py tool and the SSIM runner referenced here do not exist yet; nothing consumes this file. It is the planned shape of the corpus, not a live measurement.",
   "description": "The curated pixel-parity corpus: the user's OWN Wallpaper Engine wallpapers, tiered by capability. We version ONLY this manifest (workshop ids + capability tags + reference-frame hashes) — never the copyrighted pixels/assets (see .gitignore).",
   "capture_resolution": [1920, 1080],
   "fields": {
