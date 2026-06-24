@@ -588,8 +588,47 @@ let mediaPkg = buildPKG(version: "PKGV0009", files: [
     ("materials/mat.json", materialJSON), ("materials/mytex.tex", Data("x".utf8)),
 ])
 if let pkg = try? ScenePackage.read(mediaPkg), let doc = try? SceneGraph.load(from: pkg) {
-    Check.that("a media-playback visibility widget is marked hidden (the renderer skips it, like WE with no music)",
-               doc.layers.first?.visible == false)
+    Check.that("a media-playback visibility widget is dropped at load (not drawn, like WE with no music)",
+               doc.layers.isEmpty)
+}
+// A now-playing widget whose VISIBILITY is ungated (no visible script — defaults shown) but whose bound
+// property/text script subscribes to media events (album art tinted on mediaThumbnailChanged, a song-title
+// text returning mediaData) must still be dropped: its graphic only means anything with music, so WE shows
+// nothing. The layer is skipped entirely (absent from doc.layers), not merely flagged invisible.
+let ungatedMediaImg = #"{"objects":[{"name":"Album Art","image":"models/m.json","alpha":{"value":1,"script":"INLINE"}}]}"#
+    .replacingOccurrences(of: "INLINE", with: mediaScript)
+let ungatedImgPkg = buildPKG(version: "PKGV0009", files: [
+    ("scene.json", Data(ungatedMediaImg.utf8)), ("models/m.json", modelJSON),
+    ("materials/mat.json", materialJSON), ("materials/mytex.tex", Data("x".utf8)),
+])
+if let pkg = try? ScenePackage.read(ungatedImgPkg), let doc = try? SceneGraph.load(from: pkg) {
+    Check.that("an ungated media-event image widget (album art) is dropped, not drawn",
+               doc.layers.isEmpty)
+}
+let songTitleText = "'use strict';\\nvar mediaData='';\\nexport function update(v){ return mediaData; }\\nexport function mediaPropertiesChanged(e){ mediaData = e.title; }"
+let ungatedMediaText = #"{"objects":[{"name":"Song Title","text":{"value":"Title","script":"INLINE"},"font":"fonts/f.ttf"}]}"#
+    .replacingOccurrences(of: "INLINE", with: songTitleText)
+let ungatedTextPkg = buildPKG(version: "PKGV0009", files: [
+    ("scene.json", Data(ungatedMediaText.utf8)), ("models/m.json", modelJSON),
+    ("materials/mat.json", materialJSON), ("materials/mytex.tex", Data("x".utf8)),
+])
+if let pkg = try? ScenePackage.read(ungatedTextPkg), let doc = try? SceneGraph.load(from: pkg) {
+    Check.that("an ungated media-event text widget (song title) is dropped, not drawn",
+               doc.layers.isEmpty)
+}
+// An audio visualiser ("Audio Bars") often listens to mediaThumbnailChanged to tint its bars by the album art,
+// yet it is NOT a now-playing widget: it reacts to the audio spectrum and collapses to nothing without music.
+// It must be KEPT (registerAudioBuffers / AUDIO_RESOLUTION is the discriminator), never dropped as a media widget.
+let audioVizScript = "'use strict';\\nvar b = engine.registerAudioBuffers(engine.AUDIO_RESOLUTION_64);\\nexport function init(){}\\nexport function mediaThumbnailChanged(e){}\\nexport function update(){ return thisLayer; }"
+let audioVizScene = #"{"objects":[{"name":"Audio Bars","image":"models/m.json","scale":{"value":"1 1 1","script":"INLINE"}}]}"#
+    .replacingOccurrences(of: "INLINE", with: audioVizScript)
+let audioVizPkg = buildPKG(version: "PKGV0009", files: [
+    ("scene.json", Data(audioVizScene.utf8)), ("models/m.json", modelJSON),
+    ("materials/mat.json", materialJSON), ("materials/mytex.tex", Data("x".utf8)),
+])
+if let pkg = try? ScenePackage.read(audioVizPkg), let doc = try? SceneGraph.load(from: pkg) {
+    Check.that("an audio visualiser that only tints by mediaThumbnail is kept, not dropped",
+               doc.layers.count == 1 && doc.layers.first?.driverScript?.contains("registerAudioBuffers") == true)
 }
 let pathScene = #"{"objects":[{"name":"viz","image":"models/m.json","scale":{"value":"1 1 1","script":"scripts/bars.js"}}]}"#
 let pathPkg = buildPKG(version: "PKGV0009", files: [

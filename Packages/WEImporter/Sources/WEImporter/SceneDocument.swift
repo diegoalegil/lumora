@@ -328,6 +328,12 @@ public enum SceneGraph {
         func worldOrigin(_ object: [String: Any], _ depth: Int) -> SceneVec3 { worldTransform(object, depth).origin }
 
         for object in objects {
+            // A now-playing media widget (album-art tile, vinyl disc, progress bar, song-title/artist text,
+            // play/pause icons, panel background) shows a placeholder graphic until music plays. Lumora has no
+            // media playback, so its steady state is the hidden widget — exactly like Wallpaper Engine with
+            // nothing playing. Skip the whole layer. This generalises the visibility-script case (handled in
+            // isVisible) to widgets whose visibility is ungated but whose graphic only means anything with music.
+            if isMediaPlayerWidget(object) { continue }
             // A particle object spawns sprites instead of drawing an image; collect it and move on.
             if let particlePath = object["particle"] as? String,
                isVisible(object["visible"]),
@@ -440,6 +446,37 @@ public enum SceneGraph {
             }
         }
         return nil
+    }
+
+    /// True when `object` is a now-playing media-player widget layer (album art, vinyl disc, progress bar,
+    /// song-title/artist text, play/pause icons, panel background). Such layers subscribe to WE's media events
+    /// — mediaPlaybackChanged / mediaThumbnailChanged / mediaPropertiesChanged (and their *Event types) — and
+    /// only render meaningful content while music plays; with nothing playing they show a placeholder (a blank
+    /// album-art box, the vinyl graphic, "Title"). Lumora has no media playback, so these are hidden, matching
+    /// Wallpaper Engine. EXCLUDES audio visualisers ("Audio Bars"): they react to the audio spectrum
+    /// (registerAudioBuffers / AUDIO_RESOLUTION) and merely tint by the album art — without music they already
+    /// collapse to zero height, so they must keep rendering normally.
+    static func isMediaPlayerWidget(_ object: [String: Any]) -> Bool {
+        let scripts = allStrings(in: object)
+        let mediaEvents = ["mediaPlaybackChanged", "mediaThumbnailChanged", "mediaPropertiesChanged",
+                           "MediaPlaybackEvent", "MediaThumbnailEvent", "MediaPropertiesEvent"]
+        guard mediaEvents.contains(where: { scripts.contains($0) }) else { return false }
+        if scripts.contains("registerAudioBuffers") || scripts.contains("AUDIO_RESOLUTION") { return false }
+        return true
+    }
+
+    /// Concatenate every String value reachable in an object's JSON (names, paths, and — what we care about —
+    /// the bound property/text scripts), so a single substring scan can spot which WE callbacks a layer wires
+    /// up. Bounded: one scene object holds a handful of KB of script at most.
+    private static func allStrings(in object: [String: Any]) -> String {
+        var out = ""
+        func walk(_ any: Any) {
+            if let s = any as? String { out += s; out += "\n" }
+            else if let d = any as? [String: Any] { for v in d.values { walk(v) } }
+            else if let a = any as? [Any] { for v in a { walk(v) } }
+        }
+        walk(object)
+        return out
     }
 
     /// A `visible` field is a Bool, or a `{ "user": …, "value": Bool }` property binding — read either.
