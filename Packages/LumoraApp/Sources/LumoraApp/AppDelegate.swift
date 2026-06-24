@@ -32,11 +32,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let loginItem = LoginItemService()
     private var isPaused = false
 
-    // FASE 5 — playlist-driven playback. Env-gated for owner verification: the default path is the proven
-    // single-wallpaper one (`renderers`/`makeRenderer`), untouched. When LUMORA_PLAYLIST_PLAYBACK is set,
-    // this coordinator instead owns every display's content, fed by the selected playlist + its rotation/
-    // transition. One path is live per launch (no dual-mounting), so the default desktop never regresses.
+    // FASE 5 — playlist-driven playback. Off by default (the proven single-wallpaper path stays untouched, so
+    // the default desktop never regresses); the user opts in with the "Rotate through a playlist" preference
+    // (read once at launch — toggling it takes effect on the next launch), or the LUMORA_PLAYLIST_PLAYBACK env
+    // var. When on, this coordinator owns every display's content, fed by the selected playlist + its rotation/
+    // transition. One path is live per launch, no dual-mounting.
     private let playlistPlaybackEnabled = ProcessInfo.processInfo.environment["LUMORA_PLAYLIST_PLAYBACK"] != nil
+        || AppDelegate.loadPreferences().playlistPlayback
     private var playlistCoordinator: WallpaperPlaybackCoordinator?
     private var rotationTimer: Timer?
     private let playerFactory = DefaultWallpaperPlayerFactory()

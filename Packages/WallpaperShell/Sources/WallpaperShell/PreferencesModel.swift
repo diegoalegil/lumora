@@ -27,6 +27,10 @@ public final class PreferencesModel {
         get { preferences.launchAtLogin }
         set { update { $0.launchAtLogin = newValue } }
     }
+    public var playlistPlayback: Bool {
+        get { preferences.playlistPlayback }
+        set { update { $0.playlistPlayback = newValue } }
+    }
     public var activePlaylistID: UUID? {
         get { preferences.activePlaylistID }
         set { update { $0.activePlaylistID = newValue } }

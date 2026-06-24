@@ -417,4 +417,22 @@ do {
                PlaybackPlanDiff(from: PlaybackPlan(byDisplay: ["D1": p1]), to: PlaybackPlan(byDisplay: ["D1": p1])).isEmpty)
 }
 
+// MARK: Preferences (Codable, tolerant of older saved values)
+Check.section("Preferences")
+do {
+    // A round-trip preserves every field.
+    let prefs = Preferences(showDockIcon: true, launchAtLogin: true, playlistPlayback: true)
+    let data = try! JSONEncoder().encode(prefs)
+    Check.that("preferences round-trip through Codable", (try? JSONDecoder().decode(Preferences.self, from: data)) == prefs)
+    // A value saved by an OLDER build (no playlistPlayback key) still decodes, defaulting the missing field and
+    // preserving the others — adding a preference must not reset everything.
+    let old = Data(#"{"showDockIcon":true,"launchAtLogin":true}"#.utf8)
+    if let decoded = try? JSONDecoder().decode(Preferences.self, from: old) {
+        Check.that("an older preferences value decodes with the new field defaulted",
+                   decoded.showDockIcon && decoded.launchAtLogin && decoded.playlistPlayback == false)
+    } else {
+        Check.that("older preferences value decodes (not rejected)", false)
+    }
+}
+
 Check.summarize()

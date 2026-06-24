@@ -71,6 +71,10 @@ struct PreferencesSettingsView: View {
             Section("Startup") {
                 Toggle("Launch at login", isOn: $preferences.launchAtLogin)
             }
+            Section("Playback") {
+                Toggle("Rotate through a playlist", isOn: $preferences.playlistPlayback)
+                    .help("Play the selected playlist with timed rotation and transitions instead of a single fixed wallpaper. Takes effect after you restart Lumora.")
+            }
         }
         .formStyle(.grouped)
         .navigationTitle("Preferences")
