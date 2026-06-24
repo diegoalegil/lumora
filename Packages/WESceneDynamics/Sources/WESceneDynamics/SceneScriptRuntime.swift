@@ -208,7 +208,11 @@ public final class SceneScriptRuntime {
 
     public func updateNumber(_ value: Double = 0) -> Double? {
         guard let r = runUpdate(value), !r.isUndefined, !r.isNull, r.isNumber else { return nil }
-        return r.toDouble()
+        // A script can return a non-finite number (`return 1/0` → Infinity, `0/0` → NaN). Reject it rather than
+        // let it drive a layer's scale/alpha/position into a NaN the GPU treats as undefined — same finite
+        // contract scriptedLayers() enforces. The caller keeps its static value.
+        let result = r.toDouble()
+        return result.isFinite ? result : nil
     }
 
     /// The layers the script owns (base `thisLayer` + `createLayer` clones), with their current transforms —

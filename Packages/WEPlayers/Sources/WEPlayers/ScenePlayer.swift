@@ -70,6 +70,7 @@ public final class ScenePlayer: WallpaperRenderer {
         package = scenePackage
         document = try SceneGraph.load(from: scenePackage)
         prepared = nil
+        elapsed = 0.0   // reset the animation clock so a reload (playlist switch, re-apply) starts the new scene at t=0
         sceneUsesAudio = Self.usesAudio(scenePackage)
         previewImage = Self.loadPreview(besides: wallpaper.mainFileURL)
     }

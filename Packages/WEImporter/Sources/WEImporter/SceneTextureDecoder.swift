@@ -25,8 +25,12 @@ public struct DecodedTexture: Sendable, Equatable {
         self.format = format
         self.width = width
         self.height = height
-        self.imageWidth = imageWidth
-        self.imageHeight = imageHeight
+        // `imageWidth/Height` is the CONTENT sub-rect inside the (POT) storage; it drives the renderer's
+        // uvScale = content/storage. A malformed `.tex` header can carry 0 (→ uvScale 0 → the sprite samples a
+        // zero-size region and vanishes) or a value larger than storage. Clamp into [1, storage] so the content
+        // rect is always a sane fraction of the texture. (A non-positive storage falls back to imageW/H itself.)
+        self.imageWidth = width > 0 ? min(max(1, imageWidth), width) : max(1, imageWidth)
+        self.imageHeight = height > 0 ? min(max(1, imageHeight), height) : max(1, imageHeight)
         self.pixels = pixels
     }
 }

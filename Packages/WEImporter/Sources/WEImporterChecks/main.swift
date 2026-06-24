@@ -443,6 +443,13 @@ Check.throwsError("rejects a bad mip container",
 }
 
 Check.section("SceneTexture decode")
+// The content sub-rect (imageWidth/Height → uvScale = content/storage) is clamped into [1, storage]: a
+// malformed .tex header with 0 (→ uvScale 0 → invisible sprite) or an oversized value must not corrupt sampling.
+let clampedTex = DecodedTexture(format: .rgba8888, width: 256, height: 256, imageWidth: 0, imageHeight: 9999, pixels: Data())
+Check.that("DecodedTexture clamps zero content width to 1", clampedTex.imageWidth == 1)
+Check.that("DecodedTexture clamps oversized content height to storage", clampedTex.imageHeight == 256)
+let okTex = DecodedTexture(format: .rgba8888, width: 256, height: 256, imageWidth: 200, imageHeight: 150, pixels: Data())
+Check.that("DecodedTexture keeps a valid content rect unchanged", okTex.imageWidth == 200 && okTex.imageHeight == 150)
 let rawPixels = Data((0 ..< 64).map { UInt8($0) })
 if let dec = Check.noThrow("decodes a raw uncompressed mip", {
     try SceneTexture.decodeFirstMip(buildTexWithMip(version: "TEXB0002", format: 0, mipW: 4, mipH: 4,
@@ -1053,6 +1060,17 @@ if let s = ParticleSystem.parse(["emitter": [["name": "sphererandom", "distancem
 }
 if let b = ParticleSystem.parse(["emitter": [["name": "boxrandom", "distancemax": Double.nan, "rate": 50]]]) {
     Check.that("a NaN box distancemax is clamped finite", b.boxSize.x.isFinite && b.boxSize.y.isFinite)
+}
+// A vortex operator's distances/speeds from untrusted JSON must be sanitised finite too (a non-finite radius
+// would feed the renderer's orbit math a NaN and scatter sprites) — like the attractor/oscillator scalars.
+if let vtx = ParticleSystem.parse(["emitter": [["name": "boxrandom", "distancemax": "10 10 0", "rate": 50]],
+                                   "operator": [["name": "vortex", "distanceinner": Double.infinity,
+                                                 "distanceouter": Double.infinity, "speedinner": Double.infinity,
+                                                 "speedouter": Double.nan]]]),
+   let v = vtx.vortex {
+    Check.that("vortex distances/speeds are clamped finite",
+               v.distanceInner.isFinite && v.distanceOuter.isFinite && v.speedInner.isFinite && v.speedOuter.isFinite)
+    Check.that("vortex outer stays > inner after clamping", v.distanceOuter > v.distanceInner)
 }
 Check.that("rejects a system with no emitter", ParticleSystem.parse(["maxcount": 10]) == nil)
 Check.that("rejects a system with a zero spawn rate",
