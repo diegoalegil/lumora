@@ -352,6 +352,12 @@ do {
     var edited = added; edited.name = "Third+"
     store.update(edited)
     Check.that("editing replaces the playlist and persists", store.library.playlist(id: added.id)?.name == "Third+" && repo.load().playlist(id: added.id)?.name == "Third+")
+    // add a wallpaper to a playlist (the Library grid path) → appends, dedups, persists
+    let wp = WallpaperReference(id: "wp-1")
+    Check.that("addItem appends a wallpaper to the playlist",
+               store.addItem(wp, toPlaylist: added.id) && store.library.playlist(id: added.id)?.items.contains(wp) == true)
+    Check.that("addItem ignores a duplicate", store.addItem(wp, toPlaylist: added.id) == false)
+    Check.that("the added wallpaper is persisted", repo.load().playlist(id: added.id)?.items.contains(wp) == true)
     // remove the selected → reselects the first remaining, persists
     store.remove(id: added.id)
     Check.that("removing the selected playlist reselects another", store.library.count == 2 && store.selectedPlaylist?.name == "First")

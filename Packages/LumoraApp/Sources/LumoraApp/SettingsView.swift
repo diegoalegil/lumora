@@ -40,7 +40,7 @@ struct SettingsView: View {
             .navigationTitle("Lumora")
         } detail: {
             switch section ?? .playlists {
-            case .library:     LibrarySettingsView(items: libraryItems)
+            case .library:     LibrarySettingsView(items: libraryItems, store: store)
             case .playlists:   PlaylistsSettingsView(store: store, libraryItems: libraryItems)
             case .preferences: PreferencesSettingsView(preferences: preferences)
             }
@@ -77,9 +77,11 @@ struct PreferencesSettingsView: View {
     }
 }
 
-/// The Library pane: a grid of installed wallpapers (thumbnails). Selecting one is how a playlist gets items.
+/// The Library pane: a grid of installed wallpapers (thumbnails). Right-click a wallpaper to add it to a
+/// playlist — that's how a playlist gets its items.
 struct LibrarySettingsView: View {
     let items: [WallpaperListItem]
+    @Bindable var store: PlaylistStore
 
     private let columns = [GridItem(.adaptive(minimum: 160), spacing: 16)]
 
@@ -99,6 +101,7 @@ struct LibrarySettingsView: View {
                                     .clipShape(RoundedRectangle(cornerRadius: 8))
                                 Text(item.title).font(.caption).lineLimit(1)
                             }
+                            .contextMenu { addToPlaylistMenu(for: item) }
                         }
                     }
                     .padding()
@@ -106,6 +109,22 @@ struct LibrarySettingsView: View {
             }
         }
         .navigationTitle("Library")
+    }
+
+    /// The right-click menu: add this wallpaper to an existing playlist, or start a new one from it.
+    @ViewBuilder
+    private func addToPlaylistMenu(for item: WallpaperListItem) -> some View {
+        if !store.library.playlists.isEmpty {
+            Menu("Add to Playlist") {
+                ForEach(store.library.playlists, id: \.id) { playlist in
+                    Button(playlist.name) { store.addItem(item.reference, toPlaylist: playlist.id) }
+                }
+            }
+        }
+        Button("New Playlist from This…") {
+            let playlist = store.addPlaylist(name: item.title)
+            store.addItem(item.reference, toPlaylist: playlist.id)
+        }
     }
 }
 

@@ -59,6 +59,17 @@ public final class PlaylistStore {
         persist()
     }
 
+    /// Append a wallpaper to a playlist (ignoring duplicates) and persist. This is how the Library grid adds a
+    /// wallpaper to a playlist; returns true if it was added.
+    @discardableResult
+    public func addItem(_ reference: WallpaperReference, toPlaylist id: UUID) -> Bool {
+        guard var playlist = library.playlist(id: id), !playlist.items.contains(reference) else { return false }
+        playlist.items.append(reference)
+        library.upsert(playlist)
+        persist()
+        return true
+    }
+
     /// Remove a playlist; if it was selected, fall back to the first remaining one. Persists.
     public func remove(id: UUID) {
         library.remove(id: id)
