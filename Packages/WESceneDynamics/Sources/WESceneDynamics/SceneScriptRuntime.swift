@@ -51,10 +51,54 @@ public final class SceneScriptRuntime {
         lumora_set_js_execution_time_limit(context.jsGlobalContextRef, Self.executionTimeLimitSeconds)
 
         let prelude = """
-        function Vec2(x, y) { this.x = x || 0; this.y = (y === undefined ? (x || 0) : y); }
+        function Vec2(x, y) {
+            if (x !== null && typeof x === 'object' && 'x' in x) { this.x = x.x || 0; this.y = (y === undefined ? (x.y || 0) : y); return; }
+            this.x = x || 0; this.y = (y === undefined ? (x || 0) : y);
+        }
         Vec2.prototype.copy = function () { return new Vec2(this.x, this.y); };
-        function Vec3(x, y, z) { this.x = x || 0; this.y = (y === undefined ? (x || 0) : y); this.z = (z === undefined ? (x || 0) : z); }
+        // WE's Vec3 has a spread constructor: `new Vec3(someVec, z)` lifts a Vec2/Vec3's x,y and takes z from the
+        // 2nd arg (a clock script does `new Vec3(engine.canvasSize, 1)`). Keep the scalar path byte-identical to
+        // before so existing audio-bar scripts are unaffected; only add the object branch.
+        function Vec3(x, y, z) {
+            if (x !== null && typeof x === 'object' && 'x' in x) { this.x = x.x || 0; this.y = (x.y || 0); this.z = (y === undefined ? (x.z || 0) : y); return; }
+            this.x = x || 0; this.y = (y === undefined ? (x || 0) : y); this.z = (z === undefined ? (x || 0) : z);
+        }
         Vec3.prototype.copy = function () { return new Vec3(this.x, this.y, this.z); };
+        // Component-wise arithmetic taking a vector OR a scalar operand, matching WE's Vec2/Vec3. A scripted
+        // clock tilts itself with `origin.subtract(cursor).divide(canvasSize).multiply(50)`; without these the
+        // call throws and the whole script yields nil → the editor placeholder ("<Clock>") would be drawn.
+        function __v3(o) { return (o !== null && typeof o === 'object' && 'x' in o) ? o : new Vec3(o, o, o); }
+        function __v2(o) { return (o !== null && typeof o === 'object' && 'x' in o) ? o : new Vec2(o, o); }
+        Vec3.prototype.add = function (o) { o = __v3(o); return new Vec3(this.x + o.x, this.y + o.y, this.z + o.z); };
+        Vec3.prototype.subtract = function (o) { o = __v3(o); return new Vec3(this.x - o.x, this.y - o.y, this.z - o.z); };
+        Vec3.prototype.multiply = function (o) { o = __v3(o); return new Vec3(this.x * o.x, this.y * o.y, this.z * o.z); };
+        Vec3.prototype.divide = function (o) { o = __v3(o); return new Vec3(this.x / o.x, this.y / o.y, this.z / o.z); };
+        Vec3.prototype.dot = function (o) { o = __v3(o); return this.x * o.x + this.y * o.y + this.z * o.z; };
+        Vec3.prototype.length = function () { return Math.sqrt(this.x * this.x + this.y * this.y + this.z * this.z); };
+        Vec3.prototype.normalize = function () { var l = this.length() || 1; return new Vec3(this.x / l, this.y / l, this.z / l); };
+        Vec3.prototype.sub = Vec3.prototype.subtract; Vec3.prototype.mul = Vec3.prototype.multiply; Vec3.prototype.div = Vec3.prototype.divide;
+        Vec2.prototype.add = function (o) { o = __v2(o); return new Vec2(this.x + o.x, this.y + o.y); };
+        Vec2.prototype.subtract = function (o) { o = __v2(o); return new Vec2(this.x - o.x, this.y - o.y); };
+        Vec2.prototype.multiply = function (o) { o = __v2(o); return new Vec2(this.x * o.x, this.y * o.y); };
+        Vec2.prototype.divide = function (o) { o = __v2(o); return new Vec2(this.x / o.x, this.y / o.y); };
+        Vec2.prototype.length = function () { return Math.sqrt(this.x * this.x + this.y * this.y); };
+        Vec2.prototype.sub = Vec2.prototype.subtract; Vec2.prototype.mul = Vec2.prototype.multiply; Vec2.prototype.div = Vec2.prototype.divide;
+        // WEMath: WE's shader-math helper module that clock/visualiser scripts `import`. Reconstructed from
+        // public WE docs + observed usage (mix/clamp/etc. are standard GLSL-style helpers); no GPL source read.
+        var WEMath = {
+            mix: function (a, b, t) { return a + (b - a) * t; },
+            lerp: function (a, b, t) { return a + (b - a) * t; },
+            clamp: function (x, lo, hi) { return Math.min(hi, Math.max(lo, x)); },
+            saturate: function (x) { return Math.min(1, Math.max(0, x)); },
+            smoothstep: function (e0, e1, x) { var t = Math.min(1, Math.max(0, (x - e0) / ((e1 - e0) || 1))); return t * t * (3 - 2 * t); },
+            step: function (e, x) { return x < e ? 0 : 1; },
+            sign: function (x) { return Math.sign(x); },
+            fract: function (x) { return x - Math.floor(x); },
+            mod: function (x, m) { return x - m * Math.floor(x / m); },
+            radians: function (d) { return d * Math.PI / 180; },
+            degrees: function (r) { return r * 180 / Math.PI; },
+            PI: Math.PI
+        };
         var __layers = [];
         // WE's layer property setters COPY the assigned vector — a script that does `bar.origin = origin`
         // then mutates `origin` in a loop (the bar visualisers do exactly this to space N bars) must leave
@@ -98,11 +142,33 @@ public final class SceneScriptRuntime {
         var engine = {
             AUDIO_RESOLUTION_16: 16, AUDIO_RESOLUTION_32: 32, AUDIO_RESOLUTION_64: 64,
             registerAudioBuffers: function () { return __audio; },
-            getArrayValues: function () { return []; }
+            getArrayValues: function () { return []; },
+            canvasSize: new Vec2(1920, 1080),
+            frametime: 0.0166667,
+            time: 0,
+            getFrameTime: function () { return 0.0166667; }
+        };
+        // Pointer state a cursor-reactive script reads (an interactive 3D clock tilts toward the mouse). A
+        // rendered wallpaper has no live cursor, so default it to the layer's own origin: the script's
+        // `origin.subtract(cursorWorldPosition)` delta is then zero → no tilt, exactly like the mouse resting
+        // on the clock. Without this the script throws on the missing `input` and falls back to the placeholder.
+        var input = {
+            cursorWorldPosition: thisLayer.origin.copy(),
+            mousePosition: new Vec2(0.5, 0.5),
+            pointerPosition: new Vec2(0.5, 0.5)
         };
         """
         context.evaluateScript(prelude)
-        context.evaluateScript(script.replacingOccurrences(of: "export ", with: ""))
+        // WE SceneScript is an ES module: it `export`s update()/init()/scriptProperties and may `import` a WE
+        // helper module (e.g. `import * as WEMath from 'WEMath';`). JavaScriptCore's evaluateScript runs plain
+        // scripts, where `export`/`import` are syntax errors that abort the WHOLE module — so a clock that
+        // imports WEMath would fail to define update() and the editor placeholder ("<3D Clock>") would render
+        // instead of the time. Neutralise the module wrappers: drop each `import` line (the helper it names is
+        // provided as a prelude global) and strip the `export ` keyword so the declarations become plain globals.
+        let moduleStripped = script
+            .replacingOccurrences(of: "(?m)^[ \\t]*import\\b[^\\n]*$", with: "", options: .regularExpression)
+            .replacingOccurrences(of: "export ", with: "")
+        context.evaluateScript(moduleStripped)
 
         if let props = context.objectForKeyedSubscript("scriptProperties"), !props.isUndefined,
            let dict = props.toDictionary() as? [String: Any] { properties = dict }
