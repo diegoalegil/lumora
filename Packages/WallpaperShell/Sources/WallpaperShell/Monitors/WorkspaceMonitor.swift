@@ -29,6 +29,7 @@ public final class WorkspaceMonitor {
     }
 
     public func start() {
+        guard tokens.isEmpty, distributedTokens.isEmpty else { return }   // already started — don't double-register
         let center = NSWorkspace.shared.notificationCenter
 
         for name in [NSWorkspace.didActivateApplicationNotification,
@@ -81,5 +82,10 @@ public final class WorkspaceMonitor {
         let distributed = DistributedNotificationCenter.default()
         distributedTokens.forEach { distributed.removeObserver($0) }
         distributedTokens.removeAll()
+        // We're no longer observing, so don't keep reporting a stale "asleep / locked / screensaver" state — a
+        // restart would otherwise read it as current and wrongly pause rendering.
+        isDisplayAsleep = false
+        screenLocked = false
+        screensaverActive = false
     }
 }
