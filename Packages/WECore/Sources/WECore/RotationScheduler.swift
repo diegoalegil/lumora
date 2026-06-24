@@ -49,21 +49,27 @@ public struct RotationScheduler: Sendable {
         return current
     }
 
-    /// Manually move to the next item, restarting the interval from `now`.
+    /// Manually move to the next item, restarting the interval from `now`. A manual skip while paused keeps
+    /// rotation frozen (it does not implicitly resume) but clears the carried-over elapsed time, so a later
+    /// `resume` gives the newly-selected wallpaper a full interval instead of a stale pre-skip remainder.
     @discardableResult
     public mutating func next(now: TimeInterval) -> WallpaperReference? {
         guard order.count > 1 else { return current }
         index = stepped(forward: true)
         lastAdvance = now
+        pausedElapsed = 0
         return current
     }
 
-    /// Manually move to the previous item, restarting the interval from `now`.
+    /// Manually move to the previous item, restarting the interval from `now` (same paused-skip contract as
+    /// `next`). In `.randomNoImmediateRepeat` there is no history, so this draws a fresh non-repeating random
+    /// item rather than the one shown before the current item (matching Wallpaper Engine's behaviour).
     @discardableResult
     public mutating func previous(now: TimeInterval) -> WallpaperReference? {
         guard order.count > 1 else { return current }
         index = stepped(forward: false)
         lastAdvance = now
+        pausedElapsed = 0
         return current
     }
 

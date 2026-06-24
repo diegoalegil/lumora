@@ -277,6 +277,18 @@ do {
     Check.that("advances once the remaining time elapses", sched.tick(now: 560) == refs[1])
 }
 do {
+    // A manual skip WHILE paused resets the interval baseline: resume then gives the manually-selected
+    // wallpaper a FULL interval, not the carried-over pre-skip remainder. (Before the fix, resume reused the
+    // elapsed captured at pause and cut the manual pick short.)
+    var sched = RotationScheduler(playlist: Playlist(name: "R", items: refs, mode: .inOrder, rotationInterval: 100), seed: 7, now: 0)
+    sched.pause(now: 40)                                    // 40 of 100 elapsed, then frozen
+    Check.that("manual next while paused changes the item", sched.next(now: 50) == refs[1])
+    Check.that("a manual skip does not implicitly resume", sched.tick(now: 1000) == nil)
+    sched.resume(now: 100)
+    Check.that("the manual pick is not cut short by the pre-skip remainder", sched.tick(now: 160) == nil)
+    Check.that("it advances a full interval after resume", sched.tick(now: 200) == refs[2])
+}
+do {
     // randomNoImmediateRepeat never shows the same wallpaper twice in a row.
     var sched = RotationScheduler(playlist: Playlist(name: "R", items: refs, mode: .randomNoImmediateRepeat, rotationInterval: 10), seed: 123, now: 0)
     var prev = sched.current
