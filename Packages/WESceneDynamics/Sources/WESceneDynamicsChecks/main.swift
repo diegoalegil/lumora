@@ -149,6 +149,17 @@ if let strLit = SceneScriptRuntime(script: "export function update(v){ return \"
 if let midline = SceneScriptRuntime(script: "var k = 1; export function update(v){ return v; }") {
     Check.that("a mid-line export (after ;) still loads", midline.updateString("ok") == "ok")
 }
+// A script returning a non-finite number (Infinity/NaN) must yield nil, not drive a layer transform into a
+// GPU-undefined NaN — the caller keeps its static value (matches updateString's reject-non-string contract).
+if let inf = SceneScriptRuntime(script: "export function update(v){ return 1/0; }") {
+    Check.that("an Infinity update() number yields nil (graceful)", inf.updateNumber(0) == nil)
+}
+if let nan = SceneScriptRuntime(script: "export function update(v){ return 0/0; }") {
+    Check.that("a NaN update() number yields nil (graceful)", nan.updateNumber(0) == nil)
+}
+if let fin = SceneScriptRuntime(script: "export function update(v){ return 0.5; }") {
+    Check.that("a finite update() number still returns", fin.updateNumber(0) == 0.5)
+}
 
 // A real WE "3D clock" module: it `import`s WEMath and tilts itself toward the cursor with Vec3 arithmetic
 // (origin.subtract(cursor).divide(canvasSize).multiply(50) + WEMath.mix). JavaScriptCore can't run ES-module

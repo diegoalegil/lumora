@@ -237,12 +237,16 @@ public struct ParticleSystem: Sendable, Equatable {
             case "oscillateposition": system.oscillatePosition = oscillator(op, scaleDefault: (0, 0))
             case "vortex", "vortex_v2":
                 func num(_ k: String, _ f: Double) -> Double { (op[k] as? NSNumber)?.doubleValue ?? f }
+                // Clamp finite like every other untrusted operator scalar: a non-finite radius/speed (e.g.
+                // `"1e309"` → inf) would feed the renderer's tangential-orbit math a NaN and scatter sprites.
+                let di = clampFinite(num("distanceinner", 0), 0, 1_000_000, 0)
+                let dOut = clampFinite(num("distanceouter", 1), 0, 1_000_000, 1)
                 system.vortex = Vortex(
                     offset: vec3(op["offset"]),
-                    distanceInner: num("distanceinner", 0),
-                    distanceOuter: max(num("distanceinner", 0) + 1, num("distanceouter", 1)),
-                    speedInner: num("speedinner", 0),
-                    speedOuter: num("speedouter", 0))
+                    distanceInner: di,
+                    distanceOuter: max(di + 1, dOut),
+                    speedInner: clampFinite(num("speedinner", 0), -100_000, 100_000, 0),
+                    speedOuter: clampFinite(num("speedouter", 0), -100_000, 100_000, 0))
             case "controlpointattract":
                 // A system may declare SEVERAL controlpointattract operators (e.g. a short-range repel + a
                 // long-range attract that together make a flock orbit a point without collapsing). Collect each

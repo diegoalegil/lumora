@@ -133,6 +133,10 @@ public enum PuppetModel {
             func parse(_ layout: VertexLayout) -> PuppetMesh? {
                 let stride = layout.stride, uvOff = layout.uvOff, boneOff = layout.boneOff, weightOff = layout.weightOff
                 let vertexCount = vertexBytes / stride
+                // A vertexBytes smaller than one stride yields a zero-vertex mesh; with triangle indices that would
+                // be an index buffer over an empty vertex array (a GPU out-of-bounds in the raw-draw path). An
+                // empty mesh is never a coherent figure, so bail — the caller keeps the static preview.
+                guard vertexCount > 0 else { return nil }
 
                 var positions = [SIMD2<Float>](); positions.reserveCapacity(vertexCount)
                 var uvs = [SIMD2<Float>](); uvs.reserveCapacity(vertexCount)
