@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleName</key>
+    <string>Lumora</string>
+    <key>CFBundleDisplayName</key>
+    <string>Lumora</string>
+    <key>CFBundleExecutable</key>
+    <string>Lumora</string>
+    <key>CFBundleIdentifier</key>
+    <string>com.diegoalegil.lumora</string>
+    <key>CFBundleIconFile</key>
+    <string>Lumora</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleShortVersionString</key>
+    <string>0.1.0</string>
+    <key>CFBundleVersion</key>
+    <string>1</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>14.0</string>
+    <!-- Menu-bar accessory app: no Dock icon by default (matches main.swift's .accessory policy). The app can
+         show a Dock icon at runtime when the user enables it in Settings. -->
+    <key>LSUIElement</key>
+    <true/>
+    <key>NSPrincipalClass</key>
+    <string>NSApplication</string>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+    <key>NSHumanReadableCopyright</key>
+    <string>Reads only Wallpaper Engine content already on this Mac. Not affiliated with Wallpaper Engine or Valve.</string>
+</dict>
+</plist>

@@ -32,3 +32,6 @@ parity/corpus/**
 !parity/corpus/**/*.md
 parity/captures/
 parity/out/
+
+# Built .app bundle (run Scripts/build_app.sh)
+build/
