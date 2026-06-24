@@ -26,20 +26,18 @@ public struct WallpaperRouter: Sendable {
         return ResolvedWallpaper(ref: ref, type: type, manifest: manifest, mainFileURL: mainFileURL)
     }
 
-    /// True when `url` points to a location strictly inside `folder`. Two layers, both must hold:
-    /// 1. Lexical: collapse `.`/`..` WITHOUT touching the filesystem (`.standardized`) so an absolute or
-    ///    `../` escape is rejected even when the asset doesn't exist on disk yet.
-    /// 2. Symlink-resolved: the bundle is untrusted Workshop content, so it could contain a symlinked
-    ///    subfolder pointing back out; resolve symlinks on both sides and re-check. `resolvingSymlinksInPath`
-    ///    resolves the existing prefix (the folder and any real subfolders) consistently for both URLs and
-    ///    leaves a not-yet-existing leaf in place, so the comparison stays well-defined.
-    /// The trailing-slash guard rejects a sibling whose name merely shares the prefix (`/library/wall` is
-    /// not "inside" `/library/wallpaper`).
+    /// True when `url`, after collapsing any `.`/`..`, still points to a location strictly inside `folder`.
+    /// Comparison is purely LEXICAL (`.standardized`, not symlink-resolving) ON PURPOSE: the main asset often
+    /// doesn't exist on disk yet, and `resolvingSymlinksInPath` resolves the `/private` prefix for an existing
+    /// folder but NOT for a not-yet-existing leaf, which would compare the two inconsistently and reject a
+    /// perfectly valid (merely missing) asset. This blocks the realistic manifest-injection vectors — an
+    /// absolute path or a `../` escape. (A symlinked subfolder physically planted inside an untrusted bundle is
+    /// a separate, lower-severity vector not defended here; the live web gate resolves symlinks, see
+    /// `WallpaperNavigationPolicy`.) The trailing-slash guard rejects a sibling whose name merely shares the
+    /// prefix (`/library/wall` is not "inside" `/library/wallpaper`).
     static func path(_ url: URL, isWithin folder: URL) -> Bool {
         let base = folder.standardized.path
-        guard url.standardized.path.hasPrefix(base + "/") else { return false }
-        let resolvedBase = folder.resolvingSymlinksInPath().standardized.path
-        return url.resolvingSymlinksInPath().standardized.path.hasPrefix(resolvedBase + "/")
+        return url.standardized.path.hasPrefix(base + "/")
     }
 
     /// Load `project.json` from a folder and resolve in one step.
