@@ -5,17 +5,15 @@ import Metal
 import WEImporter
 
 extension TextureFormat {
-    /// The Metal pixel format this WE format uploads as. DXT1/3/5 map to BC1/2/3 and upload verbatim. Colour
-    /// formats use the sRGB variants so the GPU decodes to linear on sample and layer blending happens in
-    /// linear light (matching WE); r8/rg88 stay linear since they carry mask/normal data, not colour.
+    /// The Metal pixel format this WE format uploads as. DXT1/3/5 map to BC1/2/3 and upload verbatim.
     var metalPixelFormat: MTLPixelFormat {
         switch self {
-        case .rgba8888: return .rgba8Unorm_srgb
+        case .rgba8888: return .rgba8Unorm
         case .r8:       return .r8Unorm
         case .rg88:     return .rg8Unorm
-        case .dxt1:     return .bc1_rgba_srgb
-        case .dxt3:     return .bc2_rgba_srgb
-        case .dxt5:     return .bc3_rgba_srgb
+        case .dxt1:     return .bc1_rgba
+        case .dxt3:     return .bc2_rgba
+        case .dxt5:     return .bc3_rgba
         }
     }
 
