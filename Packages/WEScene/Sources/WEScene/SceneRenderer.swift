@@ -858,10 +858,14 @@ public final class SceneRenderer {
         // "Wildfire" can be orange in one scene, blue energy in another), so a fixed white/orange blob is as
         // often wrong as right and just obscures the scene. Skip both rather than draw a wrong blob.
         if name.hasPrefix("particle/") {
-            let skip = ["shaft", "beam", "lightning", "bolt", "ray", "trail", "streak", "debris",
-                        "fire", "flame", "ember", "spark", "lava", "magma", "wildfire"]
-            let blob = ["halo", "glow", "drop", "dot", "fog", "flare", "smoke", "star", "bokeh", "circle"]
-            if blob.contains(where: name.contains), !skip.contains(where: name.contains) {
+            // Match at TOKEN boundaries (split the filename on non-letters), not as raw substrings, so "fire"
+            // in "firefly" or "ray" in "spray" no longer wrongly skips a glow that names a blob word too.
+            let tokens = Set(name.dropFirst("particle/".count).lowercased()
+                .split(whereSeparator: { !$0.isLetter }).map(String.init))
+            let skip: Set = ["shaft", "beam", "lightning", "bolt", "ray", "trail", "streak", "debris",
+                             "fire", "flame", "ember", "spark", "lava", "magma", "wildfire"]
+            let blob: Set = ["halo", "glow", "drop", "dot", "fog", "flare", "smoke", "star", "bokeh", "circle"]
+            if !tokens.isDisjoint(with: blob), tokens.isDisjoint(with: skip) {
                 return (haloTexture, SIMD2(1, 1))   // procedural glow fills its texture: no crop
             }
         }
