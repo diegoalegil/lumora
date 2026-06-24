@@ -85,7 +85,9 @@ public struct Playlist: Codable, Sendable, Equatable, Identifiable {
     }
 
     /// The play order for this playlist, deterministic given `seed`: stored order for `.inOrder`, a seeded
-    /// shuffle otherwise. Pure — same (items, mode, seed) always yields the same order.
+    /// shuffle otherwise. For `.randomNoImmediateRepeat` the scheduler then draws random indices INTO this
+    /// array rather than walking it, so the shuffle only sets the (random) STARTING item — that's intentional,
+    /// not wasted. Pure — same (items, mode, seed) always yields the same order.
     public func resolvedOrder(seed: UInt64) -> [WallpaperReference] {
         switch mode {
         case .inOrder:
