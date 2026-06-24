@@ -232,6 +232,53 @@ if let device = MTLCreateSystemDefaultDevice() {
     Check.that("a grouped-truncation shader compiles via Metal",
                (try? device.makeLibrary(source: groupedTruncMSL, options: nil))?.makeFunction(name: "we_fragment") != nil)
 }
+// Width-mismatched arithmetic *inside a function-call argument* — not just at an assignment's top level.
+// WE's chromatic-aberration writes `texSample2D(g_Texture0, v_TexCoord.xy - (u_bOffset * timer + pointer))`
+// (vec2 − vec4 group) and its cutout-vignette writes `abs(v_TexCoord - u_offset)` (vec3 − vec2); the larger
+// operand must truncate to the narrower, which MSL rejects. The harmoniser descends into every call's args.
+let callArgFrag = """
+varying vec4 v_TexCoord;
+uniform sampler2D g_Texture0;
+uniform float u_bOffset;
+void main() {
+    vec4 timer = texSample2D(g_Texture0, v_TexCoord.xy);
+    float pointer = 0.5;
+    vec4 bValue = texSample2D(g_Texture0, v_TexCoord.xy - (u_bOffset * timer + pointer));
+    gl_FragColor = bValue;
+}
+"""
+let callArgMSL = WEShaderTranspiler.fragmentToMSL(callArgFrag)
+Check.that("truncates a vec4 group subtracted from a vec2 inside a sample() argument",
+           callArgMSL.contains("(u.u_bOffset * timer + pointer).xy"))
+let cutoutFrag = """
+varying vec3 v_TexCoord;
+uniform sampler2D g_Texture0;
+uniform vec2 u_offset;
+uniform float u_scale;
+void main() {
+    vec3 albedo = texSample2D(g_Texture0, v_TexCoord.xy);
+    float scale = pow(length(abs(v_TexCoord - u_offset)), 3.0) * u_scale;
+    gl_FragColor = vec4(albedo.rgb * scale, 1.0);
+}
+"""
+let cutoutMSL = WEShaderTranspiler.fragmentToMSL(cutoutFrag)
+Check.that("truncates a vec3 to vec2 inside an abs() argument (cutout-vignette shape)",
+           cutoutMSL.contains("abs(in.v_TexCoord.xy - u.u_offset)"))
+Check.that("leaves a correctly-typed call argument byte-identical", {
+    // `v_TexCoord.xy - u_shift` is vec2 − vec2: no operand may grow a swizzle.
+    let ok = WEShaderTranspiler.fragmentToMSL("""
+    varying vec4 v_TexCoord;
+    uniform sampler2D g_Texture0;
+    uniform vec2 u_shift;
+    void main() { gl_FragColor = texSample2D(g_Texture0, v_TexCoord.xy - u_shift); }
+    """)
+    return ok.contains("in.v_TexCoord.xy - u.u_shift)") && !ok.contains(".xy.xy") && !ok.contains("u_shift.xy")
+}())
+if let device = MTLCreateSystemDefaultDevice() {
+    Check.that("call-argument-truncation shaders compile via Metal",
+               (try? device.makeLibrary(source: callArgMSL, options: nil))?.makeFunction(name: "we_fragment") != nil &&
+               (try? device.makeLibrary(source: cutoutMSL, options: nil))?.makeFunction(name: "we_fragment") != nil)
+}
 // GLSL `discard;` (alpha-test / cutout fragments) lowers to MSL `discard_fragment();`.
 let discardFrag = """
 varying vec4 v_TexCoord;

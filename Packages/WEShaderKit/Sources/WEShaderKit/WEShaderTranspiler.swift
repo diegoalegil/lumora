@@ -410,12 +410,18 @@ public enum WEShaderTranspiler {
         return args
     }
 
-    /// Harmonise the vector arguments of component-wise intrinsic calls in `line`: when every argument is a
-    /// simple, confidently-typed operand and the vector ones disagree in width, truncate the wider to the
-    /// narrowest vector width (scalars broadcast and are left alone). Regression-safe: a call that already
-    /// type-checks has equal vector widths, so the minimum equals them all and nothing is rewritten; only a
-    /// genuinely mismatched (non-compiling) call is touched. Skips any call with a compound argument so a
-    /// width it can't see never drives a wrong truncation. Recurses into nested calls.
+    /// Harmonise width-mismatched vector arithmetic inside function-call arguments. Two cases:
+    ///  • a component-wise intrinsic (mix/clamp/…) whose arguments must share one width — the wider ones
+    ///    truncate to the narrowest (via `harmonizeArgList`, which cross-compares the arguments).
+    ///  • ANY other call — a constructor `float2(…)`, a helper, or a `tex.sample(…)` member call — whose
+    ///    arguments are independent, so each argument's OWN arithmetic is harmonised in isolation. WE's
+    ///    HLSL-derived shaders write `sample(smp, uv.xy - vec4expr)` and `abs(vec3 - vec2)`, relying on the
+    ///    larger operand truncating to the smaller; MSL rejects it. `harmonizeArithmetic` only descends into
+    ///    bare `(…)` groups, not call arguments, so this is where call arguments get reached.
+    /// Recurses into nested calls. Regression-safe: an argument that already type-checks has equal vector
+    /// widths (or is a single operand), so nothing is rewritten; only a genuinely mismatched call is touched.
+    /// Splitting and rejoining a call's argument list on "," preserves spacing (the split keeps each
+    /// argument's text verbatim), so a call needing no change is reproduced byte-for-byte.
     private static func harmonizeComponentwiseArgs(_ line: String, _ dims: [String: Int]) -> String {
         let chars = Array(line); let n = chars.count
         var result = ""; var i = 0
@@ -426,12 +432,17 @@ public enum WEShaderTranspiler {
                 while j < n, chars[j].isLetter || chars[j].isNumber || chars[j] == "_" { j += 1 }
                 let name = String(chars[i..<j])
                 let isMember = i > 0 && chars[i - 1] == "."
-                if !isMember, componentwiseFns.contains(name), j < n, chars[j] == "(" {
+                if j < n, chars[j] == "(" {
                     var depth = 0, k = j
                     while k < n { if chars[k] == "(" { depth += 1 } else if chars[k] == ")" { depth -= 1; if depth == 0 { break } }; k += 1 }
                     if k < n {
                         let inner = String(chars[(j + 1)..<k])
-                        result += name + "(" + harmonizeArgList(inner, dims) + ")"
+                        if !isMember, componentwiseFns.contains(name) {
+                            result += name + "(" + harmonizeArgList(inner, dims) + ")"
+                        } else {
+                            let args = splitTopLevelArgs(inner).map { harmonizeArithmetic(harmonizeComponentwiseArgs($0, dims), dims) }
+                            result += name + "(" + args.joined(separator: ",") + ")"
+                        }
                         i = k + 1; continue
                     }
                 }
