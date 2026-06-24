@@ -648,6 +648,34 @@ if let pkg = try? ScenePackage.read(plainPkg), let doc = try? SceneGraph.load(fr
     Check.that("an ordinary layer has no driverScript", doc.layers.first?.driverScript == nil)
     Check.that("an ordinary layer has no explicit alignment (centre by default)", doc.layers.first?.alignment == nil)
 }
+// A particle object's child sub-emitters (an ember's emberglow, a comet's trail, a magic charge's rays) are
+// secondary systems WE spawns alongside the parent. Lumora collects them too, each positioned at the parent
+// emitter's world origin — so a parent with one child yields TWO systems (and the child's own material/sprite).
+let parentParticle = #"{"emitter":[{"name":"boxrandom","distancemax":"100 100 0","rate":50}],"material":"materials/p_parent.json","children":[{"id":1,"name":"particles/child_glow.json"}]}"#
+let childParticle = #"{"emitter":[{"name":"boxrandom","distancemax":"50 50 0","rate":30}],"material":"materials/p_child.json"}"#
+let childScene = #"{"objects":[{"name":"sparks","particle":"particles/parent.json","origin":"960 540 0","visible":true}]}"#
+let childPkg = buildPKG(version: "PKGV0009", files: [
+    ("scene.json", Data(childScene.utf8)),
+    ("particles/parent.json", Data(parentParticle.utf8)),
+    ("particles/child_glow.json", Data(childParticle.utf8)),
+])
+if let pkg = try? ScenePackage.read(childPkg), let doc = try? SceneGraph.load(from: pkg) {
+    Check.that("a particle with one child yields two systems (parent + child)", doc.particleSystems.count == 2)
+    Check.that("the child system carries its own material (not the parent's)",
+               doc.particleSystems.contains { $0.materialPath == "materials/p_child.json" }
+               && doc.particleSystems.contains { $0.materialPath == "materials/p_parent.json" })
+    Check.that("both systems sit at the parent object's world origin (960,540)",
+               doc.particleSystems.allSatisfy { abs($0.origin.x - 960) < 0.01 && abs($0.origin.y - 540) < 0.01 })
+}
+// A childless particle still yields exactly one system (no regression from the children refactor).
+let noChildScene = #"{"objects":[{"name":"sparks","particle":"particles/solo.json","origin":"0 0 0","visible":true}]}"#
+let noChildPkg = buildPKG(version: "PKGV0009", files: [
+    ("scene.json", Data(noChildScene.utf8)),
+    ("particles/solo.json", Data(childParticle.utf8)),
+])
+if let pkg = try? ScenePackage.read(noChildPkg), let doc = try? SceneGraph.load(from: pkg) {
+    Check.that("a childless particle yields exactly one system", doc.particleSystems.count == 1)
+}
 // A non-centre alignment (e.g. a full-screen background anchored bottom-left) must survive parsing so the
 // renderer can shift the quad to land that corner on the layer's origin.
 let alignScene = #"{"objects":[{"name":"bg","image":"models/m.json","alignment":"bottomleft","origin":"0 0 0","size":"3840 2160"}]}"#
