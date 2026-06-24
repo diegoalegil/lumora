@@ -864,10 +864,18 @@ public final class SceneRenderer {
                 .split(whereSeparator: { !$0.isLetter }).map(String.init))
             let skip: Set = ["shaft", "beam", "lightning", "bolt", "ray", "trail", "streak", "debris",
                              "fire", "flame", "ember", "spark", "lava", "magma", "wildfire"]
-            let blob: Set = ["halo", "glow", "drop", "dot", "fog", "flare", "smoke", "star", "bokeh", "circle"]
-            if !tokens.isDisjoint(with: blob), tokens.isDisjoint(with: skip) {
+            let blob = ["halo", "glow", "drop", "dot", "fog", "flare", "smoke", "star", "bokeh", "circle"]
+            // SKIP words match at token boundaries (so "fire" in "firefly" / "ray" in "spray" don't wrongly
+            // skip a glow), but BLOB words match as a substring: a compound name like "chromaticdot" IS a round
+            // glow and should get the procedural sprite, not be dropped because the token didn't split on "dot".
+            if blob.contains(where: { name.contains($0) }), tokens.isDisjoint(with: skip) {
                 return (haloTexture, SIMD2(1, 1))   // procedural glow fills its texture: no crop
             }
+        }
+        // Diagnostic (off by default): surface which sprites are being skipped so the silent drops that leave a
+        // scene missing its snow/rain/petals/etc. become visible data instead of an invisible gap.
+        if ProcessInfo.processInfo.environment["LUMORA_LOG_DROPS"] != nil {
+            FileHandle.standardError.write(Data("DROP-SPRITE \(name)\n".utf8))
         }
         return nil
     }
