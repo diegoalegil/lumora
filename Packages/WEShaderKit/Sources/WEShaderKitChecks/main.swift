@@ -174,6 +174,14 @@ Check.that("leaves a well-formed clamp(vec, scalar, scalar) untouched", {
 if let device = MTLCreateSystemDefaultDevice() {
     Check.that("harmonised mix MSL compiles via Metal", (try? device.makeLibrary(source: mixMSL, options: nil))?.makeFunction(name: "we_fragment") != nil)
 }
+// The WE dialect uses HLSL-spelled screen-space derivatives (ddx/ddy); Metal is dfdx/dfdy. A cloud/fluid
+// shader sampling a gradient must have them renamed, or it fails to compile on an undeclared identifier.
+let ddxShader = "varying vec4 v_TexCoord;\nvoid main() { vec2 g = vec2(ddx(v_TexCoord.x), ddy(v_TexCoord.y)); gl_FragColor = vec4(g, 0.0, 1.0); }"
+let ddxMSL = WEShaderTranspiler.fragmentToMSL(ddxShader)
+Check.that("renames ddx/ddy to dfdx/dfdy", ddxMSL.contains("dfdx(") && ddxMSL.contains("dfdy(") && !ddxMSL.contains("ddx(") && !ddxMSL.contains("ddy("))
+if let device = MTLCreateSystemDefaultDevice() {
+    Check.that("a ddx/ddy shader compiles via Metal after the rename", (try? device.makeLibrary(source: ddxMSL, options: nil))?.makeFunction(name: "we_fragment") != nil)
+}
 
 // Plain arithmetic of mismatched-width operands (texture-transform shaders divide a vec2 offset by the
 // vec4 g_*Resolution): truncate the wider operand to the narrowest vector width, like the dialect does.

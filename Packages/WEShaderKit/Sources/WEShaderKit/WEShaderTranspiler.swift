@@ -1024,8 +1024,12 @@ public enum WEShaderTranspiler {
         out = promoteNumericLiterals(out)   // min(x, 1) with a float x → min(x, 1.0)
         out = rewriteReservedWords(out)
         // (mod and two-arg atan are defined in the prelude — GLSL semantics differ from Metal's.)
-        for (glsl, msl) in [("frac", "fract"), ("inversesqrt", "rsqrt"), ("lerp", "mix")] {
-            out = replaceWord(out, glsl, msl)
+        // The WE dialect spells screen-space derivatives the HLSL way (ddx/ddy); Metal is dfdx/dfdy. Without
+        // this rename a cloud/fluid shader that samples a gradient (ddx(pressure), ddy(cloudBlend)) fails to
+        // compile on an undeclared identifier and the whole effect drops to a no-op.
+        for (source, msl) in [("frac", "fract"), ("inversesqrt", "rsqrt"), ("lerp", "mix"),
+                              ("ddx", "dfdx"), ("ddy", "dfdy")] {
+            out = replaceWord(out, source, msl)
         }
         // GLSL's `discard;` statement is MSL's `discard_fragment();` call (alpha-test / cutout fragments).
         // `discard` is a GLSL reserved keyword — never an identifier — so a word-bounded replace is safe.
