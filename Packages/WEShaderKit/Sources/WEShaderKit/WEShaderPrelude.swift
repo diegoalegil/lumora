@@ -21,7 +21,7 @@ public enum WEShaderPrelude {
     }
 
     /// Drop EVERY `inline <type> <name>(…) { … }` definition of `name` (brace-matched). A prelude name like
-    /// `mod` (7 overloads) or `atan` (3) is overloaded; removing only the first would leave the rest to
+    /// `mod` (7 overloads) or `atan` (4) is overloaded; removing only the first would leave the rest to
     /// collide with the shader's own copy. Loops until no definition of the name remains.
     private static func removingFunction(named name: String, from text: String) -> String {
         var result = text
