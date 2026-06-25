@@ -13,6 +13,10 @@ import WEShaderKit
 public final class EffectRenderer {
     public let device: MTLDevice
     private let queue: MTLCommandQueue
+    /// The most recent pass committed by `renderPass`. Effect passes no longer block the CPU (the frame's final
+    /// composite is the barrier), so a direct CPU `readback` — used only by tests/previews, never the live
+    /// compositor — waits on this to be sure the pass it's about to read has actually finished on the GPU.
+    private var lastCommittedBuffer: MTLCommandBuffer?
     private let vertexFunction: MTLFunction
     private let sampler: MTLSamplerState
 
@@ -41,8 +45,11 @@ public final class EffectRenderer {
     }
     """
 
-    public init?(device: MTLDevice? = MTLCreateSystemDefaultDevice()) {
-        guard let device, let queue = device.makeCommandQueue(),
+    /// `queue` lets the host share its command queue (the scene compositor passes its own). One queue means
+    /// Metal's automatic hazard tracking orders a layer's quad render, its effect passes and the final
+    /// composite without a CPU wait between them; a standalone EffectRenderer (tests) makes its own.
+    public init?(device: MTLDevice? = MTLCreateSystemDefaultDevice(), queue: MTLCommandQueue? = nil) {
+        guard let device, let queue = queue ?? device.makeCommandQueue(),
               let library = try? device.makeLibrary(source: Self.vertexSource, options: nil),
               let vertexFunction = library.makeFunction(name: "we_effect_vertex") else { return nil }
         self.device = device
@@ -218,8 +225,13 @@ public final class EffectRenderer {
         }
         encoder.endEncoding()
         commandBuffer.commit()
-        commandBuffer.waitUntilCompleted()
-        return commandBuffer.error == nil   // a GPU fault leaves the target undefined — fail cleanly
+        lastCommittedBuffer = commandBuffer
+        // Don't block the CPU here. `output` is a tracked texture on the shared command queue, so Metal
+        // automatically orders this pass before whoever next reads `output` (the next effect pass or the final
+        // composite) — and the frame's single readback wait (SceneRenderer.withRenderPass) is the barrier that
+        // guarantees every queued pass has finished before the pixels are fetched. Waiting after every pass
+        // instead serialised CPU-encode against GPU-execute, stalling the main thread dozens of times a frame.
+        return commandBuffer.error == nil   // nil unless the commit itself failed
     }
 
     /// Render `input` through an own-vertex effect `pipeline` into a fresh full-size texture: `input` binds
@@ -286,8 +298,10 @@ public final class EffectRenderer {
         return texture
     }
 
-    /// Read an RGBA8 texture's pixels back (for tests and previews).
+    /// Read an RGBA8 texture's pixels back (for tests and previews). Effect passes don't wait on the GPU, so
+    /// flush the last committed pass first — otherwise `getBytes` could race a still-running render.
     public func readback(_ texture: MTLTexture) -> Data {
+        lastCommittedBuffer?.waitUntilCompleted()
         let width = texture.width, height = texture.height
         var rgba = Data(count: width * height * 4)
         rgba.withUnsafeMutableBytes { raw in

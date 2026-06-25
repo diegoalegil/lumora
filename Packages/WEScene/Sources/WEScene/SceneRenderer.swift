@@ -457,7 +457,9 @@ public final class SceneRenderer {
         self.noiseTexture = noise
         self.haloTexture = halo
 
-        self.effectRenderer = EffectRenderer(device: device)   // nil only if the device can't build it
+        // Share the compositor's command queue so effect passes and the final composite sit on one queue —
+        // Metal then orders their tracked-texture dependencies itself, no per-pass CPU wait needed.
+        self.effectRenderer = EffectRenderer(device: device, queue: queue)   // nil only if the device can't build it
     }
 
     /// Build a shader-readable RGBA8 texture from tightly-packed bytes.
@@ -1696,7 +1698,9 @@ public final class SceneRenderer {
                          swayX: swayX, swayY: swayY, effectResult: effectResult)
         encoder.endEncoding()
         commandBuffer.commit()
-        commandBuffer.waitUntilCompleted()
+        // `target` is a tracked texture on the shared queue; the refractive-droplet pass that samples it is
+        // ordered after this write automatically, and the frame's final readback wait is the barrier. No
+        // CPU stall here (see EffectRenderer.renderPass for the rationale).
         return target
     }
 
@@ -1765,7 +1769,11 @@ public final class SceneRenderer {
         encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
         encoder.endEncoding()
         commandBuffer.commit()
-        commandBuffer.waitUntilCompleted()
+        // Live path (allocTarget set, from the per-frame pool): `texture` is a tracked target on the shared
+        // queue feeding this layer's effect chain, so Metal orders those reads after this write and the frame's
+        // final readback wait is the only barrier needed — don't stall the CPU here. The one-time dry run
+        // (allocTarget nil) reads the result straight back on the CPU to test the chain, so it must finish first.
+        if allocTarget == nil { commandBuffer.waitUntilCompleted() }
         return texture
     }
 
@@ -1831,6 +1839,10 @@ public final class SceneRenderer {
         draw(encoder)
         encoder.endEncoding()
         commandBuffer.commit()
+        // The frame's single CPU barrier: this composite reads every effect/background texture produced earlier
+        // this frame, so (tracked resources, shared queue) it can't start until all of them finish, and waiting
+        // on it waits on the whole frame. The earlier passes commit without their own wait, so the GPU pipelines
+        // them while the CPU keeps encoding — then one stall here before the pixels are read back.
         commandBuffer.waitUntilCompleted()
 
         var rgba = Data(count: width * height * 4)
