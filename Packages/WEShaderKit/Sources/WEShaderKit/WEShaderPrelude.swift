@@ -106,6 +106,7 @@ public enum WEShaderPrelude {
     inline float  atan(float y, float x)   { return atan2(y, x); }
     inline float2 atan(float2 y, float2 x) { return atan2(y, x); }
     inline float3 atan(float3 y, float3 x) { return atan2(y, x); }
+    inline float4 atan(float4 y, float4 x) { return atan2(y, x); }
 
     // --- Image blending -----------------------------------------------------------------------------
     // Functions that take a blend mode implicitly use the BLENDMODE combo; guarantee it is defined.

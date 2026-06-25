@@ -590,6 +590,15 @@ if let device = MTLCreateSystemDefaultDevice() {
     Check.that("prelude compiles GLSL mod and two-arg atan",
                (try? device.makeLibrary(source: WEShaderTranspiler.fragmentToMSL(mathShader), options: nil)) != nil)
 
+    // The two-argument atan(y, x) overload must also cover float4: without it, atan(vec4, vec4) finds no
+    // overload, the shader fails to compile, and the effect is silently dropped to a no-op.
+    let atan4Shader = """
+    varying vec4 v_TexCoord;
+    void main() { gl_FragColor = atan(v_TexCoord, v_TexCoord.wzyx); }
+    """
+    Check.that("prelude compiles a two-arg atan on float4",
+               (try? device.makeLibrary(source: WEShaderTranspiler.fragmentToMSL(atan4Shader), options: nil)) != nil)
+
     // The combine pass of a multi-pass blur folds the blurred buffer over the original via
     // common_composite.h (ApplyComposite / ApplyCompositeOffset). It must transpile and compile so the
     // four-pass blur graph completes instead of being dropped.
