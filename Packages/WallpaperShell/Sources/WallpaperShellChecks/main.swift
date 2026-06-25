@@ -495,4 +495,6 @@ do {
     Check.that("the initial build treats every display as added", fromEmpty.added == [1] && !fromEmpty.isEmpty)
 }
 
+runLibraryBrowserChecks()
+
 Check.summarize()
