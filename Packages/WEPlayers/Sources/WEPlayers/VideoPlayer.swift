@@ -29,6 +29,9 @@ public final class VideoPlayer: WallpaperRenderer {
     private var statusObservation: NSKeyValueObservation?
     private var failedEndObserver: NSObjectProtocol?
     private var didSignalFailure = false
+    // Bumped on every load() so a decode-failure callback still in flight from a previous item is ignored after
+    // a reload, instead of firing the fallback for the wrong (old) item once didSignalFailure has been reset.
+    private var loadGeneration = 0
     /// Fired at most once if AVFoundation can't decode the file, so the host can rebuild this wallpaper on the
     /// WebKit `<video>` fallback (which may handle a codec AVFoundation rejected) instead of a permanent black.
     public var onDecodeFailure: (() -> Void)?
@@ -55,6 +58,7 @@ public final class VideoPlayer: WallpaperRenderer {
         // shared queue player and two loopers fight over one queue. Harmless on first load (looper is nil).
         removeItemObservers()
         didSignalFailure = false
+        loadGeneration &+= 1
         looper?.disableLooping()
         looper = nil
         player.removeAllItems()
@@ -63,26 +67,28 @@ public final class VideoPlayer: WallpaperRenderer {
         hostView?.setPreview(previewImage)
         // AVPlayerLooper drives the queue player for gapless looping of a single item.
         let item = AVPlayerItem(url: wallpaper.mainFileURL)
-        observeDecodeFailure(of: item)
+        observeDecodeFailure(of: item, generation: loadGeneration)
         looper = AVPlayerLooper(player: player, templateItem: item)
     }
 
     /// Watch the item for a decode failure (AVFoundation accepted the container by extension but can't decode
     /// it, or the file is truncated/corrupt). Status KVO can fire off the main thread, so hop back on; the
     /// failed-to-play-to-end note is delivered on the main queue.
-    private func observeDecodeFailure(of item: AVPlayerItem) {
+    private func observeDecodeFailure(of item: AVPlayerItem, generation: Int) {
         statusObservation = item.observe(\.status, options: [.new]) { [weak self] item, _ in
             guard item.status == .failed else { return }
-            Task { @MainActor in self?.handleDecodeFailure() }
+            Task { @MainActor in self?.handleDecodeFailure(generation: generation) }
         }
         failedEndObserver = NotificationCenter.default.addObserver(
             forName: .AVPlayerItemFailedToPlayToEndTime, object: item, queue: .main) { [weak self] _ in
-            MainActor.assumeIsolated { self?.handleDecodeFailure() }
+            MainActor.assumeIsolated { self?.handleDecodeFailure(generation: generation) }
         }
     }
 
-    private func handleDecodeFailure() {
-        guard !didSignalFailure else { return }   // KVO .failed and the failed-to-end note can both fire
+    private func handleDecodeFailure(generation: Int) {
+        // Ignore a callback from a superseded load() (a reload happened before this fired), and fire only once
+        // (KVO .failed and the failed-to-end note can both arrive).
+        guard generation == loadGeneration, !didSignalFailure else { return }
         didSignalFailure = true
         hostView?.revealPreview()
         onDecodeFailure?()
