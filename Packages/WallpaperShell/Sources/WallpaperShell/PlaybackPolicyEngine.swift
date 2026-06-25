@@ -9,11 +9,6 @@ public struct PlaybackInputs: Sendable, Equatable {
     /// The desktop window reports itself occluded — the primary, authoritative "not visible"
     /// signal (a fullscreen/maximized app covering the desktop turns this on).
     public var isOccluded: Bool
-    /// Optional secondary "covered" signal. The engine honors it, but NO Phase 0 monitor populates
-    /// it yet (it defaults to `false`) — occlusion is sufficient for the Phase 0 solid-color
-    /// renderer. A dedicated fullscreen heuristic can be wired here later if occlusion proves
-    /// insufficient once GPU-heavy players land.
-    public var desktopCoveredByFullscreenApp: Bool
     /// Running on battery power (no AC).
     public var onBattery: Bool
     /// macOS Low Power Mode is enabled.
@@ -29,7 +24,6 @@ public struct PlaybackInputs: Sendable, Equatable {
     public var thermallyThrottled: Bool
 
     public init(isOccluded: Bool = false,
-                desktopCoveredByFullscreenApp: Bool = false,
                 onBattery: Bool = false,
                 lowPowerMode: Bool = false,
                 userPaused: Bool = false,
@@ -37,7 +31,6 @@ public struct PlaybackInputs: Sendable, Equatable {
                 screenLocked: Bool = false,
                 thermallyThrottled: Bool = false) {
         self.isOccluded = isOccluded
-        self.desktopCoveredByFullscreenApp = desktopCoveredByFullscreenApp
         self.onBattery = onBattery
         self.lowPowerMode = lowPowerMode
         self.userPaused = userPaused
@@ -79,8 +72,7 @@ public struct PlaybackPolicyEngine: Sendable {
         if inputs.userPaused
             || inputs.displayAsleep
             || inputs.screenLocked
-            || inputs.isOccluded
-            || inputs.desktopCoveredByFullscreenApp {
+            || inputs.isOccluded {
             return .paused
         }
         // Otherwise render, throttling on battery / low-power / thermal pressure.

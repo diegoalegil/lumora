@@ -19,9 +19,9 @@ let occluded = engine.directive(for: PlaybackInputs(isOccluded: true))
 Check.that("occluded paused", !occluded.renderingEnabled)
 Check.that("occluded fps 0", occluded.targetFPS == 0)
 
-// Fullscreen app covering desktop -> paused.
-let covered = engine.directive(for: PlaybackInputs(desktopCoveredByFullscreenApp: true))
-Check.that("fullscreen-cover paused", !covered.renderingEnabled)
+// A fullscreen app covering the desktop pauses through the authoritative `isOccluded` signal (asserted
+// above): SystemSignalSource folds DesktopCoverDetector's "a window fully covers this display" into
+// isOccluded, so there is no separate "covered" input to test.
 
 // On battery (visible) -> throttled, still rendering.
 let battery = engine.directive(for: PlaybackInputs(onBattery: true))
