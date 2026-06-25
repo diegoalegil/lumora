@@ -189,4 +189,26 @@ Check.that("a 60fps directive drives a 1/60s loop interval", ScenePlayer.frameIn
 Check.that("a battery 30fps throttle drives a 1/30s interval", ScenePlayer.frameInterval(forTargetFPS: 30) == 1.0 / 30.0)
 Check.that("a 0fps (paused / occluded) directive drives no loop", ScenePlayer.frameInterval(forTargetFPS: 0) == nil)
 
+Check.section("WebPlayer.containsEscapingSymlink")
+do {
+    let fm = FileManager.default
+    let base = fm.temporaryDirectory.appendingPathComponent("lumora-symtest-\(UUID().uuidString)")
+    let bundle = base.appendingPathComponent("wp")
+    try? fm.createDirectory(at: bundle, withIntermediateDirectories: true)
+    let asset = bundle.appendingPathComponent("index.html")
+    try? Data("ok".utf8).write(to: asset)
+
+    Check.that("a bundle with no symlinks is allowed", !WebPlayer.containsEscapingSymlink(in: bundle))
+
+    // A symlink that stays inside the bundle is harmless.
+    try? fm.createSymbolicLink(at: bundle.appendingPathComponent("alias.html"), withDestinationURL: asset)
+    Check.that("an in-bundle symlink is allowed", !WebPlayer.containsEscapingSymlink(in: bundle))
+
+    // A symlink whose target escapes the bundle (here, its parent dir) is rejected.
+    try? fm.createSymbolicLink(at: bundle.appendingPathComponent("esc"), withDestinationURL: base)
+    Check.that("a symlink escaping the bundle is rejected", WebPlayer.containsEscapingSymlink(in: bundle))
+
+    try? fm.removeItem(at: base)
+}
+
 Check.summarize()

@@ -88,15 +88,56 @@ public final class WebPlayer: WallpaperRenderer {
         let target = wallpaper.mainFileURL, folder = wallpaper.ref.folderURL
         Self.withBlockRemoteRules { [weak self] rules in
             guard let self else { return }
-            if let rules {
-                // Loading a second wallpaper on the same player would otherwise stack a duplicate rule list;
-                // the only content rules here are these block-remote ones, so clearing first is safe.
-                self.webView.configuration.userContentController.removeAllContentRuleLists()
-                self.webView.configuration.userContentController.add(rules)
+            // Fail CLOSED: if the remote-egress block rule couldn't be compiled, don't run the untrusted page at
+            // all — the navigation guard never sees fetch/XHR/WebSocket, so without the rule the page would have
+            // open network egress. A blank surface is safer than an unfiltered one.
+            guard let rules else {
+                NSLog("Lumora: remote-block rules unavailable; not loading the untrusted web wallpaper")
+                self.webView.loadHTMLString("", baseURL: nil)
+                return
+            }
+            // Loading a second wallpaper on the same player would otherwise stack a duplicate rule list; the only
+            // content rules here are these block-remote ones, so clearing first is safe.
+            self.webView.configuration.userContentController.removeAllContentRuleLists()
+            self.webView.configuration.userContentController.add(rules)
+            // The broad file:// read grant below is checked TEXTUALLY against the folder subtree and is never
+            // re-validated for subresource loads (fetch/<img>/<script>) — the nav guard only sees navigations. A
+            // symlink planted in the (untrusted) bundle that escapes the folder would therefore let the page
+            // `fetch('escapingLink/…')` and read arbitrary user files. A real wallpaper never needs such a link, so
+            // refuse the bundle instead of granting it.
+            guard !Self.containsEscapingSymlink(in: folder) else {
+                NSLog("Lumora: refusing a web wallpaper whose folder contains a symlink escaping the bundle")
+                self.webView.loadHTMLString("", baseURL: nil)
+                return
             }
             // Grant read access to the wallpaper folder so the page can reach its css/js/image assets.
             self.webView.loadFileURL(target, allowingReadAccessTo: folder)
         }
+    }
+
+    /// True if `folder` (an untrusted wallpaper bundle) contains a symbolic link whose target resolves OUTSIDE
+    /// the folder. Real subdirectories are walked (depth-capped); symlinks are never followed, so a malicious
+    /// `link -> /` is detected without traversing the whole filesystem.
+    public nonisolated static func containsEscapingSymlink(in folder: URL) -> Bool {
+        let fm = FileManager.default
+        let rootPath = folder.resolvingSymlinksInPath().standardizedFileURL.path
+        func walk(_ dir: URL, depth: Int) -> Bool {
+            guard depth < 32,
+                  let items = try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: [.isSymbolicLinkKey, .isDirectoryKey],
+                                                          options: []) else { return false }
+            for item in items {
+                let values = try? item.resourceValues(forKeys: [.isSymbolicLinkKey, .isDirectoryKey])
+                if values?.isSymbolicLink == true {
+                    let resolved = item.resolvingSymlinksInPath().standardizedFileURL.path
+                    if resolved != rootPath && !resolved.hasPrefix(rootPath + "/") { return true }
+                    // a link that stays inside the bundle is harmless; don't follow it (avoids loops)
+                } else if values?.isDirectory == true, walk(item, depth: depth + 1) {
+                    return true
+                }
+            }
+            return false
+        }
+        return walk(folder, depth: 0)
     }
 
     /// Compile (once) and hand back the remote-blocking rule list. Loads still proceed if compilation fails,
