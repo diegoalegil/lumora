@@ -17,8 +17,8 @@ makes it into the shipped sources.
 - MIT/Apache projects such as `wextractor` (MIT) and `WallpaperExtractor` (Apache-2.0) may guide the
   importer; record any adaptation in `LICENSES/THIRD_PARTY.md`.
 - `repkg` documents the `.pkg`/`.tex` formats — treat it as a format reference.
-- `glslang` / `SPIRV-Cross` / `SPIRV-Tools` (permissive) are vendored as a prebuilt xcframework
-  behind a Swift facade so their C++ stays contained.
+- `WEShaderKit` translates the WE shader dialect to MSL with a hand-written Swift transpiler
+  (no SPIR-V toolchain); keep it dependency-free, learning the dialect from the public docs.
 
 ## Per-file hygiene
 - Every source file under `Packages/*/Sources/**` starts with an `// SPDX-License-Identifier:`

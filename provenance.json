@@ -43,10 +43,10 @@
     },
     "WEShaderKit": {
       "license": "Apache-2.0",
-      "provenance": "clean-room front-end + permissive vendored back-end",
+      "provenance": "clean-room",
       "sources": [
         "https://docs.wallpaperengine.io/en/scene/shader/ (dialect, combos, intrinsics)",
-        "glslang (BSD/Apache), SPIRV-Cross (Apache/MIT), SPIRV-Tools (Apache) — vendored xcframework behind a Swift facade"
+        "Hand-written WE-GLSL → MSL transpiler in Swift (string/regex rewrites over the parsed source); no SPIR-V toolchain (glslang/SPIRV-Cross) is vendored or linked — the package has no external dependencies"
       ]
     },
     "WEScene": {
