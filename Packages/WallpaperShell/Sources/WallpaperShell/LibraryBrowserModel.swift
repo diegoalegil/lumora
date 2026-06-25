@@ -57,12 +57,12 @@ public final class LibraryBrowserModel {
         return entries.first { $0.id == selectedID }
     }
 
-    /// Swap in a fresh library (after a rescan), keeping the current selection when it survives, else moving to
-    /// the first visible entry so the detail panel is never stranded on a wallpaper that's gone.
+    /// Swap in a fresh library (after a rescan), keeping the current selection when it survives AND is still
+    /// visible under the active filters, else moving to the first visible entry so the detail panel is never
+    /// stranded on a wallpaper that's gone or filtered out.
     public func replace(entries: [LibraryEntry]) {
         self.entries = entries
-        if let selectedID, entries.contains(where: { $0.id == selectedID }) { return }
-        selectedID = visibleEntries.first?.id
+        clampSelectionToVisible()
     }
 
     /// Keep the selection valid as filters change: if the selected entry filtered out, fall back to the first

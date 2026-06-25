@@ -91,6 +91,16 @@ func runLibraryBrowserChecks() {
     model.replace(entries: [entry("9", "New", .video), entry("8", "Older", .scene)])
     Check.that("replace re-homes a vanished selection", model.selectedID == "9")
 
+    // replace keeps a selection only when it survives AND is still visible under the active filters.
+    let fm = LibraryBrowserModel(entries: lib)
+    fm.typeFilter = .scene               // visible scenes are "1" (Aurora Sky) and "4" (Forest)
+    fm.selectedID = "1"
+    fm.replace(entries: lib)
+    Check.that("replace keeps a still-visible selection", fm.selectedID == "1")
+    fm.selectedID = "2"                  // "2" is a video — present in entries but filtered out by the scene facet
+    fm.replace(entries: lib)
+    Check.that("replace re-homes a selection filtered out by the active facet", fm.selectedID == "1")
+
     Check.section("LibraryFiltering favorites")
 
     Check.that("favoritesOnly keeps only starred",
