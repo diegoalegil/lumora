@@ -207,6 +207,27 @@ if CommandLine.arguments.count > 1 {
         }
         exit(0)
     }
+    if CommandLine.arguments.count > 4, CommandLine.arguments[2] == "bench" {   // dev: time the live render() loop
+        let frames = Int(CommandLine.arguments[3]) ?? 120
+        let w = Int(CommandLine.arguments[4]) ?? 3024
+        let h = CommandLine.arguments.count > 5 ? (Int(CommandLine.arguments[5]) ?? 1964) : 1964
+        let prepared = renderer.prepare(document, package: package)
+        _ = renderer.render(prepared, width: w, height: h, time: 0)   // warm up (compile pipelines, upload textures)
+        var times: [Double] = []
+        times.reserveCapacity(frames)
+        for i in 0 ..< frames {
+            let t0 = DispatchTime.now().uptimeNanoseconds
+            _ = renderer.render(prepared, width: w, height: h, time: Double(i) / 60.0)
+            times.append(Double(DispatchTime.now().uptimeNanoseconds - t0) / 1_000_000)   // ms
+        }
+        let sorted = times.sorted()
+        let mean = times.reduce(0, +) / Double(times.count)
+        let median = sorted[sorted.count / 2]
+        let p95 = sorted[min(sorted.count - 1, Int(Double(sorted.count) * 0.95))]
+        print(String(format: "bench %dx%d %d frames: mean %.2f ms (%.0f fps), median %.2f, p95 %.2f, min %.2f, max %.2f",
+                     w, h, frames, mean, 1000.0 / mean, median, p95, sorted.first ?? 0, sorted.last ?? 0))
+        exit(0)
+    }
     let time = CommandLine.arguments.count > 2 ? (Double(CommandLine.arguments[2]) ?? 0) : 0
     // Optional width/height override (args 3 and 4) so a scene can be rendered at an arbitrary target —
     // e.g. a display's real pixel size/aspect — to reproduce size-dependent artifacts the scene's own
