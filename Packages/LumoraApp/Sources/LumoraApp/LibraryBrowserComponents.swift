@@ -11,15 +11,17 @@ import WallpaperShell
 struct WallpaperThumbnailImage: View {
     let url: URL?
     var preloaded: NSImage?
+    /// `.fit` shows the whole wallpaper (letter-boxed, never cropped); `.fill` crops to fill the frame.
+    var contentMode: ContentMode = .fit
 
     var body: some View {
         ZStack {
-            Rectangle().fill(.quaternary)
+            Rectangle().fill(Color(white: 0.1))   // dark letterbox behind a fitted (uncropped) preview
             if let preloaded {
-                Image(nsImage: preloaded).resizable().aspectRatio(contentMode: .fill)
+                Image(nsImage: preloaded).resizable().aspectRatio(contentMode: contentMode)
             } else if let url {
                 AsyncImage(url: url) { image in
-                    image.resizable().aspectRatio(contentMode: .fill)
+                    image.resizable().aspectRatio(contentMode: contentMode)
                 } placeholder: {
                     ProgressView().controlSize(.small)
                 }
@@ -41,9 +43,9 @@ struct LibraryGridCell: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 7) {
-            WallpaperThumbnailImage(url: entry.thumbnailURL, preloaded: preloaded)
-                .aspectRatio(16.0 / 10.0, contentMode: .fill)
-                .frame(height: 112)
+            WallpaperThumbnailImage(url: entry.thumbnailURL, preloaded: preloaded, contentMode: .fit)
+                .aspectRatio(16.0 / 9.0, contentMode: .fit)
+                .frame(maxWidth: .infinity)
                 .clipShape(RoundedRectangle(cornerRadius: 10))
                 .overlay(alignment: .topLeading) {
                     Button(action: onToggleFavorite) {
@@ -161,10 +163,9 @@ struct WallpaperDetailPanel: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
-                WallpaperThumbnailImage(url: entry.thumbnailURL, preloaded: preloaded)
-                    .aspectRatio(16.0 / 10.0, contentMode: .fill)
+                WallpaperThumbnailImage(url: entry.thumbnailURL, preloaded: preloaded, contentMode: .fit)
+                    .aspectRatio(16.0 / 9.0, contentMode: .fit)
                     .frame(maxWidth: .infinity)
-                    .frame(height: 188)
                     .clipShape(RoundedRectangle(cornerRadius: 12))
 
                 VStack(alignment: .leading, spacing: 8) {
