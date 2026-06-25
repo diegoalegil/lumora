@@ -17,6 +17,7 @@ public final class OcclusionMonitor {
     }
 
     public func start() {
+        guard observer == nil else { return }   // re-entrant start() would orphan the first occlusion observer
         observer = NotificationCenter.default.addObserver(
             forName: NSWindow.didChangeOcclusionStateNotification,
             object: nil,

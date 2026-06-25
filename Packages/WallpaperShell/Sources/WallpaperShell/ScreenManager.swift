@@ -58,6 +58,7 @@ public final class ScreenManager {
 
     /// Build the initial set of windows and start observing screen changes.
     public func start() {
+        guard observer == nil else { return }   // re-entrant start() would orphan the first screen observer
         rebuild()
         observer = NotificationCenter.default.addObserver(
             forName: NSApplication.didChangeScreenParametersNotification,

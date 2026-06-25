@@ -30,6 +30,10 @@ public final class WorkspaceMonitor {
 
     public func start() {
         guard tokens.isEmpty, distributedTokens.isEmpty else { return }   // already started — don't double-register
+        // Seed the current display-sleep state: the sleep/wake signals are event-only, so launching while the
+        // display is already asleep (e.g. a login-item start) would otherwise read a stale "awake" until the
+        // next toggle. (Lock/screensaver remain event-driven — launching into them is far rarer.)
+        isDisplayAsleep = CGDisplayIsAsleep(CGMainDisplayID()) != 0
         let center = NSWorkspace.shared.notificationCenter
 
         for name in [NSWorkspace.didActivateApplicationNotification,

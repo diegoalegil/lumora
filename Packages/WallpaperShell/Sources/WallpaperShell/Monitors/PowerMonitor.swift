@@ -22,7 +22,7 @@ public final class PowerMonitor {
         // pointed at freed memory (use-after-free on the next power change). CFRunLoopRemoveSource
         // is thread-safe, so it is safe from a nonisolated deinit.
         if let source = runLoopSource {
-            CFRunLoopRemoveSource(CFRunLoopGetMain(), source, .defaultMode)
+            CFRunLoopRemoveSource(CFRunLoopGetMain(), source, .commonModes)
         }
         if let token = thermalToken { NotificationCenter.default.removeObserver(token) }
     }
@@ -50,6 +50,7 @@ public final class PowerMonitor {
     }
 
     public func start() {
+        guard thermalToken == nil else { return }   // re-entrant start() would orphan the first observer + source
         // Thermal state changes (e.g. the Mac heating up under load) re-evaluate the policy.
         thermalToken = NotificationCenter.default.addObserver(
             forName: ProcessInfo.thermalStateDidChangeNotification, object: nil, queue: .main) { [weak self] _ in
@@ -66,13 +67,15 @@ public final class PowerMonitor {
 
         if let source {
             runLoopSource = source
-            CFRunLoopAddSource(CFRunLoopGetMain(), source, .defaultMode)
+            // .commonModes (not .defaultMode) so AC/battery changes are delivered even while the menu-bar menu
+            // is open (the run loop is in .eventTracking then) — matching the rotation timer's registration.
+            CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
         }
     }
 
     public func stop() {
         if let source = runLoopSource {
-            CFRunLoopRemoveSource(CFRunLoopGetMain(), source, .defaultMode)
+            CFRunLoopRemoveSource(CFRunLoopGetMain(), source, .commonModes)
             runLoopSource = nil
         }
         if let token = thermalToken {
