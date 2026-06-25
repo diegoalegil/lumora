@@ -49,6 +49,10 @@ public final class ScenePlayer: WallpaperRenderer {
     /// The viewer's per-property Customize toggles (e.g. `promptbox` off to hide an author's prompt box),
     /// applied to the scene at load. Set before `load(_:)`; empty renders the scene exactly as authored.
     public var propertyOverrides: [String: Bool] = [:]
+    /// Whether the user opted into audio-reactive playback. OFF by default so an audio scene never starts the
+    /// system-audio capture that would trigger the "Screen Recording" permission prompt; its visualisers just
+    /// render flat until the user enables it in Settings.
+    public var audioReactive = false
 
     /// The render-loop tick interval for a target frame rate, or nil when the rate is 0 — a paused or
     /// occluded directive (targetFPS 0) wants no continuous rendering, just the last still frame held.
@@ -116,7 +120,9 @@ public final class ScenePlayer: WallpaperRenderer {
 
     public func resume() {
         isPaused = false
-        if sceneUsesAudio { audio.start() }   // no-op if already running or permission unavailable
+        // Only sample system audio when the scene needs it AND the user opted in — otherwise starting SCStream
+        // would pop the "Screen Recording" prompt just to show a wallpaper. Off, the scene renders fine, flat.
+        if sceneUsesAudio && audioReactive { audio.start() }   // no-op if already running or permission unavailable
         present()
     }
 

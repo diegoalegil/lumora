@@ -20,10 +20,16 @@ public struct Preferences: Codable, Sendable, Equatable {
     public var batteryFPS: Int
     /// The ids of wallpapers the user has starred as favorites.
     public var favorites: Set<String>
+    /// Let audio-reactive wallpapers sample the system audio so their visualisers move. OFF by default: this
+    /// needs the system "Screen Recording" permission (macOS gates SCStream audio under it), and a wallpaper
+    /// app shouldn't demand that to show a wallpaper. Off, those scenes simply render their bars flat — exactly
+    /// as if the permission were denied — and Lumora never triggers the prompt. The user opts in if they want it.
+    public var audioReactive: Bool
 
     public init(showDockIcon: Bool = true, launchAtLogin: Bool = false,
                 playlistPlayback: Bool = false, activePlaylistID: UUID? = nil,
-                activeFPS: Int = 60, batteryFPS: Int = 30, favorites: Set<String> = []) {
+                activeFPS: Int = 60, batteryFPS: Int = 30, favorites: Set<String> = [],
+                audioReactive: Bool = false) {
         self.showDockIcon = showDockIcon
         self.launchAtLogin = launchAtLogin
         self.playlistPlayback = playlistPlayback
@@ -31,6 +37,7 @@ public struct Preferences: Codable, Sendable, Equatable {
         self.activeFPS = activeFPS
         self.batteryFPS = batteryFPS
         self.favorites = favorites
+        self.audioReactive = audioReactive
     }
 
     // Tolerant decoding: a Preferences value written by an OLDER build (without a key added later) decodes with
@@ -45,5 +52,6 @@ public struct Preferences: Codable, Sendable, Equatable {
         activeFPS = try c.decodeIfPresent(Int.self, forKey: .activeFPS) ?? 60
         batteryFPS = try c.decodeIfPresent(Int.self, forKey: .batteryFPS) ?? 30
         favorites = try c.decodeIfPresent(Set<String>.self, forKey: .favorites) ?? []
+        audioReactive = try c.decodeIfPresent(Bool.self, forKey: .audioReactive) ?? false
     }
 }

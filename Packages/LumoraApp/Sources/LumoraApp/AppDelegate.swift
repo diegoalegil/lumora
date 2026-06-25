@@ -306,6 +306,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 let scene = ScenePlayer()   // WEScene Metal compositor
                 // Apply the viewer's Customize toggles (e.g. promptbox off to hide an author's prompt box).
                 scene.propertyOverrides = Self.boolOverrides(propertyStore.overrides(for: wallpaper.ref.id))
+                // Only capture system audio (→ Screen Recording prompt) if the user opted into audio-reactivity.
+                scene.audioReactive = preferences.preferences.audioReactive
                 player = scene
             }
             if let player {

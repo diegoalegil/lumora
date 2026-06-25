@@ -43,6 +43,10 @@ public final class PreferencesModel {
         get { preferences.favorites }
         set { update { $0.favorites = newValue } }
     }
+    public var audioReactive: Bool {
+        get { preferences.audioReactive }
+        set { update { $0.audioReactive = newValue } }
+    }
     public var activePlaylistID: UUID? {
         get { preferences.activePlaylistID }
         set { update { $0.activePlaylistID = newValue } }
