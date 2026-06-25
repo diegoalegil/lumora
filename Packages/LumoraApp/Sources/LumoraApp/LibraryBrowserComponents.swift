@@ -138,6 +138,7 @@ struct WallpaperDetailPanel: View {
     let isActive: Bool
     @Bindable var store: PlaylistStore
     var preloaded: NSImage?
+    var makePropertiesModel: (LibraryEntry) -> WallpaperPropertiesModel? = { _ in nil }
     var onApply: () -> Void
     var onReveal: () -> Void
 
@@ -209,9 +210,40 @@ struct WallpaperDetailPanel: View {
                     }
                     .controlSize(.large)
                 }
+
+                CustomizeSection(entry: entry, makeModel: makePropertiesModel)
             }
             .padding(18)
         }
+    }
+}
+
+/// The "Customize" block in the detail panel: live controls for a wallpaper's `general.properties`, shown only
+/// when the wallpaper exposes editable ones. The model is rebuilt when the selected wallpaper changes.
+struct CustomizeSection: View {
+    let entry: LibraryEntry
+    let makeModel: (LibraryEntry) -> WallpaperPropertiesModel?
+    @State private var model: WallpaperPropertiesModel?
+
+    var body: some View {
+        Group {
+            if let model, model.editableCount > 0 {
+                VStack(alignment: .leading, spacing: 12) {
+                    Divider()
+                    HStack {
+                        Label("Customize", systemImage: "slider.horizontal.3").font(.headline)
+                        Spacer()
+                        if model.isModified {
+                            Button("Reset") { model.reset() }
+                                .buttonStyle(.borderless)
+                                .controlSize(.small)
+                        }
+                    }
+                    WallpaperPropertiesView(model: model)
+                }
+            }
+        }
+        .onChange(of: entry.id, initial: true) { _, _ in model = makeModel(entry) }
     }
 }
 

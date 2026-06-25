@@ -32,6 +32,7 @@ struct LibraryBrowserView: View {
     @Bindable var store: PlaylistStore
     var onApply: (LibraryEntry) -> Void = { _ in }
     var onReveal: (LibraryEntry) -> Void = { _ in }
+    var makePropertiesModel: (LibraryEntry) -> WallpaperPropertiesModel? = { _ in nil }
     var preloadedThumbnails: [String: NSImage] = [:]
 
     private let columns = [GridItem(.adaptive(minimum: 188), spacing: 18)]
@@ -166,6 +167,7 @@ struct LibraryBrowserView: View {
                                      isActive: entry.id == model.activeWallpaperID,
                                      store: store,
                                      preloaded: preloadedThumbnails[entry.id],
+                                     makePropertiesModel: makePropertiesModel,
                                      onApply: { onApply(entry) },
                                      onReveal: { onReveal(entry) })
             } else {

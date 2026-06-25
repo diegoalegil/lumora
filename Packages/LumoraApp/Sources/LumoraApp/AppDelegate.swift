@@ -67,10 +67,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// The dedicated library browser: a searchable/filterable grid + detail panel. Its model is populated from
     /// the installed library after the scan; the window is created lazily on first open and reused after that.
     private let libraryModel = LibraryBrowserModel(entries: [])
+    /// Persisted per-wallpaper property overrides (the "Customize" panel writes here).
+    private let propertyStore = WallpaperPropertyStore(repository: JSONWallpaperPropertyRepository.standard())
     private lazy var libraryWindow = LibraryWindowController(
         model: libraryModel, store: playlistStore,
         onApply: { [weak self] entry in self?.applyWallpaper(id: entry.id) },
-        onReveal: { entry in NSWorkspace.shared.activateFileViewerSelecting([entry.folderURL]) })
+        onReveal: { entry in NSWorkspace.shared.activateFileViewerSelecting([entry.folderURL]) },
+        makePropertiesModel: { [weak self] entry in self?.makePropertiesModel(for: entry) })
     private static let preferencesKey = "LumoraPreferences"
 
     /// The wallpaper to play, chosen at launch from the installed library (nil → solid fallback).
@@ -512,6 +515,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                          thumbnailURL: previewURL(for: wallpaper),
                          folderURL: wallpaper.ref.folderURL)
         }
+    }
+
+    /// Build a customization model for a wallpaper from its manifest schema and any saved overrides, wiring
+    /// edits back to the persistent store. Returns nil when the wallpaper exposes no editable properties.
+    private func makePropertiesModel(for entry: LibraryEntry) -> WallpaperPropertiesModel? {
+        guard let wallpaper = playableWallpapers.first(where: { $0.ref.id == entry.id }) else { return nil }
+        let schema = WallpaperProperties.schema(from: wallpaper.manifest.general)
+        guard WallpaperProperties.editableCount(schema) > 0 else { return nil }
+        let id = entry.id
+        return WallpaperPropertiesModel(wallpaperID: id, schema: schema,
+                                        overrides: propertyStore.overrides(for: id),
+                                        onChange: { [weak self] in self?.propertyStore.setOverrides($0, for: id) })
     }
 
     /// Apply preferences live: the Dock icon (regular vs accessory) and the login item. Called on launch (to

@@ -30,7 +30,7 @@ enum SnapshotRunner {
         let scene = args[i + 1], libDir = args[i + 2], outPath = args[i + 3]
         // Let app.run() start, build the window, give SwiftUI a beat to lay out + draw, then capture.
         DispatchQueue.main.async { build(scene: scene, libDir: libDir) }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { capture(to: outPath); exit(0) }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.8) { capture(to: outPath); exit(0) }
         DispatchQueue.main.asyncAfter(deadline: .now() + 30) {
             FileHandle.standardError.write(Data("snapshot timed out\n".utf8)); exit(3)
         }
@@ -44,14 +44,33 @@ enum SnapshotRunner {
         let thumbs = SnapshotLibrary.preload(entries, limit: 60)
         let store = SnapshotLibrary.sampleStore(entries)
 
+        // Prefer a wallpaper with a rich property schema so the detail/Customize panel is well exercised.
+        let rich = entries.first { (SnapshotLibrary.propertiesModel(for: $0)?.editableCount ?? 0) >= 6 }
+
         let root: AnyView
         let size: CGSize
         switch scene {
         case "library":
             let model = LibraryBrowserModel(entries: entries)
             model.activeWallpaperID = entries.first?.id
-            root = AnyView(LibraryBrowserView(model: model, store: store, preloadedThumbnails: thumbs))
-            size = CGSize(width: 1120, height: 720)
+            model.selectedID = (rich ?? entries.first)?.id
+            root = AnyView(LibraryBrowserView(model: model, store: store,
+                                              makePropertiesModel: { SnapshotLibrary.propertiesModel(for: $0) },
+                                              preloadedThumbnails: thumbs))
+            size = CGSize(width: 1120, height: 760)
+        case "properties":
+            guard let target = rich ?? entries.first, let full = SnapshotLibrary.propertiesModel(for: target) else {
+                FileHandle.standardError.write(Data("no wallpaper with properties\n".utf8)); exit(2)
+            }
+            // Cap the schema so a 200-property wallpaper doesn't blow up the offscreen layout.
+            let pm = WallpaperPropertiesModel(wallpaperID: full.wallpaperID,
+                                              schema: Array(full.schema.prefix(20)), overrides: [:], onChange: { _ in })
+            FileHandle.standardError.write(Data("properties scene: \(full.editableCount) editable of \(full.schema.count)\n".utf8))
+            root = AnyView(WallpaperPropertiesView(model: pm)
+                .padding(20)
+                .frame(width: 400, alignment: .top)
+                .background(Color(nsColor: .windowBackgroundColor)))
+            size = CGSize(width: 400, height: 920)
         default:
             FileHandle.standardError.write(Data("unknown scene '\(scene)'\n".utf8)); exit(2)
         }
@@ -143,6 +162,15 @@ enum SnapshotLibrary {
         ]
         guard let cg = CGImageSourceCreateThumbnailAtIndex(src, 0, options as CFDictionary) else { return nil }
         return NSImage(cgImage: cg, size: NSSize(width: cg.width, height: cg.height))
+    }
+
+    /// Build a customization model for a wallpaper by re-reading its manifest, for the snapshot panels.
+    static func propertiesModel(for entry: LibraryEntry) -> WallpaperPropertiesModel? {
+        let pj = entry.folderURL.appendingPathComponent("project.json")
+        guard let data = try? Data(contentsOf: pj), let manifest = try? ProjectManifest.decode(from: data) else { return nil }
+        let schema = WallpaperProperties.schema(from: manifest.general)
+        guard WallpaperProperties.editableCount(schema) > 0 else { return nil }
+        return WallpaperPropertiesModel(wallpaperID: entry.id, schema: schema, overrides: [:], onChange: { _ in })
     }
 
     /// A small in-memory store with a couple of playlists so the "Add to Playlist" menus aren't empty.

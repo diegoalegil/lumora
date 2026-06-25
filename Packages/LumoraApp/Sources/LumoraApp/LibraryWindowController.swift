@@ -11,11 +11,13 @@ final class LibraryWindowController: NSWindowController {
     private let store: PlaylistStore
 
     init(model: LibraryBrowserModel, store: PlaylistStore,
-         onApply: @escaping (LibraryEntry) -> Void, onReveal: @escaping (LibraryEntry) -> Void) {
+         onApply: @escaping (LibraryEntry) -> Void, onReveal: @escaping (LibraryEntry) -> Void,
+         makePropertiesModel: @escaping (LibraryEntry) -> WallpaperPropertiesModel? = { _ in nil }) {
         self.model = model
         self.store = store
 
-        let root = LibraryBrowserView(model: model, store: store, onApply: onApply, onReveal: onReveal)
+        let root = LibraryBrowserView(model: model, store: store, onApply: onApply, onReveal: onReveal,
+                                      makePropertiesModel: makePropertiesModel)
         let hosting = NSHostingController(rootView: root)
 
         let window = NSWindow(contentViewController: hosting)
