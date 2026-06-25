@@ -74,9 +74,25 @@ public struct WEProperty: Sendable, Equatable, Decodable {
 
 public enum PropertyType: String, Sendable, Equatable {
     case color, slider, bool, combo, textinput, text, file
+    /// A section header that visually groups the properties that follow it (no editable value).
+    case group
+    /// A user-supplied texture/image (rendered as an image-picker affordance).
+    case scenetexture
+    /// A user-rebindable keyboard shortcut.
+    case usershortcut
 
     init(lenient raw: String) {
         self = PropertyType(rawValue: raw.lowercased()) ?? .text
+    }
+
+    /// Whether this property exposes an editable value the settings UI binds a control to (sliders, colors,
+    /// toggles, combos, text). `text`/`group` are display-only; `scenetexture`/`usershortcut`/`file` are
+    /// recognized but not yet user-editable in Lumora.
+    public var isEditable: Bool {
+        switch self {
+        case .color, .slider, .bool, .combo, .textinput: return true
+        case .text, .group, .scenetexture, .usershortcut, .file: return false
+        }
     }
 
     static func inferred(from value: PropertyValue, hasOptions: Bool) -> PropertyType {
@@ -90,7 +106,7 @@ public enum PropertyType: String, Sendable, Equatable {
 }
 
 /// A polymorphic property value (`color`→string, `slider`→number, `bool`→bool, …).
-public enum PropertyValue: Sendable, Equatable, Decodable {
+public enum PropertyValue: Sendable, Equatable, Codable {
     case string(String)
     case number(Double)
     case bool(Bool)
@@ -104,9 +120,24 @@ public enum PropertyValue: Sendable, Equatable, Decodable {
         if let s = try? c.decode(String.self) { self = .string(s); return }
         self = .null
     }
+
+    /// Round-trips back to a bare JSON scalar so user overrides persist in the same shape WE writes.
+    public func encode(to encoder: any Encoder) throws {
+        var c = encoder.singleValueContainer()
+        switch self {
+        case .string(let s): try c.encode(s)
+        case .number(let d): try c.encode(d)
+        case .bool(let b):   try c.encode(b)
+        case .null:          try c.encodeNil()
+        }
+    }
 }
 
 public struct PropertyOption: Sendable, Equatable, Decodable {
     public let label: String?
     public let value: PropertyValue
+    public init(label: String?, value: PropertyValue) {
+        self.label = label
+        self.value = value
+    }
 }
