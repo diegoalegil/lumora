@@ -3,7 +3,6 @@
 // once with WEScene's compositor, and drives a light animation loop (a gentle camera parallax) into a
 // layer-backed view. Scenes without parallax render a single still frame. Apple frameworks only. No GPL.
 import AppKit
-import ImageIO
 import WECore
 import WEImporter
 import WEScene
@@ -79,7 +78,7 @@ public final class ScenePlayer: WallpaperRenderer {
         prepared = nil
         elapsed = 0.0   // reset the animation clock so a reload (playlist switch, re-apply) starts the new scene at t=0
         sceneUsesAudio = Self.usesAudio(scenePackage)
-        previewImage = Self.loadPreview(besides: wallpaper.mainFileURL)
+        previewImage = WallpaperPreview.image(besides: wallpaper.mainFileURL)
     }
 
     /// Whether the scene reacts to audio (so we should capture system audio for it). A cheap substring scan,
@@ -102,20 +101,6 @@ public final class ScenePlayer: WallpaperRenderer {
             }
         }
         return false
-    }
-
-    /// The wallpaper's bundled `preview.{jpg,png,gif}` (gif → first frame) as a static fallback for a
-    /// scene whose artwork can't be rendered (e.g. an unsupported animated texture).
-    private static func loadPreview(besides sceneURL: URL) -> CGImage? {
-        let folder = sceneURL.deletingLastPathComponent()
-        for name in ["preview.jpg", "preview.png", "preview.gif", "preview.jpeg"] {
-            let url = folder.appendingPathComponent(name)
-            if let source = CGImageSourceCreateWithURL(url as CFURL, nil),
-               let image = CGImageSourceCreateImageAtIndex(source, 0, nil) {
-                return image
-            }
-        }
-        return nil
     }
 
     public func resume() {

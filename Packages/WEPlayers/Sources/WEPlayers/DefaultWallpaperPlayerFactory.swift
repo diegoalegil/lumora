@@ -37,6 +37,14 @@ public struct DefaultWallpaperPlayerFactory: WallpaperPlayerFactory {
         }
     }
 
+    /// The player kind once a previous native-decode attempt has failed. A `.video` container AVFoundation
+    /// accepted by extension but then couldn't decode re-routes to the WebKit `<video>` fallback, which may
+    /// handle a codec AVFoundation rejected; every other case is unchanged. Pure, so the re-route is testable.
+    public static func kind(for wallpaper: ResolvedWallpaper, decodeFailed: Bool) -> PlayerKind {
+        let base = kind(for: wallpaper)
+        return (base == .nativeVideo && decodeFailed) ? .fallbackVideo : base
+    }
+
     public func makeRenderer(for wallpaper: ResolvedWallpaper) throws -> any WallpaperRenderer {
         switch Self.kind(for: wallpaper) {
         case .nativeVideo:   return VideoPlayer()

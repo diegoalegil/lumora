@@ -124,6 +124,24 @@ Check.that("a web wallpaper routes to the web player",
            DefaultWallpaperPlayerFactory.kind(for: resolved(.web, "w", file: "index.html")) == .web)
 Check.that("a scene wallpaper routes to the scene player",
            DefaultWallpaperPlayerFactory.kind(for: resolved(.scene, "s", file: "scene.pkg")) == .scene)
+// A native container AVFoundation accepted by extension but then failed to decode re-routes to the WebKit
+// <video> fallback (which may handle a codec AVFoundation rejected) instead of leaving a permanent black frame.
+Check.that("a failed native video re-routes to the fallback",
+           DefaultWallpaperPlayerFactory.kind(for: resolved(.video, "v", file: "a.mp4"), decodeFailed: true) == .fallbackVideo)
+Check.that("a native video that didn't fail stays native",
+           DefaultWallpaperPlayerFactory.kind(for: resolved(.video, "v", file: "a.mp4"), decodeFailed: false) == .nativeVideo)
+Check.that("a webm stays on the fallback regardless of the decode-failure flag",
+           DefaultWallpaperPlayerFactory.kind(for: resolved(.video, "v", file: "a.webm"), decodeFailed: true) == .fallbackVideo)
+
+Check.section("WallpaperPreview resolution")
+let previewVideoURL = URL(fileURLWithPath: "/wp/123/movie.mp4")
+let previewCandidates = WallpaperPreview.candidateURLs(besides: previewVideoURL)
+Check.that("preview candidates are the conventional names in priority order",
+           previewCandidates.map { $0.lastPathComponent } == ["preview.jpg", "preview.png", "preview.gif", "preview.jpeg"])
+Check.that("preview candidates resolve in the wallpaper's own folder, beside the main file",
+           previewCandidates.allSatisfy { $0.deletingLastPathComponent().path == "/wp/123" })
+Check.that("a missing preview yields no image (best-effort, no crash)",
+           WallpaperPreview.image(besides: URL(fileURLWithPath: "/nonexistent/x.mp4")) == nil)
 
 Check.section("WallpaperNavigationPolicy")
 let wallpaperFolder = URL(fileURLWithPath: "/Steam/workshop/431960/123", isDirectory: true)
