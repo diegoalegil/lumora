@@ -15,12 +15,22 @@ public final class AudioBandMapper {
     private let fft: vDSP.FFT<DSPSplitComplex>
     private let hann: [Float]
 
+    // How a single band reads the power spectrum. A band at least one FFT bin wide is the average of the
+    // inclusive bin range `[start, end]` (unchanged from the original summation, so 16/32-band output is bit-
+    // identical). A band narrower than one bin — common in the low end at 64 bands — is the power at the band's
+    // CENTER frequency, linearly interpolated between bin `floor` and bin `floor + 1` by `frac ∈ [0, 1)`; this
+    // gives neighbouring sub-bin bands distinct values instead of snapping them all to one nearest bin.
+    private enum BandTap {
+        case sum(start: Int, end: Int)
+        case interp(floor: Int, frac: Float)
+    }
+
     // The log-spaced band→power-bin mapping depends only on (count, sampleRate) for a fixed fftSize, so the
     // boundaries (and their pow() calls) are computed once per distinct pair and reused. In practice that's the
     // three counts 16/32/64 at one sampleRate, i.e. a handful of entries filled on the first few frames. Safe
     // without locking: a mapper is owned by a single thread (the audio capture queue), as documented above.
     private struct BandKey: Hashable { let count: Int; let sampleRateBits: UInt32 }
-    private var binRangeCache: [BandKey: [(start: Int, end: Int)]] = [:]
+    private var bandTapCache: [BandKey: [BandTap]] = [:]
 
     // Normalization window in decibels: below `floorDB` reads as 0, at/above `ceilDB` as 1. Silence
     // (zero power) falls far below the floor and clamps to exactly 0 — the contract that keeps an
@@ -89,45 +99,64 @@ public final class AudioBandMapper {
         return power
     }
 
-    /// The inclusive power-bin range `[start, end]` each of `count` log-spaced bands folds, memoized per
-    /// (count, sampleRate). A band narrower than one bin collapses to its nearest single bin — the same
-    /// fallback the summation used to take inline when its `[start, end]` came out empty.
-    private func binRanges(count: Int, sampleRate: Float) -> [(start: Int, end: Int)] {
+    /// How each of `count` log-spaced bands reads the power spectrum, memoized per (count, sampleRate). A band
+    /// spanning at least one whole bin sums the inclusive range `[start, end]` exactly as the original did — so
+    /// 16/32-band output is unchanged. A band narrower than one bin (its integer `[kStart, kEnd]` came out empty,
+    /// the identical condition the old code used to take its nearest-bin fallback) instead samples the power at
+    /// the band's center frequency, linearly interpolated between the two straddling bins. That removes the
+    /// aliasing where adjacent low 64-bands all snapped to the same nearest bin and read identical values.
+    private func bandTaps(count: Int, sampleRate: Float) -> [BandTap] {
         let key = BandKey(count: count, sampleRateBits: sampleRate.bitPattern)
-        if let cached = binRangeCache[key] { return cached }
+        if let cached = bandTapCache[key] { return cached }
         let nyquist = sampleRate / 2
         let fLo: Float = 30
         let fHi = max(fLo * 2, nyquist)
         let binHz = sampleRate / Float(fftSize)
-        var ranges: [(start: Int, end: Int)] = []
-        ranges.reserveCapacity(count)
+        var taps: [BandTap] = []
+        taps.reserveCapacity(count)
         for b in 0 ..< count {
             let lo = fLo * pow(fHi / fLo, Float(b) / Float(count))
             let hi = fLo * pow(fHi / fLo, Float(b + 1) / Float(count))
             let kStart = max(1, Int(lo / binHz))
             let kEnd = min(halfN - 1, Int(hi / binHz))
-            if kStart <= kEnd {
-                ranges.append((kStart, kEnd))
-            } else {                                         // band narrower than a bin → nearest bin
+            if kStart <= kEnd {                              // band ≥ one bin wide → exact average (unchanged)
+                taps.append(.sum(start: kStart, end: kEnd))
+            } else if halfN >= 2 {                           // sub-bin band → interpolate at center frequency
+                // The continuous bin coordinate of the band center; clamp to [0, halfN-1] so floor and floor+1
+                // stay valid. Allowing floor 0 lets two sub-bin bands whose centers both sit below bin 1 still
+                // get distinct values (interpolating into the DC bin) instead of both snapping to bin 1; at the
+                // very top a degenerate frac=0 reads the last bin exactly.
+                let centerHz = (lo + hi) * 0.5
+                let pos = min(Float(halfN - 1), max(0, centerHz / binHz))
+                let floorBin = min(halfN - 2, Int(pos))
+                let frac = pos - Float(floorBin)
+                taps.append(.interp(floor: floorBin, frac: frac))
+            } else {                                         // pathological one-bin spectrum → nearest bin
                 let center = min(halfN - 1, max(1, Int((lo + hi) * 0.5 / binHz)))
-                ranges.append((center, center))
+                taps.append(.sum(start: center, end: center))
             }
         }
-        binRangeCache[key] = ranges
-        return ranges
+        bandTapCache[key] = taps
+        return taps
     }
 
     /// Fold the linear power bins into `count` logarithmically-spaced bands, normalized to 0…1 in dB.
     private func logBands(_ power: [Float], count: Int, sampleRate: Float) -> [Float] {
         let norm = 1 / Float(fftSize * fftSize)              // bring |X|² into a stable range
-        let ranges = binRanges(count: count, sampleRate: sampleRate)
+        let taps = bandTaps(count: count, sampleRate: sampleRate)
         var bands = [Float](repeating: 0, count: count)
         for b in 0 ..< count {
-            let range = ranges[b]
-            var sum: Float = 0
-            for k in range.start ... range.end { sum += power[k] }   // ascending, matching the original loop
-            let n = range.end - range.start + 1
-            let mean = (sum / Float(n)) * norm
+            let mean: Float
+            switch taps[b] {
+            case let .sum(start, end):
+                var sum: Float = 0
+                for k in start ... end { sum += power[k] }   // ascending, matching the original loop
+                mean = (sum / Float(end - start + 1)) * norm
+            case let .interp(floor, frac):
+                // Power at the band center frequency, linearly blended between the two straddling bins.
+                let lerp = power[floor] + (power[floor + 1] - power[floor]) * frac
+                mean = lerp * norm
+            }
             let db = 10 * log10(mean + 1e-12)
             bands[b] = max(0, min(1, (db - floorDB) / (ceilDB - floorDB)))
         }

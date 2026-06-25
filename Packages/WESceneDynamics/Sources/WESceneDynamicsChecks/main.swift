@@ -326,4 +326,5 @@ let initSpin = SceneScriptRuntime(script: "export function init(){ while(true){}
 Check.that("an infinite-loop init() doesn't hang construction and update() still runs",
            initSpin != nil && initSpin?.updateString("ok") == "ok")
 
+runAudioBandInterpolationChecks()
 Check.summarize()
