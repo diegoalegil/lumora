@@ -25,6 +25,13 @@ public final class VideoPlayer: WallpaperRenderer {
     private let player = AVQueuePlayer()
     private var looper: AVPlayerLooper?
     private var hostView: VideoHostView?
+    private var previewImage: CGImage?
+    private var statusObservation: NSKeyValueObservation?
+    private var failedEndObserver: NSObjectProtocol?
+    private var didSignalFailure = false
+    /// Fired at most once if AVFoundation can't decode the file, so the host can rebuild this wallpaper on the
+    /// WebKit `<video>` fallback (which may handle a codec AVFoundation rejected) instead of a permanent black.
+    public var onDecodeFailure: (() -> Void)?
 
     public init() {
         // A wallpaper is silent by default; audio is a later, opt-in setting.
@@ -34,6 +41,7 @@ public final class VideoPlayer: WallpaperRenderer {
 
     public func makeHostedView() -> NSView {
         let view = VideoHostView(player: player)
+        view.setPreview(previewImage)
         hostView = view
         return view
     }
@@ -45,12 +53,46 @@ public final class VideoPlayer: WallpaperRenderer {
         // load() may be called to RELOAD (per the WallpaperRenderer contract). Tear down any existing looper
         // and clear the queue first — otherwise the prior AVPlayerLooper keeps its KVO/time observers on the
         // shared queue player and two loopers fight over one queue. Harmless on first load (looper is nil).
+        removeItemObservers()
+        didSignalFailure = false
         looper?.disableLooping()
         looper = nil
         player.removeAllItems()
+        // Keep the wallpaper's own thumbnail ready as a fallback so a failed decode shows artwork, not black.
+        previewImage = WallpaperPreview.image(besides: wallpaper.mainFileURL)
+        hostView?.setPreview(previewImage)
         // AVPlayerLooper drives the queue player for gapless looping of a single item.
         let item = AVPlayerItem(url: wallpaper.mainFileURL)
+        observeDecodeFailure(of: item)
         looper = AVPlayerLooper(player: player, templateItem: item)
+    }
+
+    /// Watch the item for a decode failure (AVFoundation accepted the container by extension but can't decode
+    /// it, or the file is truncated/corrupt). Status KVO can fire off the main thread, so hop back on; the
+    /// failed-to-play-to-end note is delivered on the main queue.
+    private func observeDecodeFailure(of item: AVPlayerItem) {
+        statusObservation = item.observe(\.status, options: [.new]) { [weak self] item, _ in
+            guard item.status == .failed else { return }
+            Task { @MainActor in self?.handleDecodeFailure() }
+        }
+        failedEndObserver = NotificationCenter.default.addObserver(
+            forName: .AVPlayerItemFailedToPlayToEndTime, object: item, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.handleDecodeFailure() }
+        }
+    }
+
+    private func handleDecodeFailure() {
+        guard !didSignalFailure else { return }   // KVO .failed and the failed-to-end note can both fire
+        didSignalFailure = true
+        hostView?.revealPreview()
+        onDecodeFailure?()
+    }
+
+    private func removeItemObservers() {
+        statusObservation?.invalidate()
+        statusObservation = nil
+        if let failedEndObserver { NotificationCenter.default.removeObserver(failedEndObserver) }
+        failedEndObserver = nil
     }
 
     public func resume() { player.play() }
@@ -65,6 +107,7 @@ public final class VideoPlayer: WallpaperRenderer {
 
     public func tearDown() {
         player.pause()
+        removeItemObservers()
         looper?.disableLooping()
         looper = nil
         player.removeAllItems()
@@ -78,16 +121,36 @@ public final class VideoPlayer: WallpaperRenderer {
 @MainActor
 private final class VideoHostView: NSView {
     private let playerLayer = AVPlayerLayer()
+    private let previewLayer = CALayer()
 
     init(player: AVPlayer) {
         super.init(frame: .zero)
+        wantsLayer = true
+        previewLayer.contentsGravity = .resizeAspectFill
+        previewLayer.masksToBounds = true
         playerLayer.player = player
         playerLayer.videoGravity = .resizeAspectFill
-        wantsLayer = true
+        // The preview sits behind the video: it appears instantly and, if the decode fails, stays visible
+        // instead of a black frame. A successful video fills the bounds (resizeAspectFill) and covers it.
+        layer?.addSublayer(previewLayer)
+        layer?.addSublayer(playerLayer)
     }
 
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("not supported") }
 
-    override func makeBackingLayer() -> CALayer { playerLayer }
+    override func layout() {
+        super.layout()
+        // No implicit animation as the desktop window resizes or the display reconfigures.
+        CATransaction.begin(); CATransaction.setDisableActions(true)
+        previewLayer.frame = bounds
+        playerLayer.frame = bounds
+        CATransaction.commit()
+    }
+
+    /// Set the fallback thumbnail drawn behind the video (revealed if the decode fails). nil clears it.
+    func setPreview(_ image: CGImage?) { previewLayer.contents = image }
+
+    /// Hide the (failed) video layer so the preview behind it shows.
+    func revealPreview() { playerLayer.isHidden = true }
 }

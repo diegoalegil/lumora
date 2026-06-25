@@ -30,6 +30,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var signalSource: SystemSignalSource?
     private var coordinator: PlaybackCoordinator?
     private var renderers: [CGDirectDisplayID: any WallpaperRenderer] = [:]
+    // Wallpaper ids whose native AVFoundation decode failed this session, so they rebuild on the WebKit
+    // <video> fallback instead of routing back to the native player and failing to black again.
+    private var videoFallbackForced: Set<String> = []
     private let loginItem = LoginItemService()
     private var isPaused = false
 
@@ -305,9 +308,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let player: (any WallpaperRenderer)?
             switch wallpaper.type {
             case .video:
-                // AVFoundation for native containers; WebKit <video> fallback for the rest (webm…).
-                player = VideoFormatSupport.isNativelyPlayable(wallpaper.mainFileURL)
-                    ? VideoPlayer() : VideoFallbackPlayer()
+                // AVFoundation for native containers; WebKit <video> fallback for the rest (webm…) and for a
+                // native file that already failed to decode this session — so a codec AVFoundation rejects is
+                // retried through WebKit (or at least shows the preview) instead of a permanent black frame.
+                let id = wallpaper.ref.id
+                if VideoFormatSupport.isNativelyPlayable(wallpaper.mainFileURL), !videoFallbackForced.contains(id) {
+                    let video = VideoPlayer()
+                    video.onDecodeFailure = { [weak self] in
+                        guard let self, !self.videoFallbackForced.contains(id) else { return }
+                        self.videoFallbackForced.insert(id)
+                        NSLog("Lumora: native decode failed for '\(id)'; rebuilding on the WebKit video fallback")
+                        self.reloadRenderers()
+                    }
+                    player = video
+                } else {
+                    player = VideoFallbackPlayer()
+                }
             case .web:   player = WebPlayer()
             case .scene:
                 let scene = ScenePlayer()   // WEScene Metal compositor
