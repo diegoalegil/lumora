@@ -357,7 +357,7 @@ public enum SceneGraph {
                     // The point size comes straight from untrusted scene.json; a non-finite value (e.g.
                     // an overflowing `1e400`) or a wild one would make the text layer's glyph quads vanish
                     // or balloon. Keep it finite and within a sane range, defaulting like a missing field.
-                    let rawPointSize = (object["pointsize"] as? NSNumber)?.doubleValue ?? 32
+                    let rawPointSize = Self.scalar(object["pointsize"], default: 32)
                     let pointSize = rawPointSize.isFinite ? min(4096, max(0, rawPointSize)) : 32
                     layers.append(SceneLayer(
                         name: object["name"] as? String ?? "",
@@ -665,6 +665,16 @@ public enum SceneGraph {
         else { raw = nil }
         guard let raw, raw.isFinite else { return 1 }
         return raw
+    }
+
+    /// A scalar property that may be a plain number or a `{ "user": …, "value": Double }` user-property binding
+    /// (Wallpaper Engine lets the author wire a slider to a font size, an opacity, a count, …). Take the bound
+    /// base value either way; without the dict case a bound `pointsize` collapses to the fallback — e.g. a clock
+    /// authored at 119 pt renders at the 32 pt default, far too small for the layout it was placed in.
+    private static func scalar(_ value: Any?, default fallback: Double) -> Double {
+        if let number = value as? NSNumber { return number.doubleValue }
+        if let object = value as? [String: Any], let base = object["value"] as? NSNumber { return base.doubleValue }
+        return fallback
     }
 
     /// The keyframe animation under an `alpha` object's `animation.c0`, if present.

@@ -761,6 +761,15 @@ let textSizePkg = buildPKG(version: "PKGV0009", files: [
 if let pkg = try? ScenePackage.read(textSizePkg), let doc = try? SceneGraph.load(from: pkg) {
     Check.that("a text layer's finite point size is kept", doc.layers.first?.pointSize == 48)
 }
+// A clock/label often wires its point size to a user slider, so `pointsize` is a `{ "user": …, "value": N }`
+// binding rather than a bare number. The bound base value must be taken — otherwise the text collapses to the
+// 32 pt default (a clock authored at 119 pt rendered tiny). Mirrors how `alpha`/`scale`/`origin` unwrap their value.
+let boundSizePkg = buildPKG(version: "PKGV0009", files: [
+    ("scene.json", Data(#"{"objects":[{"name":"clock","text":{"value":"12:00","script":"c.js"},"pointsize":{"user":"timesize","value":119.5}}]}"#.utf8)),
+])
+if let pkg = try? ScenePackage.read(boundSizePkg), let doc = try? SceneGraph.load(from: pkg) {
+    Check.that("a user-bound point size takes its bound base value", doc.layers.first?.pointSize == 119.5)
+}
 // The scene graph is decoded strictly, so an overflowing exponent is rejected outright (unlike the particle
 // ops, which go through lenient JSONSerialization and clamp ±inf). That makes the non-finite point-size clamp
 // unreachable via JSON — belt-and-suspenders — so assert the ACTUAL behaviour: the document is rejected. (The
