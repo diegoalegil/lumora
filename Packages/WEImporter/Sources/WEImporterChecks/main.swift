@@ -607,6 +607,27 @@ if let pkg = try? ScenePackage.read(cbm2Pkg), let doc = try? SceneGraph.load(fro
                doc.layers.first?.blending == "translucent")
 }
 
+// A layer's scale / colour / angles keyframe animations are now parsed into the IR (they were dropped to the
+// base value before). Interpolation is linear — WE's per-keyframe Bezier handles aren't read yet — so this is
+// the linear approximation the renderer will consume once the per-property animation path lands.
+let animSceneJSON = Data(#"{"general":{"orthogonalprojection":{"width":1920,"height":1080},"clearcolor":"0 0 0"},"objects":[{"name":"a","image":"models/m.json","origin":"960 540 0","scale":{"value":"1 1 0","animation":{"c0":[{"frame":0,"value":1},{"frame":60,"value":3}],"c1":[{"frame":0,"value":1},{"frame":60,"value":3}],"options":{"fps":60,"length":120,"mode":"loop"}}},"color":{"value":"1 1 1","animation":{"c0":[{"frame":0,"value":0},{"frame":60,"value":1}],"options":{"fps":60,"length":120,"mode":"loop"}}},"visible":true}]}"#.utf8)
+let animPkg = buildPKG(version: "PKGV0009", files: [
+    ("scene.json", animSceneJSON), ("models/m.json", modelJSON),
+    ("materials/mat.json", materialJSON), ("materials/mytex.tex", Data("x".utf8)),
+])
+if let pkg = try? ScenePackage.read(animPkg), let doc = try? SceneGraph.load(from: pkg), let layer = doc.layers.first {
+    Check.that("an animated scale is parsed onto the layer (not dropped to base)", layer.scaleAnimation?.x?.keyframes.count == 2)
+    Check.that("the scale animation interpolates linearly (frame 30 of 0->60, 1->3 = 2)",
+               abs((layer.scaleAnimation?.x?.value(at: 0.5) ?? 0) - 2.0) < 0.0001)
+    Check.that("the base scale value is still read", layer.scale.x == 1)
+    Check.that("an animated colour is parsed onto the layer", layer.colorAnimation?.x?.keyframes.count == 2)
+    Check.that("the colour animation interpolates linearly (0->1 at half = 0.5)",
+               abs((layer.colorAnimation?.x?.value(at: 0.5) ?? -1) - 0.5) < 0.0001)
+    Check.that("a layer with no angles animation leaves it nil", layer.anglesAnimation == nil)
+} else {
+    Check.that("animated-scale scene loads", false)
+}
+
 // A puppet-rigged object (its model references a bone/mesh .mdl) flags the whole scene, so the player can
 // fall back to the static preview instead of drawing the unassembled body-part atlas.
 let puppetModelJSON = Data(#"{"material":"materials/mat.json","puppet":"models/m_puppet.mdl"}"#.utf8)

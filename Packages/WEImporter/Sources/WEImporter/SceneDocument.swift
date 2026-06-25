@@ -173,6 +173,12 @@ public struct SceneLayer: Sendable, Equatable {
     public let alphaAnimation: AlphaAnimation?
     /// A keyframe animation for the layer's position, if it has one (a drift added to `origin`).
     public let originAnimation: Vec3Animation?
+    /// Keyframe animations for the layer's scale / rotation / colour tint, if present. Parsed into the IR and
+    /// IR-tested here; the renderer applies the alpha + origin animations today and will consume these once the
+    /// per-property animation path lands (their exact relative-vs-absolute semantics want a visual check first).
+    public let scaleAnimation: Vec3Animation?
+    public let anglesAnimation: Vec3Animation?
+    public let colorAnimation: Vec3Animation?
     public let parallaxDepth: SceneVec3
     public let visible: Bool
     public let blending: String?
@@ -199,7 +205,9 @@ public struct SceneLayer: Sendable, Equatable {
 
     public init(name: String, texturePath: String?, isSolidLayer: Bool, origin: SceneVec3, scale: SceneVec3,
                 size: SceneVec3?, angles: SceneVec3, alpha: Double, color: SceneVec3,
-                alphaAnimation: AlphaAnimation?, originAnimation: Vec3Animation?, parallaxDepth: SceneVec3,
+                alphaAnimation: AlphaAnimation?, originAnimation: Vec3Animation?,
+                scaleAnimation: Vec3Animation? = nil, anglesAnimation: Vec3Animation? = nil,
+                colorAnimation: Vec3Animation? = nil, parallaxDepth: SceneVec3,
                 visible: Bool, blending: String?, shader: String?, effects: [LayerEffect], puppetPath: String? = nil,
                 textValue: String? = nil, textScript: String? = nil, fontPath: String? = nil,
                 pointSize: Double = 32, horizontalAlign: String? = nil, verticalAlign: String? = nil,
@@ -215,6 +223,9 @@ public struct SceneLayer: Sendable, Equatable {
         self.color = color
         self.alphaAnimation = alphaAnimation
         self.originAnimation = originAnimation
+        self.scaleAnimation = scaleAnimation
+        self.anglesAnimation = anglesAnimation
+        self.colorAnimation = colorAnimation
         self.parallaxDepth = parallaxDepth
         self.visible = visible
         self.blending = blending
@@ -376,6 +387,9 @@ public enum SceneGraph {
                         color: vec(object["color"], default: SceneVec3(x: 1, y: 1, z: 1), overrides: overrides),
                         alphaAnimation: alphaAnimation(object["alpha"]),
                         originAnimation: vec3Animation(object["origin"]),
+                        scaleAnimation: vec3Animation(object["scale"]),
+                        anglesAnimation: vec3Animation(object["angles"]),
+                        colorAnimation: vec3Animation(object["color"]),
                         parallaxDepth: vec(object["parallaxDepth"]),
                         visible: isVisible(object["visible"], overrides: overrides),
                         blending: nil, shader: nil, effects: [],
@@ -419,6 +433,9 @@ public enum SceneGraph {
                 color: vec(object["color"], default: SceneVec3(x: 1, y: 1, z: 1), overrides: overrides),
                 alphaAnimation: alphaAnimation(object["alpha"]),
                 originAnimation: vec3Animation(object["origin"]),
+                scaleAnimation: vec3Animation(object["scale"]),
+                anglesAnimation: vec3Animation(object["angles"]),
+                colorAnimation: vec3Animation(object["color"]),
                 parallaxDepth: vec(object["parallaxDepth"]),
                 visible: isVisible(object["visible"], overrides: overrides),
                 blending: blendOverride ?? material.blending,
