@@ -281,6 +281,10 @@ public final class SceneRenderer {
     // Target pixels per scene unit for the frame being rendered, set at the top of render(). Text layers
     // rasterise at this density so glyphs stay crisp on a Retina/4K target instead of being magnified 1×.
     private var currentPixelScale: Double = 1
+    // The `time` (elapsed seconds) passed to the previous frame's script update, used to reconstruct the
+    // per-frame delta for `engine.frametime`/getFrameTime() without a second clock — the engine stays a pure
+    // function of `time`, so deterministic batch/golden renders reproduce exactly. nil before the first frame.
+    private var lastScriptTime: Double?
 
     private static let shaderSource = """
     #include <metal_stdlib>
@@ -1543,7 +1547,7 @@ public final class SceneRenderer {
             // sized to the glyphs; an empty string draws nothing. The font is sized in scene units, so the
             // pixel dimensions map ≈1:1 to scene units for the quad half-extent.
             if let textLayer = layer.text {
-                guard let (textTexture, w, h) = textLayer.currentTexture(pixelScale: currentPixelScale) else { continue }
+                guard let (textTexture, w, h) = textLayer.currentTexture(pixelScale: currentPixelScale, time: time) else { continue }
                 let half = SIMD2(Float(Double(w) / scene.orthoWidth), Float(Double(h) / scene.orthoHeight))
                 // Honour the text's horizontal alignment: the origin is the string's left edge / centre / right
                 // edge. Left-aligned text extends right of origin (centre shifts right by a half-width), etc.
@@ -1623,6 +1627,15 @@ public final class SceneRenderer {
     /// visualiser convention — so it never sinks below where it sits at rest. With no audio every band is 0,
     /// the script leaves each bar at height 0, and nothing is drawn (graceful: an idle visualiser is empty,
     /// never wrong).
+    /// The per-frame delta (seconds) for the script clock, reconstructed from successive `time` values so no
+    /// second wall-clock is introduced. A first frame, or `time` not advancing (a still / a reload that resets
+    /// elapsed to 0), yields the 1/60 default rather than a zero or negative dt.
+    private func scriptFrameDelta(_ time: Double) -> Double {
+        defer { lastScriptTime = time }
+        guard let last = lastScriptTime, time > last else { return 0.0166667 }
+        return time - last
+    }
+
     private func drawScriptGroup(_ encoder: MTLRenderCommandEncoder, group: PreparedScriptGroup,
                                  layer: PreparedLayer, layerAlpha: Float, aspectScale: SIMD2<Float>,
                                  time: Double, swayX: Float, swayY: Float) {
@@ -1636,6 +1649,10 @@ public final class SceneRenderer {
             }
             group.runtime.setAudioSpectrum(bands)
         }
+        // Feed the live engine clock before running update() so a time-driven script (a sweep/rotation that
+        // reads engine.time, or one accumulating engine.getFrameTime()) advances instead of reading a frozen 0.
+        group.runtime.setTime(time)
+        group.runtime.setFrameTime(scriptFrameDelta(time))
         group.runtime.runUpdate()
         // The host layer's per-frame motion (parallax sway + origin keyframes) shifts every bar — the bars'
         // origins are relative to the host's base, so add the host's animated NDC delta to each.

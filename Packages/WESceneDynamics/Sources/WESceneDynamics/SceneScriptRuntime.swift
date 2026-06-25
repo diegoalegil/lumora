@@ -151,7 +151,7 @@ public final class SceneScriptRuntime {
             canvasSize: new Vec2(1920, 1080),
             frametime: 0.0166667,
             time: 0,
-            getFrameTime: function () { return 0.0166667; }
+            getFrameTime: function () { return engine.frametime; }
         };
         // Pointer state a cursor-reactive script reads (an interactive 3D clock tilts toward the mouse). A
         // rendered wallpaper has no live cursor, so default it to the layer's own origin: the script's
@@ -201,6 +201,23 @@ public final class SceneScriptRuntime {
         var values = bands.map { NSNumber(value: $0) }
         values.append(NSNumber(value: bands.last ?? 0))   // the bar script reads dataIndex+1
         audio.setObject(values, forKeyedSubscript: "average" as NSString)
+    }
+
+    /// Set `engine.time` — the wallpaper's elapsed seconds — that a time-driven script reads (a pulsing/
+    /// rotating/sweeping `update()` advances from it; a clock reads it or `new Date()`). Call each frame before
+    /// `runUpdate()`. No-op until loaded; a non-finite value coerces to 0 so it never poisons the script's math.
+    public func setTime(_ seconds: Double) {
+        guard loaded, let engine = context.objectForKeyedSubscript("engine"), engine.isObject else { return }
+        engine.setObject(NSNumber(value: seconds.isFinite ? seconds : 0), forKeyedSubscript: "time" as NSString)
+    }
+
+    /// Set `engine.frametime` / `engine.getFrameTime()` — the real per-frame delta in seconds — that a script
+    /// accumulating motion reads. Call each frame before `runUpdate()`. Clamped to a sane positive range so a
+    /// pause/resume gap or a non-finite value can't inject a huge or negative dt; falls back to the 1/60 default.
+    public func setFrameTime(_ dt: Double) {
+        guard loaded, let engine = context.objectForKeyedSubscript("engine"), engine.isObject else { return }
+        let safe = (dt.isFinite && dt > 0) ? min(dt, 1.0) : 0.0166667
+        engine.setObject(NSNumber(value: safe), forKeyedSubscript: "frametime" as NSString)
     }
 
     /// Run `update(value)` (the per-frame driver). Use updateString/Number to read a value result, or

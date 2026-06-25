@@ -45,16 +45,20 @@ final class PreparedTextLayer {
     /// re-evaluate it; a static label has no runtime and never changes.
     var isDynamic: Bool { runtime != nil }
 
-    /// The current string (script-driven if scripted, else the static value).
-    private func currentString() -> String { runtime?.updateString(staticText) ?? staticText }
+    /// The current string (script-driven if scripted, else the static value). `time` is the wallpaper's elapsed
+    /// seconds, fed to the script as `engine.time` before it runs so a time-driven label/counter advances.
+    private func currentString(time: Double) -> String {
+        runtime?.setTime(time)
+        return runtime?.updateString(staticText) ?? staticText
+    }
 
     /// The texture for the current string plus its LOGICAL (scene-unit) dimensions for the quad. `pixelScale`
     /// is how many target pixels each scene unit will occupy (≈ the display backing scale): the glyphs are
     /// rasterised at that density so the text stays crisp when the scene is composited onto a Retina/4K target
     /// instead of being magnified from a 1× bitmap. Re-rasterises when the string or the scale changes. nil if
     /// the string is empty or rasterisation fails — the caller then draws nothing for this layer.
-    func currentTexture(pixelScale: Double = 1) -> (texture: MTLTexture, width: Int, height: Int)? {
-        let string = currentString()
+    func currentTexture(pixelScale: Double = 1, time: Double = 0) -> (texture: MTLTexture, width: Int, height: Int)? {
+        let string = currentString(time: time)
         guard !string.isEmpty else { return nil }
         let scale = max(1, min(4, pixelScale))   // bound the supersample so a huge target can't blow up memory
         if string == cachedString, scale == cachedScale, let texture = cachedTexture {

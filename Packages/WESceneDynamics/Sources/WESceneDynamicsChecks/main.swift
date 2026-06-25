@@ -161,6 +161,25 @@ if let fin = SceneScriptRuntime(script: "export function update(v){ return 0.5; 
     Check.that("a finite update() number still returns", fin.updateNumber(0) == 0.5)
 }
 
+// engine.time and frametime are now driven live each frame (F08): a time-driven script reads the elapsed
+// seconds and the real per-frame dt we set, instead of the frozen 0 / constant 1/60 they used to read forever.
+if let t = SceneScriptRuntime(script: "export function update(v){ return engine.time; }") {
+    Check.that("engine.time defaults to 0 before setTime", t.updateNumber(0) == 0)
+    t.setTime(5)
+    Check.that("setTime feeds engine.time", t.updateNumber(0) == 5)
+    t.setTime(42.5)
+    Check.that("engine.time is live, not frozen at 0", t.updateNumber(0) == 42.5)
+    t.setTime(.infinity)
+    Check.that("a non-finite time coerces to 0", t.updateNumber(0) == 0)
+}
+if let ft = SceneScriptRuntime(script: "export function update(v){ return engine.frametime + engine.getFrameTime(); }") {
+    Check.that("frametime + getFrameTime() default to ~2/60", abs((ft.updateNumber(0) ?? 0) - 2 * 0.0166667) < 1e-6)
+    ft.setFrameTime(0.02)
+    Check.that("setFrameTime updates both frametime and getFrameTime()", abs((ft.updateNumber(0) ?? 0) - 0.04) < 1e-9)
+    ft.setFrameTime(-1)
+    Check.that("a non-positive dt clamps to the 1/60 default", abs((ft.updateNumber(0) ?? 0) - 2 * 0.0166667) < 1e-6)
+}
+
 // A real WE "3D clock" module: it `import`s WEMath and tilts itself toward the cursor with Vec3 arithmetic
 // (origin.subtract(cursor).divide(canvasSize).multiply(50) + WEMath.mix). JavaScriptCore can't run ES-module
 // `import`, so before this support the whole module failed to define update() and the editor placeholder
