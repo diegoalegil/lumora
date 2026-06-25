@@ -241,8 +241,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         } else {
             effective = nil
         }
-        coordinator.apply(PlaybackPlan(active: effective, connectedDisplays: connected),
-                          now: ProcessInfo.processInfo.systemUptime)
+        let now = ProcessInfo.processInfo.systemUptime
+        coordinator.apply(PlaybackPlan(active: effective, connectedDisplays: connected), now: now)
+        // A wallpaper-set re-plan resets each display's rotation clock; if the user has playback paused (incl.
+        // a paused state restored at launch), freeze the new clock too so rotation doesn't advance while paused.
+        if isPaused { coordinator.pause(now: now) }
         appliedSelection = selection
     }
 
@@ -398,6 +401,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             Self.savePreferences(prefs)
         }
         updateMenuState()
+        updateNowPlaying()   // reflect the current (possibly rotating) wallpaper each time the menu opens
     }
 
     private func updateMenuState() {
@@ -440,19 +444,49 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc private func nextWallpaper() {
+        // In playlist mode the rotation owns the desktop, so a manual skip advances each display's playlist
+        // rather than the (unused) single-wallpaper selection.
+        if playlistPlaybackEnabled {
+            let now = ProcessInfo.processInfo.systemUptime
+            connectedDisplayUUIDs().forEach { playlistCoordinator?.next(display: $0, now: now) }
+            updateNowPlaying()
+            return
+        }
         let ids = playableWallpapers.map { $0.ref.id }
         if let id = WallpaperCycle.next(after: activeWallpaper?.ref.id, in: ids) { applyWallpaper(id: id) }
     }
 
     @objc private func previousWallpaper() {
+        if playlistPlaybackEnabled {
+            let now = ProcessInfo.processInfo.systemUptime
+            connectedDisplayUUIDs().forEach { playlistCoordinator?.previous(display: $0, now: now) }
+            updateNowPlaying()
+            return
+        }
         let ids = playableWallpapers.map { $0.ref.id }
         if let id = WallpaperCycle.previous(before: activeWallpaper?.ref.id, in: ids) { applyWallpaper(id: id) }
     }
 
-    /// Reflect the active wallpaper in the menu header and the menu-bar tooltip.
+    /// The stable UUIDs of the displays currently driven by a desktop window.
+    private func connectedDisplayUUIDs() -> [String] {
+        screenManager.windows.keys.compactMap { ScreenManager.displayUUID(for: $0) }
+    }
+
+    /// Reflect what's actually on screen in the menu header and the menu-bar tooltip — the rotating playlist
+    /// item in playlist mode, otherwise the single active wallpaper.
     private func updateNowPlaying() {
-        if let wallpaper = activeWallpaper {
-            let title = WallpaperLibrary.displayTitle(wallpaper)
+        let title: String?
+        if playlistPlaybackEnabled, let coordinator = playlistCoordinator,
+           let uuid = connectedDisplayUUIDs().sorted().first,
+           let reference = coordinator.currentReference(forDisplay: uuid),
+           let wallpaper = playableWallpapers.first(where: { $0.ref.id == reference.id }) {
+            title = WallpaperLibrary.displayTitle(wallpaper)
+        } else if let wallpaper = activeWallpaper {
+            title = WallpaperLibrary.displayTitle(wallpaper)
+        } else {
+            title = nil
+        }
+        if let title {
             nowPlayingItem?.title = "Playing: \(title)"
             statusItem?.button?.toolTip = "Lumora — \(title)"
         } else {
@@ -577,7 +611,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// Apply preferences live: the Dock icon (regular vs accessory) and the login item. Called on launch (to
     /// restore the saved state) and whenever the settings UI changes them.
     private func applyPreferences(_ prefs: Preferences) {
-        NSApp.setActivationPolicy(prefs.showDockIcon ? .regular : .accessory)
+        // Only flip the Dock policy when it actually changes — applyPreferences runs for every preference edit
+        // (including starring a favorite), and re-setting the same activation policy each time is needless churn.
+        let desiredPolicy: NSApplication.ActivationPolicy = prefs.showDockIcon ? .regular : .accessory
+        if NSApp.activationPolicy() != desiredPolicy { NSApp.setActivationPolicy(desiredPolicy) }
         // applyPreferences also runs at every launch; only (un)register the login item when the desired state
         // actually differs from the current registration, instead of churning SMAppService each time.
         if prefs.launchAtLogin != loginItem.isEnabled {
