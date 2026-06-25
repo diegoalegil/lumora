@@ -1033,6 +1033,13 @@ if let pkg = try? ScenePackage.read(effectPkg), let doc = try? SceneGraph.load(f
     Check.that("effect captures the scene's combo override", layer.effects.first?.combos["BLENDMODE"] == 2)
     Check.that("effect captures the material's sampler bindings", layer.effects.first?.textures == [nil, "util/noise"])
 }
+// The viewer's Customize override of that user-bound constant must win over the author's default value, so a
+// re-tinted effect (the user's colour scheme) reaches the shader instead of the baked-in default.
+if let pkg = try? ScenePackage.read(effectPkg),
+   let tuned = try? SceneGraph.load(from: pkg, overrides: ["newprop": .string("0.8 0.7 0.95")]).layers.first {
+    Check.that("a user override of an effect constant wins over the author default",
+               tuned.effects.first?.constants["ui_editor_properties_tint_low"] == "0.8 0.7 0.95")
+}
 // An effect toggled off by a user property (`visible:{value:false}`, or a bare `false`) is disabled by default
 // in Wallpaper Engine — applied only when the user enables it. Lumora has no UI to flip it, so a default-off
 // effect must be SKIPPED (not rendered), matching WE's fresh-load state; an always-on (`true`/missing/`{value:true}`)
@@ -1050,6 +1057,14 @@ if let pkg = try? ScenePackage.read(effVisPkg), let doc = try? SceneGraph.load(f
     // Of the 4 effects: glow {value:false} skipped, grade {value:true} kept, bare false skipped, bare-absent kept → 2.
     Check.that("default-off effects (visible.value:false / bare false) are skipped, always-on kept (2 of 4)",
                layer.effects.count == 2)
+    // The viewer's Customize override of the user property wins, symmetric with layer visibility: turning `glow`
+    // ON adds its effect (3 of 4), and turning the default-on `grade` OFF removes it.
+    if let on = try? SceneGraph.load(from: pkg, overrides: ["glow": .bool(true)]).layers.first {
+        Check.that("a Customize override turns a default-off effect on (3 of 4)", on.effects.count == 3)
+    }
+    if let off = try? SceneGraph.load(from: pkg, overrides: ["grade": .bool(false)]).layers.first {
+        Check.that("a Customize override turns a default-on effect off (1 of 4)", off.effects.count == 1)
+    }
 }
 // An effect's FBO downscale factor comes from untrusted effect.json and must land in the 1…16 the renderer
 // actually allocates — a 0 would size a zero/divide-by-zero buffer, a huge value would over-allocate. Pin the

@@ -423,7 +423,7 @@ public enum SceneGraph {
                 visible: isVisible(object["visible"], overrides: overrides),
                 blending: blendOverride ?? material.blending,
                 shader: material.shader,
-                effects: effects(of: object, in: package),
+                effects: effects(of: object, in: package, overrides: overrides),
                 puppetPath: puppetPath,
                 driverScript: boundScript(of: object, in: package),
                 alignment: object["alignment"] as? String
@@ -578,13 +578,19 @@ public enum SceneGraph {
     /// Whether an effect entry's `visible` field leaves it enabled by default. `true`/missing → on; a bare
     /// `false` or a `{ "user": …, "value": false }` property binding → off (WE applies it only when the user
     /// enables the property, which Lumora has no way to do, so the default state governs).
-    static func isEffectEnabled(_ visible: Any?) -> Bool {
+    static func isEffectEnabled(_ visible: Any?, overrides: [String: PropertyValue] = [:]) -> Bool {
         if let flag = visible as? Bool { return flag }
-        if let dict = visible as? [String: Any], let flag = dict["value"] as? Bool { return flag }
+        if let dict = visible as? [String: Any] {
+            // Symmetric with layer visibility: a viewer who turns a default-off effect ON (or an on effect OFF)
+            // in the Customize panel overrides the author's default `value`.
+            if let userKey = dict["user"] as? String, case let .bool(override)? = overrides[userKey] { return override }
+            if let flag = dict["value"] as? Bool { return flag }
+        }
         return true
     }
 
-    static func effects(of object: [String: Any], in package: ScenePackage) -> [LayerEffect] {
+    static func effects(of object: [String: Any], in package: ScenePackage,
+                        overrides: [String: PropertyValue] = [:]) -> [LayerEffect] {
         guard let entries = object["effects"] as? [[String: Any]] else { return [] }
         var result: [LayerEffect] = []
         for entry in entries {
@@ -594,7 +600,7 @@ public enum SceneGraph {
             // blur, a "fire colour" overlay) is NOT drawn on a fresh load. Lumora has no UI to flip it, so the
             // default governs — skip a default-off effect rather than rendering one WE leaves off. A bare `true`,
             // a `{ value: true }`, or a missing `visible` is always-on.
-            guard isEffectEnabled(entry["visible"]) else { continue }
+            guard isEffectEnabled(entry["visible"], overrides: overrides) else { continue }
             guard let file = entry["file"] as? String,
                   let effect = json(package.entry(named: file)),
                   let effectPasses = effect["passes"] as? [[String: Any]], !effectPasses.isEmpty else { continue }
@@ -605,7 +611,9 @@ public enum SceneGraph {
             var constants: [String: String] = [:]
             for instancePass in (entry["passes"] as? [[String: Any]]) ?? [] {
                 if let values = instancePass["constantshadervalues"] as? [String: Any] {
-                    for (key, value) in values where constantString(value) != nil { constants[key] = constantString(value) }
+                    for (key, value) in values where constantString(value, overrides: overrides) != nil {
+                        constants[key] = constantString(value, overrides: overrides)
+                    }
                 }
             }
             // The instance can override each material pass's texture slots — most importantly the opacity
@@ -674,15 +682,16 @@ public enum SceneGraph {
         return result
     }
 
-    private static func constantString(_ value: Any?) -> String? {
+    private static func constantString(_ value: Any?, overrides: [String: PropertyValue] = [:]) -> String? {
         switch value {
         case let string as String: return string
         case let number as NSNumber: return number.stringValue
         // A `constantshadervalues` entry is often a user-property binding `{ "user": …, "value": <string|number> }`
-        // (a tint colour, a strength slider, …) rather than a bare literal. Unwrap to its value; otherwise the
+        // (a tint colour, a strength slider, …) rather than a bare literal. Unwrap to its bound value — the
+        // viewer's Customize override of that property if set, else the author's `value` default; otherwise the
         // constant is dropped and the effect falls back to its shader default — e.g. a tint background washing
         // RED instead of the bound lavender (scene 3195212886).
-        case let object as [String: Any]: return constantString(object["value"])
+        case let object as [String: Any]: return constantString(bound(object, overrides: overrides))
         default: return nil
         }
     }
