@@ -210,5 +210,18 @@ do {
 
     try? fm.removeItem(at: base)
 }
+// A bundle nested deeper than the walk's depth cap is rejected (fail closed): the scan can no longer vet that
+// subtree, and assuming it clean would let an escaping symlink hide below the cap. A real bundle is shallow.
+do {
+    let fm = FileManager.default
+    let base = fm.temporaryDirectory.appendingPathComponent("lumora-symdepth-\(UUID().uuidString)")
+    var dir = base.appendingPathComponent("wp")
+    for _ in 0..<40 { dir = dir.appendingPathComponent("d") }   // > the 32-level cap
+    try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
+    let bundle = base.appendingPathComponent("wp")
+    Check.that("a bundle nested past the depth cap is rejected (fail closed)",
+               WebPlayer.containsEscapingSymlink(in: bundle))
+    try? fm.removeItem(at: base)
+}
 
 Check.summarize()

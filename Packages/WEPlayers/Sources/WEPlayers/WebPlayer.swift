@@ -122,8 +122,12 @@ public final class WebPlayer: WallpaperRenderer {
         let fm = FileManager.default
         let rootPath = folder.resolvingSymlinksInPath().standardizedFileURL.path
         func walk(_ dir: URL, depth: Int) -> Bool {
-            guard depth < 32,
-                  let items = try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: [.isSymbolicLinkKey, .isDirectoryKey],
+            // Fail CLOSED on a subtree too deep to vet: a real wallpaper bundle is only a few levels deep, so an
+            // un-inspectable depth is treated as unsafe (returns "has escaping symlink" → the caller refuses the
+            // bundle) rather than assumed clean. Returning false here would let a deeply-nested tree hide an
+            // escaping symlink from the one check that compensates for WebKit's purely textual read-access grant.
+            guard depth < 32 else { return true }
+            guard let items = try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: [.isSymbolicLinkKey, .isDirectoryKey],
                                                           options: []) else { return false }
             for item in items {
                 let values = try? item.resourceValues(forKeys: [.isSymbolicLinkKey, .isDirectoryKey])
