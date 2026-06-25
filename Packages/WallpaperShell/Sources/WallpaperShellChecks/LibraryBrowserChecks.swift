@@ -90,4 +90,34 @@ func runLibraryBrowserChecks() {
     // Replacing where the selection vanished moves to the first visible (title-sorted: "New" < "Older").
     model.replace(entries: [entry("9", "New", .video), entry("8", "Older", .scene)])
     Check.that("replace re-homes a vanished selection", model.selectedID == "9")
+
+    Check.section("LibraryFiltering favorites")
+
+    Check.that("favoritesOnly keeps only starred",
+               Set(LibraryFiltering.apply(to: lib, search: "", type: .all, sort: .title,
+                                          favoritesOnly: true, favorites: ["2", "4"]).map(\.id)) == ["2", "4"])
+    Check.that("favoritesOnly with empty set is empty",
+               LibraryFiltering.apply(to: lib, search: "", type: .all, sort: .title,
+                                      favoritesOnly: true, favorites: []).isEmpty)
+    Check.that("favorites combine with the type facet",
+               LibraryFiltering.apply(to: lib, search: "", type: .scene, sort: .title,
+                                      favoritesOnly: true, favorites: ["2", "4"]).map(\.id) == ["4"])
+    Check.that("favoritesOnly off ignores the set",
+               LibraryFiltering.apply(to: lib, search: "", type: .all, sort: .title,
+                                      favoritesOnly: false, favorites: ["2"]).count == 4)
+
+    Check.section("LibraryBrowserModel favorites")
+
+    var publishedFavs: Set<String>? = nil
+    let favModel = LibraryBrowserModel(entries: lib)
+    favModel.favorites = ["1"]
+    favModel.onFavoritesChange = { publishedFavs = $0 }
+    Check.that("isFavorite reflects the set", favModel.isFavorite("1") && !favModel.isFavorite("2"))
+    favModel.toggleFavorite("2")
+    Check.that("toggle stars an unstarred wallpaper", favModel.isFavorite("2"))
+    Check.that("toggle publishes the new set", publishedFavs == ["1", "2"])
+    favModel.toggleFavorite("1")
+    Check.that("toggle unstars a starred wallpaper", !favModel.isFavorite("1") && publishedFavs == ["2"])
+    favModel.showFavoritesOnly = true
+    Check.that("favorites-only narrows the visible set", favModel.visibleEntries.map(\.id) == ["2"])
 }

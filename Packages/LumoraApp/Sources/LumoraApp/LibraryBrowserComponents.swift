@@ -35,6 +35,8 @@ struct LibraryGridCell: View {
     let entry: LibraryEntry
     let isSelected: Bool
     let isActive: Bool
+    var isFavorite: Bool = false
+    var onToggleFavorite: () -> Void = {}
     var preloaded: NSImage?
 
     var body: some View {
@@ -43,6 +45,18 @@ struct LibraryGridCell: View {
                 .aspectRatio(16.0 / 10.0, contentMode: .fill)
                 .frame(height: 112)
                 .clipShape(RoundedRectangle(cornerRadius: 10))
+                .overlay(alignment: .topLeading) {
+                    Button(action: onToggleFavorite) {
+                        Image(systemName: isFavorite ? "star.fill" : "star")
+                            .font(.caption)
+                            .foregroundStyle(isFavorite ? Color.yellow : Color.white.opacity(0.85))
+                            .padding(5)
+                            .background(Circle().fill(.black.opacity(0.35)))
+                            .padding(5)
+                    }
+                    .buttonStyle(.plain)
+                    .help(isFavorite ? "Remove from Favorites" : "Add to Favorites")
+                }
                 .overlay(alignment: .topTrailing) {
                     if isActive {
                         Image(systemName: "play.circle.fill")
@@ -138,6 +152,8 @@ struct WallpaperDetailPanel: View {
     let isActive: Bool
     @Bindable var store: PlaylistStore
     var preloaded: NSImage?
+    var isFavorite: Bool = false
+    var onToggleFavorite: () -> Void = {}
     var makePropertiesModel: (LibraryEntry) -> WallpaperPropertiesModel? = { _ in nil }
     var onApply: () -> Void
     var onReveal: () -> Void
@@ -152,7 +168,17 @@ struct WallpaperDetailPanel: View {
                     .clipShape(RoundedRectangle(cornerRadius: 12))
 
                 VStack(alignment: .leading, spacing: 8) {
-                    Text(entry.title).font(.title2.bold()).lineLimit(2)
+                    HStack(alignment: .top) {
+                        Text(entry.title).font(.title2.bold()).lineLimit(2)
+                        Spacer()
+                        Button(action: onToggleFavorite) {
+                            Image(systemName: isFavorite ? "star.fill" : "star")
+                                .font(.title3)
+                                .foregroundStyle(isFavorite ? Color.yellow : Color.secondary)
+                        }
+                        .buttonStyle(.plain)
+                        .help(isFavorite ? "Remove from Favorites" : "Add to Favorites")
+                    }
                     HStack(spacing: 8) {
                         TypeBadge(type: entry.type)
                         if isActive {
@@ -244,6 +270,32 @@ struct CustomizeSection: View {
             }
         }
         .onChange(of: entry.id, initial: true) { _, _ in model = makeModel(entry) }
+    }
+}
+
+/// First-run / empty-library state: explains where wallpapers come from and links to the Workshop.
+struct OnboardingEmptyState: View {
+    private let workshopURL = URL(string: "https://steamcommunity.com/app/431960/workshop/")
+
+    var body: some View {
+        VStack(spacing: 16) {
+            Image(systemName: "photo.stack")
+                .font(.system(size: 52))
+                .foregroundStyle(.secondary)
+            Text("No wallpapers yet").font(.title2.bold())
+            Text("Lumora plays the wallpapers Wallpaper Engine has already synced to this Mac. Subscribe to some in the Workshop, then relaunch Lumora and they'll appear here.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: 400)
+            if let workshopURL {
+                Link(destination: workshopURL) {
+                    Label("Browse the Workshop", systemImage: "safari")
+                }
+                .controlSize(.large)
+            }
+        }
+        .padding(40)
     }
 }
 

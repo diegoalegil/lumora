@@ -18,16 +18,19 @@ public struct Preferences: Codable, Sendable, Equatable {
     public var activeFPS: Int
     /// Target frame rate while throttled (on battery, Low Power Mode, or thermal pressure). Applied at launch.
     public var batteryFPS: Int
+    /// The ids of wallpapers the user has starred as favorites.
+    public var favorites: Set<String>
 
     public init(showDockIcon: Bool = false, launchAtLogin: Bool = false,
                 playlistPlayback: Bool = false, activePlaylistID: UUID? = nil,
-                activeFPS: Int = 60, batteryFPS: Int = 30) {
+                activeFPS: Int = 60, batteryFPS: Int = 30, favorites: Set<String> = []) {
         self.showDockIcon = showDockIcon
         self.launchAtLogin = launchAtLogin
         self.playlistPlayback = playlistPlayback
         self.activePlaylistID = activePlaylistID
         self.activeFPS = activeFPS
         self.batteryFPS = batteryFPS
+        self.favorites = favorites
     }
 
     // Tolerant decoding: a Preferences value written by an OLDER build (without a key added later) decodes with
@@ -41,5 +44,6 @@ public struct Preferences: Codable, Sendable, Equatable {
         activePlaylistID = try c.decodeIfPresent(UUID.self, forKey: .activePlaylistID)
         activeFPS = try c.decodeIfPresent(Int.self, forKey: .activeFPS) ?? 60
         batteryFPS = try c.decodeIfPresent(Int.self, forKey: .batteryFPS) ?? 30
+        favorites = try c.decodeIfPresent(Set<String>.self, forKey: .favorites) ?? []
     }
 }

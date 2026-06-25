@@ -151,6 +151,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // Feed the library browser the installed wallpapers and mark which one is currently playing.
         libraryModel.replace(entries: libraryEntries())
         libraryModel.activeWallpaperID = activeWallpaper?.ref.id
+        // Restore starred favorites and persist any change back through the preferences store.
+        libraryModel.favorites = preferences.preferences.favorites
+        libraryModel.onFavoritesChange = { [weak self] favorites in self?.preferences.favorites = favorites }
 
         screenManager.onChange = { [weak self] in self?.reconcile() }
         coordinator.start()      // begin monitoring (no windows yet)

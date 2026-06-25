@@ -84,12 +84,16 @@ public enum LibrarySortOrder: String, CaseIterable, Sendable, Identifiable {
 
 /// Pure, value-in/value-out search + filter + sort over library entries. No UI, no I/O — unit-tested.
 public enum LibraryFiltering {
-    /// Apply the search text, type facet and sort order, returning the visible, ordered entries.
+    /// Apply the search text, type facet, optional favorites-only filter and sort order, returning the visible,
+    /// ordered entries.
     public static func apply(to entries: [LibraryEntry], search: String,
-                             type: LibraryTypeFilter, sort: LibrarySortOrder) -> [LibraryEntry] {
+                             type: LibraryTypeFilter, sort: LibrarySortOrder,
+                             favoritesOnly: Bool = false, favorites: Set<String> = []) -> [LibraryEntry] {
         let query = search.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         let filtered = entries.filter { entry in
-            type.matches(entry.type) && (query.isEmpty || entry.matches(query: query))
+            type.matches(entry.type)
+                && (!favoritesOnly || favorites.contains(entry.id))
+                && (query.isEmpty || entry.matches(query: query))
         }
         return filtered.sorted { lhs, rhs in
             switch sort {

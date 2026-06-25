@@ -78,6 +78,16 @@ struct LibraryBrowserView: View {
             HStack(spacing: 10) {
                 FacetBar(selection: $model.typeFilter) { model.clampSelectionToVisible() } count: { facetCount($0) }
 
+                Button {
+                    model.showFavoritesOnly.toggle()
+                    model.clampSelectionToVisible()
+                } label: {
+                    Image(systemName: model.showFavoritesOnly ? "star.fill" : "star")
+                        .foregroundStyle(model.showFavoritesOnly ? Color.yellow : Color.secondary)
+                }
+                .buttonStyle(.plain)
+                .help("Show favorites only")
+
                 Spacer(minLength: 8)
 
                 Menu {
@@ -112,12 +122,18 @@ struct LibraryBrowserView: View {
         Group {
             let entries = model.visibleEntries
             if entries.isEmpty {
-                ContentUnavailableView("No matches",
-                                       systemImage: "rectangle.on.rectangle.slash",
-                                       description: Text(model.entries.isEmpty
-                                           ? "No wallpapers are installed yet. Subscribe to some in Wallpaper Engine."
-                                           : "No wallpapers match your search and filter."))
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                Group {
+                    if model.entries.isEmpty {
+                        OnboardingEmptyState()
+                    } else if model.showFavoritesOnly && model.favorites.isEmpty {
+                        ContentUnavailableView("No favorites yet", systemImage: "star",
+                                               description: Text("Tap the star on a wallpaper to add it here."))
+                    } else {
+                        ContentUnavailableView("No matches", systemImage: "rectangle.on.rectangle.slash",
+                                               description: Text("No wallpapers match your search and filter."))
+                    }
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 ScrollView {
                     LazyVGrid(columns: columns, spacing: 18) {
@@ -125,6 +141,8 @@ struct LibraryBrowserView: View {
                             LibraryGridCell(entry: entry,
                                             isSelected: entry.id == model.selectedID,
                                             isActive: entry.id == model.activeWallpaperID,
+                                            isFavorite: model.isFavorite(entry.id),
+                                            onToggleFavorite: { model.toggleFavorite(entry.id) },
                                             preloaded: preloadedThumbnails[entry.id])
                                 .onTapGesture { model.selectedID = entry.id }
                                 .simultaneousGesture(TapGesture(count: 2).onEnded { onApply(entry) })
@@ -167,6 +185,8 @@ struct LibraryBrowserView: View {
                                      isActive: entry.id == model.activeWallpaperID,
                                      store: store,
                                      preloaded: preloadedThumbnails[entry.id],
+                                     isFavorite: model.isFavorite(entry.id),
+                                     onToggleFavorite: { model.toggleFavorite(entry.id) },
                                      makePropertiesModel: makePropertiesModel,
                                      onApply: { onApply(entry) },
                                      onReveal: { onReveal(entry) })

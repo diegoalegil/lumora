@@ -39,6 +39,10 @@ public final class PreferencesModel {
         get { preferences.batteryFPS }
         set { update { $0.batteryFPS = newValue } }
     }
+    public var favorites: Set<String> {
+        get { preferences.favorites }
+        set { update { $0.favorites = newValue } }
+    }
     public var activePlaylistID: UUID? {
         get { preferences.activePlaylistID }
         set { update { $0.activePlaylistID = newValue } }

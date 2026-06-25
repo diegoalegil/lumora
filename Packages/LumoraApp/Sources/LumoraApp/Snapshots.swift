@@ -54,6 +54,8 @@ enum SnapshotRunner {
             let model = LibraryBrowserModel(entries: entries)
             model.activeWallpaperID = entries.first?.id
             model.selectedID = (rich ?? entries.first)?.id
+            // Star the first few visible cells + the selected one so the snapshot shows filled stars.
+            model.favorites = Set(model.visibleEntries.prefix(3).map(\.id) + [model.selectedID].compactMap { $0 })
             root = AnyView(LibraryBrowserView(model: model, store: store,
                                               makePropertiesModel: { SnapshotLibrary.propertiesModel(for: $0) },
                                               preloadedThumbnails: thumbs))

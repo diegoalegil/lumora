@@ -17,6 +17,13 @@ public final class LibraryBrowserModel {
     public var selectedID: String?
     /// The wallpaper currently driving the desktop (highlighted in the grid / detail). App-owned; set by the host.
     public var activeWallpaperID: String?
+    /// Show only starred wallpapers.
+    public var showFavoritesOnly: Bool = false
+    /// The starred wallpaper ids (kept in sync with persisted preferences by the host).
+    public var favorites: Set<String> = []
+
+    /// Fires when the user stars/unstars a wallpaper, with the full updated set, so the host persists it.
+    @ObservationIgnored public var onFavoritesChange: ((Set<String>) -> Void)?
 
     public private(set) var entries: [LibraryEntry]
 
@@ -25,9 +32,20 @@ public final class LibraryBrowserModel {
         self.selectedID = LibraryFiltering.apply(to: entries, search: "", type: .all, sort: .title).first?.id
     }
 
-    /// The entries to show, after search + type facet + sort.
+    /// The entries to show, after search + type facet + favorites + sort.
     public var visibleEntries: [LibraryEntry] {
-        LibraryFiltering.apply(to: entries, search: searchText, type: typeFilter, sort: sortOrder)
+        LibraryFiltering.apply(to: entries, search: searchText, type: typeFilter, sort: sortOrder,
+                               favoritesOnly: showFavoritesOnly, favorites: favorites)
+    }
+
+    public func isFavorite(_ id: String) -> Bool { favorites.contains(id) }
+
+    /// Star or unstar a wallpaper, publish the new set for persistence, and keep the selection valid (un-starring
+    /// the selected one while showing favorites-only would otherwise strand the detail panel).
+    public func toggleFavorite(_ id: String) {
+        if favorites.contains(id) { favorites.remove(id) } else { favorites.insert(id) }
+        onFavoritesChange?(favorites)
+        if showFavoritesOnly { clampSelectionToVisible() }
     }
 
     /// Per-kind counts of the whole (unfiltered) library, for the facet labels.
