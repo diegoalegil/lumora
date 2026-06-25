@@ -640,12 +640,18 @@ public final class SceneRenderer {
                                                  font: font, color: SIMD3(Float(layer.color.x), Float(layer.color.y), Float(layer.color.z)),
                                                  pointSize: layer.pointSize, device: device, horizontalAlign: layer.horizontalAlign, verticalAlign: layer.verticalAlign)
                 let center = SIMD2(Float(layer.origin.x / orthoW * 2 - 1), Float(layer.origin.y / orthoH * 2 - 1))
+                // A text/clock layer can be rolled too (angles.z): apply the same aspect-corrected rotation the
+                // image path uses, so a tilted clock/label renders tilted instead of snapping axis-aligned.
+                let textRoll = Float(layer.angles.z)
+                let textAspect = Float(orthoW / orthoH)
+                let textCos = cos(textRoll), textSin = sin(textRoll)
                 prepared.append(PreparedLayer(
                     texture: whiteTexture, center: center, halfExtent: .zero, uvScale: SIMD2(1, 1),
                     alpha: Float(layer.alpha), alphaAnimation: layer.alphaAnimation, tint: SIMD3(1, 1, 1),
                     isAdditive: false, parallaxDepth: SIMD2(Float(layer.parallaxDepth.x), Float(layer.parallaxDepth.y)),
                     originAnimation: layer.originAnimation, originScale: SIMD2(Float(2 / orthoW), Float(2 / orthoH)),
-                    rotA: SIMD2(1, 0), rotB: SIMD2(0, 1), effects: [], videoTrack: nil, puppet: nil, text: prepText,
+                    rotA: SIMD2(textCos, -textSin / textAspect), rotB: SIMD2(textSin * textAspect, textCos),
+                    effects: [], videoTrack: nil, puppet: nil, text: prepText,
                     scriptGroup: nil))
                 continue
             }
