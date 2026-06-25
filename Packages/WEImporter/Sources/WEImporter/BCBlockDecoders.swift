@@ -26,6 +26,9 @@ public extension SceneTexture {
         let blocksX = (width + 3) / 4
         let blocksY = (height + 3) / 4
         guard blocks.count >= blocksX * blocksY * blockBytes else { return nil }
+        // Cap the decoded RGBA size like the lz4 path, so a small block payload that declares a huge mip can't
+        // force a ~1 GB transient allocation (width/height are already ≤ 16384, so the product can't overflow).
+        guard width * height * 4 <= SceneTexture.maxDecodedBytes else { return nil }
 
         var rgba = [UInt8](repeating: 0, count: width * height * 4)
         blocks.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in

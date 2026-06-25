@@ -208,7 +208,8 @@ public extension SceneTexture {
     /// Extract up to `count` evenly-spaced frames (RGBA8, resolution-capped) of a video-backed texture,
     /// with the clip's loop duration, so the renderer can animate it. Returns nil if it isn't a video
     /// or yields fewer than two frames.
-    static func videoFrames(_ data: Data, count: Int = 24) -> (frames: [DecodedTexture], duration: Double)? {
+    static func videoFrames(_ data: Data, count requestedCount: Int = 24) -> (frames: [DecodedTexture], duration: Double)? {
+        let count = max(2, requestedCount)   // a non-positive count would trap `0 ..< count`; ≥2 matches the "needs ≥2 frames" contract
         guard let range = videoPayloadRange(data) else { return nil }
         let payload = data.subdata(in: range)
 
