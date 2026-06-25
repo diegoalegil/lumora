@@ -278,7 +278,10 @@ public enum SceneGraphError: Error, Equatable, Sendable, CustomStringConvertible
 /// Builds a `RenderableScene` from a `ScenePackage` by reading scene.json and following each image
 /// object through its model and material to the texture it draws.
 public enum SceneGraph {
-    public static func load(from package: ScenePackage) throws -> RenderableScene {
+    /// `overrides` are the viewer's per-property toggles from the Customize panel, keyed by the WE property
+    /// name (`promptbox`, `rain`, `time`, …). Only boolean visibility toggles are applied here; an empty map
+    /// (the default) reproduces the scene exactly as authored.
+    public static func load(from package: ScenePackage, overrides: [String: Bool] = [:]) throws -> RenderableScene {
         guard let sceneEntry = package.sceneJSON else { throw SceneGraphError.missingSceneJSON }
         guard let root = (try? JSONSerialization.jsonObject(with: sceneEntry.data)) as? [String: Any]
         else { throw SceneGraphError.invalidSceneJSON }
@@ -341,7 +344,7 @@ public enum SceneGraph {
             // sub-emitters — an ember's glow, a shooting-star's trail, a magic charge's rays — which WE
             // spawns alongside the parent) and move on.
             if let particlePath = object["particle"] as? String,
-               isVisible(object["visible"]),
+               isVisible(object["visible"], overrides: overrides),
                let particleJSON = json(package.entry(named: particlePath)) {
                 let objectOrigin = worldOrigin(object, 0)
                 particleSystems.append(contentsOf:
@@ -371,7 +374,7 @@ public enum SceneGraph {
                         alphaAnimation: alphaAnimation(object["alpha"]),
                         originAnimation: vec3Animation(object["origin"]),
                         parallaxDepth: vec(object["parallaxDepth"]),
-                        visible: isVisible(object["visible"]),
+                        visible: isVisible(object["visible"], overrides: overrides),
                         blending: nil, shader: nil, effects: [],
                         textValue: value, textScript: script,
                         fontPath: object["font"] as? String,
@@ -414,7 +417,7 @@ public enum SceneGraph {
                 alphaAnimation: alphaAnimation(object["alpha"]),
                 originAnimation: vec3Animation(object["origin"]),
                 parallaxDepth: vec(object["parallaxDepth"]),
-                visible: isVisible(object["visible"]),
+                visible: isVisible(object["visible"], overrides: overrides),
                 blending: blendOverride ?? material.blending,
                 shader: material.shader,
                 effects: effects(of: object, in: package),
@@ -503,8 +506,12 @@ public enum SceneGraph {
         return out
     }
 
-    /// A `visible` field is a Bool, or a `{ "user": …, "value": Bool }` property binding — read either.
-    private static func isVisible(_ value: Any?) -> Bool {
+    /// A `visible` field is a Bool, or a `{ "user": …, "value": Bool }` property binding — read either. When the
+    /// binding names a simple user property (a prompt/author box, an optional effect, a clock component) and the
+    /// viewer has overridden it in the Customize panel, the override wins; otherwise the binding's default
+    /// `value` stands. This is how Wallpaper Engine lets a user permanently turn off, say, the author's
+    /// "prompt box" (`{ "user": "promptbox", … }`) — without the override it shows by default.
+    private static func isVisible(_ value: Any?, overrides: [String: Bool] = [:]) -> Bool {
         if let flag = value as? Bool { return flag }
         if let dict = value as? [String: Any] {
             // A media-player widget (album-art tile, now-playing overlay, controls) drives its own visibility
@@ -516,6 +523,10 @@ public enum SceneGraph {
                script.contains("mediaPlayback") || script.contains("MediaPlaybackEvent") || script.contains("mediaThumbnail") {
                 return false
             }
+            // A plain `{ "user": "<name>", "value": Bool }` toggle: a user override of <name> overrides the
+            // default. (The combo-conditional form, `"user": { "name", "condition" }`, is left on its default
+            // `value` — it depends on a multi-choice selection, not a simple boolean.)
+            if let userKey = dict["user"] as? String, let override = overrides[userKey] { return override }
             if let flag = dict["value"] as? Bool { return flag }
         }
         return true

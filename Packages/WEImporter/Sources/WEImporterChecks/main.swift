@@ -770,6 +770,20 @@ let boundSizePkg = buildPKG(version: "PKGV0009", files: [
 if let pkg = try? ScenePackage.read(boundSizePkg), let doc = try? SceneGraph.load(from: pkg) {
     Check.that("a user-bound point size takes its bound base value", doc.layers.first?.pointSize == 119.5)
 }
+// A layer whose visibility is a `{ "user": "<name>", "value": Bool }` toggle (an author's prompt box, an
+// optional effect) defaults to its `value`, but the viewer's Customize override of that property wins. With no
+// override the prompt box shows (as Wallpaper Engine does); overriding `promptbox`→false hides it.
+let promptPkg = buildPKG(version: "PKGV0009", files: [
+    ("scene.json", Data(#"{"objects":[{"name":"box","image":"models/box.json","visible":{"user":"promptbox","value":true}}]}"#.utf8)),
+])
+if let pkg = try? ScenePackage.read(promptPkg) {
+    let shown = try? SceneGraph.load(from: pkg)
+    Check.that("a prompt-box layer is visible by default", shown?.layers.first?.visible == true)
+    let hidden = try? SceneGraph.load(from: pkg, overrides: ["promptbox": false])
+    Check.that("a Customize override hides the prompt-box layer", hidden?.layers.first?.visible == false)
+    let untouched = try? SceneGraph.load(from: pkg, overrides: ["unrelated": false])
+    Check.that("an unrelated override leaves the layer at its default", untouched?.layers.first?.visible == true)
+}
 // The scene graph is decoded strictly, so an overflowing exponent is rejected outright (unlike the particle
 // ops, which go through lenient JSONSerialization and clamp ±inf). That makes the non-finite point-size clamp
 // unreachable via JSON — belt-and-suspenders — so assert the ACTUAL behaviour: the document is rejected. (The

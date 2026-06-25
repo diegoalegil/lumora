@@ -46,6 +46,9 @@ public final class ScenePlayer: WallpaperRenderer {
     /// The frame rate the playback policy currently wants — 60 active, 30 on battery / low-power, 0 when
     /// paused or occluded. Driven by `apply(_:)`; 60 until a directive says otherwise.
     private var targetFPS = 60
+    /// The viewer's per-property Customize toggles (e.g. `promptbox` off to hide an author's prompt box),
+    /// applied to the scene at load. Set before `load(_:)`; empty renders the scene exactly as authored.
+    public var propertyOverrides: [String: Bool] = [:]
 
     /// The render-loop tick interval for a target frame rate, or nil when the rate is 0 — a paused or
     /// occluded directive (targetFPS 0) wants no continuous rendering, just the last still frame held.
@@ -68,7 +71,7 @@ public final class ScenePlayer: WallpaperRenderer {
         let data = try Data(contentsOf: wallpaper.mainFileURL)
         let scenePackage = try ScenePackage.read(data)
         package = scenePackage
-        document = try SceneGraph.load(from: scenePackage)
+        document = try SceneGraph.load(from: scenePackage, overrides: propertyOverrides)
         prepared = nil
         elapsed = 0.0   // reset the animation clock so a reload (playlist switch, re-apply) starts the new scene at t=0
         sceneUsesAudio = Self.usesAudio(scenePackage)

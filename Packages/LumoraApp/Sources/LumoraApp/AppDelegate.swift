@@ -302,7 +302,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 player = VideoFormatSupport.isNativelyPlayable(wallpaper.mainFileURL)
                     ? VideoPlayer() : VideoFallbackPlayer()
             case .web:   player = WebPlayer()
-            case .scene: player = ScenePlayer()   // WEScene Metal compositor
+            case .scene:
+                let scene = ScenePlayer()   // WEScene Metal compositor
+                // Apply the viewer's Customize toggles (e.g. promptbox off to hide an author's prompt box).
+                scene.propertyOverrides = Self.boolOverrides(propertyStore.overrides(for: wallpaper.ref.id))
+                player = scene
             }
             if let player {
                 do {
@@ -316,6 +320,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // No playable wallpaper (or it failed to load): stay fully transparent so the user's real macOS
         // desktop shows through, instead of hijacking it with a solid (purple) fill.
         return SolidColorRenderer(color: .clear)
+    }
+
+    /// Narrow the saved Customize overrides to the boolean toggles the scene engine consumes (visibility of
+    /// prompt boxes, optional effects, clock components). Sliders/colours/combos persist but aren't plumbed to
+    /// the renderer yet, so they're dropped here.
+    private static func boolOverrides(_ overrides: [String: PropertyValue]) -> [String: Bool] {
+        overrides.compactMapValues { if case let .bool(flag) = $0 { return flag } else { return nil } }
     }
 
     /// Scan the installed Steam Workshop library (resolved wallpapers plus skip diagnostics). For local
