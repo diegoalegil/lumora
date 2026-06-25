@@ -31,6 +31,10 @@ func runWallpaperPropertiesChecks() {
     let blankProp = WEProperty(text: nil, type: .bool, value: .bool(true))
     Check.that("falls back to a humanized key", WallpaperProperties.displayLabel(for: blankProp, key: "use_24_hour") == "Use 24 hour")
 
+    let exactPrefix = WEProperty(text: "ui_browse_properties_", type: .color, value: .string("1 1 1"))
+    Check.that("a loc-key that is exactly a prefix falls back to the key (not empty)",
+               WallpaperProperties.displayLabel(for: exactPrefix, key: "schemecolor") == "Schemecolor")
+
     Check.section("WallpaperProperties.coerce")
 
     let sl = slider(20, min: 0, max: 60)
@@ -42,6 +46,21 @@ func runWallpaperPropertiesChecks() {
     let cb = combo("a", ["a", "b", "c"])
     Check.that("combo accepts a listed option", WallpaperProperties.coerce(.string("b"), for: cb) == .string("b"))
     Check.that("combo rejects an unlisted option", WallpaperProperties.coerce(.string("z"), for: cb) == .string("a"))
+    Check.that("a NaN slider value falls back to the default", WallpaperProperties.coerce(.number(.nan), for: sl) == .number(20))
+
+    Check.section("WallpaperProperties.sliderBounds")
+
+    let b1 = WallpaperProperties.sliderBounds(for: slider(20, min: 0, max: 60))
+    Check.that("a normal slider's bounds are verbatim", b1.lo == 0 && b1.hi == 60)
+    // A huge manifest value (e.g. "1e400") decodes to .infinity; the range must stay finite and contain the default.
+    let inf = WEProperty(type: .slider, value: .number(30), min: 0, max: .infinity)
+    let b2 = WallpaperProperties.sliderBounds(for: inf)
+    Check.that("an infinite max becomes a finite hi that contains the default", b2.hi.isFinite && b2.hi >= 30 && b2.lo == 0)
+    // A bound-less slider's range must contain the default so coercing the default is a no-op (no spurious override).
+    let noBounds = WEProperty(type: .slider, value: .number(20))
+    let b3 = WallpaperProperties.sliderBounds(for: noBounds)
+    Check.that("a bound-less slider range contains the default", b3.lo <= 20 && b3.hi >= 20)
+    Check.that("coercing the default of a bound-less slider is a no-op", WallpaperProperties.coerce(.number(20), for: noBounds) == .number(20))
 
     Check.section("WallpaperProperties.effective / pruned")
 

@@ -78,10 +78,11 @@ struct WallpaperPropertiesView: View {
     }
 
     private func sliderRow(_ item: WallpaperPropertySchemaItem) -> some View {
-        let lo = item.property.min ?? 0
-        let hiRaw = item.property.max ?? 1
-        let hi = hiRaw > lo ? hiRaw : lo + 1
-        let step = (item.property.step ?? 0) > 0 ? item.property.step! : 0
+        // Sanitized, finite, ascending bounds shared with the model's clamp — a raw manifest min/max can be
+        // non-finite (e.g. "1e400" → ∞) or inverted, which would make the Slider's range undefined.
+        let bounds = WallpaperProperties.sliderBounds(for: item.property)
+        let lo = bounds.lo, hi = bounds.hi
+        let step = bounds.step ?? 0
         let current = { if case let .number(n) = model.value(for: item.key) { return n } else { return lo } }()
         return VStack(alignment: .leading, spacing: 2) {
             HStack {

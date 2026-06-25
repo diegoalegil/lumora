@@ -37,11 +37,9 @@ public enum WallpaperProperties {
     public static func coerce(_ value: PropertyValue, for property: WEProperty) -> PropertyValue {
         switch property.type {
         case .slider:
-            guard case let .number(n) = value else { return property.value }
-            var clamped = n
-            if let lo = property.min { clamped = Swift.max(lo, clamped) }
-            if let hi = property.max { clamped = Swift.min(hi, clamped) }
-            return .number(clamped)
+            guard case let .number(n) = value, n.isFinite else { return property.value }
+            let bounds = sliderBounds(for: property)   // finite, ascending — shared with the Slider control
+            return .number(Swift.min(bounds.hi, Swift.max(bounds.lo, n)))
         case .combo:
             let allowed = property.options?.map(\.value) ?? []
             return allowed.contains(value) ? value : property.value
@@ -104,8 +102,26 @@ public enum WallpaperProperties {
     public static func displayLabel(for property: WEProperty, key: String) -> String {
         let stripped = stripHTML(property.text ?? "")
         if stripped.isEmpty { return humanize(key) }
-        if looksLikeLocKey(stripped) { return humanizeLocKey(stripped) }
+        if looksLikeLocKey(stripped) {
+            let loc = humanizeLocKey(stripped)
+            return loc.isEmpty ? humanize(key) : loc   // text was exactly a known prefix → use the key
+        }
         return stripped
+    }
+
+    /// A finite, ascending `[lo, hi]` slider range (and optional positive step) for a slider property — the
+    /// same bounds `coerce` clamps to. WE's lenient decode can yield a non-finite or inverted min/max from a
+    /// hostile manifest; a Slider built on those is undefined behaviour, so sanitize here once.
+    public static func sliderBounds(for property: WEProperty) -> (lo: Double, hi: Double, step: Double?) {
+        // When a bound is missing/non-finite, fall back to a finite range that still contains the default value
+        // so clamping the default is a no-op (otherwise editing a value back to the default would look like a
+        // change). When both bounds are present and finite (the normal case) they're used verbatim.
+        let def: Double? = { if case let .number(n) = property.value, n.isFinite { return n } else { return nil } }()
+        let lo = property.min.flatMap { $0.isFinite ? $0 : nil } ?? Swift.min(0, def ?? 0)
+        var hi = property.max.flatMap { $0.isFinite ? $0 : nil } ?? Swift.max(lo + 1, def ?? lo + 1)
+        if hi <= lo { hi = lo + 1 }
+        let step = property.step.flatMap { $0.isFinite && $0 > 0 ? $0 : nil }
+        return (lo, hi, step)
     }
 
     /// Remove HTML tags (turning `<br>` into a space) and collapse whitespace — WE labels are sprinkled with
