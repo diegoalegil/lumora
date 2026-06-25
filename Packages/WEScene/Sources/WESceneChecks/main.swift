@@ -324,6 +324,18 @@ Check.that("a non-finite lifetime clamps to the cap",
 Check.that("at least one slot is always allocated",
            SceneRenderer.particleInstanceCount(rate: 0.0001, lifetimeUpper: 0.0001, maxCount: 4000) == 1)
 
+// The per-frame script delta (engine.frametime) is reconstructed from successive render times: a first frame
+// or a non-advancing/backward time falls back to 1/60 (never a zero or negative dt), else it's the difference.
+// It's computed once per frame so every scripted layer in a multi-visualiser scene shares the same real delta.
+Check.that("script delta defaults to 1/60 on the first frame (no previous time)",
+           SceneRenderer.scriptFrameDelta(time: 2.0, lastTime: nil) == 0.0166667)
+Check.that("script delta is the advance between successive times",
+           abs(SceneRenderer.scriptFrameDelta(time: 1.0, lastTime: 0.98) - 0.02) < 1e-9)
+Check.that("a non-advancing time falls back to 1/60 (not a zero delta)",
+           SceneRenderer.scriptFrameDelta(time: 1.0, lastTime: 1.0) == 0.0166667)
+Check.that("a backward time (reload reset to 0) falls back to 1/60 (not negative)",
+           SceneRenderer.scriptFrameDelta(time: 0.5, lastTime: 1.0) == 0.0166667)
+
 // Regression (audit-found): a particle's per-cycle hash seed came from Int(time / lifetime), which traps when
 // that quotient exceeds Int.max (a huge or non-finite render time) — the kind of degenerate time a buggy clock or
 // a very long-lived session could produce. The particle render must complete at any time, not abort. A normal

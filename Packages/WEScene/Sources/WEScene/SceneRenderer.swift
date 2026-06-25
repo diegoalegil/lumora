@@ -285,6 +285,10 @@ public final class SceneRenderer {
     // per-frame delta for `engine.frametime`/getFrameTime() without a second clock — the engine stays a pure
     // function of `time`, so deterministic batch/golden renders reproduce exactly. nil before the first frame.
     private var lastScriptTime: Double?
+    // This frame's reconstructed script delta (engine.frametime), computed ONCE per frame in render() and
+    // shared by every scripted layer — so a scene with several visualiser/script groups feeds them all the
+    // same real dt, instead of the 2nd..Nth group seeing `time == lastScriptTime` and falling back to 1/60.
+    private var currentScriptFrameDelta: Double = 0.0166667
 
     private static let shaderSource = """
     #include <metal_stdlib>
@@ -1410,6 +1414,9 @@ public final class SceneRenderer {
         // How many target pixels each scene unit covers (the larger axis, since cover-fit scales one axis up):
         // text rasterises at this density so it's sharp on the real display rather than upscaled from 1×.
         currentPixelScale = max(Double(width) / max(1, scene.orthoWidth), Double(height) / max(1, scene.orthoHeight))
+        // Reconstruct this frame's script delta ONCE here (not per scripted group), so every scripted layer in a
+        // multi-visualiser scene gets the same real per-frame dt for engine.frametime / getFrameTime().
+        currentScriptFrameDelta = scriptFrameDelta(time)
         let swayX = Float(0.012 * sin(time * 0.6))
         let swayY = Float(0.009 * sin(time * 0.45))
 
@@ -1627,13 +1634,19 @@ public final class SceneRenderer {
     /// visualiser convention — so it never sinks below where it sits at rest. With no audio every band is 0,
     /// the script leaves each bar at height 0, and nothing is drawn (graceful: an idle visualiser is empty,
     /// never wrong).
-    /// The per-frame delta (seconds) for the script clock, reconstructed from successive `time` values so no
-    /// second wall-clock is introduced. A first frame, or `time` not advancing (a still / a reload that resets
-    /// elapsed to 0), yields the 1/60 default rather than a zero or negative dt.
+    /// The per-frame script delta (seconds): the advance from the previous frame's `time` to this one, with a
+    /// 1/60 default for the first frame or a non-advancing/backward time (a still, or a reload that resets
+    /// elapsed to 0) — never a zero or negative dt. Pure, so the branch behaviour is unit-testable.
+    public static func scriptFrameDelta(time: Double, lastTime: Double?) -> Double {
+        guard let last = lastTime, time > last else { return 0.0166667 }
+        return time - last
+    }
+
+    /// Reconstruct this frame's script delta from successive `time` values (no second wall-clock) and remember
+    /// the time for next frame. Called ONCE per frame in render(), not per scripted group.
     private func scriptFrameDelta(_ time: Double) -> Double {
         defer { lastScriptTime = time }
-        guard let last = lastScriptTime, time > last else { return 0.0166667 }
-        return time - last
+        return Self.scriptFrameDelta(time: time, lastTime: lastScriptTime)
     }
 
     private func drawScriptGroup(_ encoder: MTLRenderCommandEncoder, group: PreparedScriptGroup,
@@ -1652,7 +1665,7 @@ public final class SceneRenderer {
         // Feed the live engine clock before running update() so a time-driven script (a sweep/rotation that
         // reads engine.time, or one accumulating engine.getFrameTime()) advances instead of reading a frozen 0.
         group.runtime.setTime(time)
-        group.runtime.setFrameTime(scriptFrameDelta(time))
+        group.runtime.setFrameTime(currentScriptFrameDelta)
         group.runtime.runUpdate()
         // The host layer's per-frame motion (parallax sway + origin keyframes) shifts every bar — the bars'
         // origins are relative to the host's base, so add the host's animated NDC delta to each.
