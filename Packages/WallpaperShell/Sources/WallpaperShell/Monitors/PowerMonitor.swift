@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT
-// Provenance: clean-room from Apple docs (IOKit IOPowerSources). AC-vs-battery via IOKit is the
-// dependable signal on macOS; Low Power Mode is read on demand (its change notification is
-// unreliable on macOS, and LPM is absent on desktop Macs before macOS 14).
+// Provenance: clean-room from Apple docs (IOKit IOPowerSources, NSProcessInfoPowerStateDidChange).
+// AC-vs-battery via IOKit; Low Power Mode is read on demand AND its toggle is observed via
+// NSProcessInfoPowerStateDidChange, so entering/leaving LPM re-evaluates the policy immediately
+// (LPM is absent on desktop Macs before macOS 14, where the notification simply never fires).
 import Foundation
 import IOKit.ps
 
@@ -13,6 +14,8 @@ public final class PowerMonitor {
     private nonisolated(unsafe) var runLoopSource: CFRunLoopSource?
     // Thermal-change observer; removed by the nonisolated deinit (removeObserver is thread-safe).
     private nonisolated(unsafe) var thermalToken: (any NSObjectProtocol)?
+    // Low-Power-Mode-change observer (NSProcessInfoPowerStateDidChange); removed alongside the thermal one.
+    private nonisolated(unsafe) var powerStateToken: (any NSObjectProtocol)?
 
     public init() {}
 
@@ -25,6 +28,7 @@ public final class PowerMonitor {
             CFRunLoopRemoveSource(CFRunLoopGetMain(), source, .commonModes)
         }
         if let token = thermalToken { NotificationCenter.default.removeObserver(token) }
+        if let token = powerStateToken { NotificationCenter.default.removeObserver(token) }
     }
 
     /// True when the providing power source is the internal battery (i.e. not on AC).
@@ -56,6 +60,12 @@ public final class PowerMonitor {
             forName: ProcessInfo.thermalStateDidChangeNotification, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.onChange?() }
         }
+        // Low Power Mode being toggled (Settings → Battery) re-evaluates the policy so the wallpaper drops to
+        // its battery FPS immediately, instead of waiting for the next unrelated power/thermal/occlusion change.
+        powerStateToken = NotificationCenter.default.addObserver(
+            forName: .NSProcessInfoPowerStateDidChange, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.onChange?() }
+        }
 
         let context = Unmanaged.passUnretained(self).toOpaque()
         let source = IOPSNotificationCreateRunLoopSource({ ctx in
@@ -81,6 +91,10 @@ public final class PowerMonitor {
         if let token = thermalToken {
             NotificationCenter.default.removeObserver(token)
             thermalToken = nil
+        }
+        if let token = powerStateToken {
+            NotificationCenter.default.removeObserver(token)
+            powerStateToken = nil
         }
     }
 }
