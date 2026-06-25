@@ -24,6 +24,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var statusItem: NSStatusItem?
     private var pauseMenuItem: NSMenuItem?
     private var loginMenuItem: NSMenuItem?
+    private var nowPlayingItem: NSMenuItem?
 
     private let screenManager: ScreenManager
     private var signalSource: SystemSignalSource?
@@ -323,9 +324,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         let menu = NSMenu()
 
+        // A non-interactive header showing what's on screen right now.
+        let nowPlaying = NSMenuItem(title: "No wallpaper", action: nil, keyEquivalent: "")
+        nowPlaying.isEnabled = false
+        menu.addItem(nowPlaying)
+        nowPlayingItem = nowPlaying
+        menu.addItem(.separator())
+
         let browse = NSMenuItem(title: "Browse Wallpapers…", action: #selector(openLibrary), keyEquivalent: "l")
         browse.target = self
         menu.addItem(browse)
+
+        // Cycle the active wallpaper through the installed library (⌘] / ⌘[).
+        let nextItem = NSMenuItem(title: "Next Wallpaper", action: #selector(nextWallpaper), keyEquivalent: "]")
+        nextItem.target = self
+        menu.addItem(nextItem)
+        let prevItem = NSMenuItem(title: "Previous Wallpaper", action: #selector(previousWallpaper), keyEquivalent: "[")
+        prevItem.target = self
+        menu.addItem(prevItem)
 
         let wallpaperItem = NSMenuItem(title: "Quick Switch", action: nil, keyEquivalent: "")
         wallpaperItem.submenu = NSMenu()
@@ -390,6 +406,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     /// Populate the Wallpaper submenu from the discovered library, checking the active one.
     private func rebuildWallpaperMenu() {
+        updateNowPlaying()
         guard let submenu = wallpaperSubmenu else { return }
         submenu.removeAllItems()
 
@@ -417,6 +434,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func selectWallpaper(_ sender: NSMenuItem) {
         guard let id = sender.representedObject as? String else { return }
         applyWallpaper(id: id)
+    }
+
+    @objc private func nextWallpaper() {
+        let ids = playableWallpapers.map { $0.ref.id }
+        if let id = WallpaperCycle.next(after: activeWallpaper?.ref.id, in: ids) { applyWallpaper(id: id) }
+    }
+
+    @objc private func previousWallpaper() {
+        let ids = playableWallpapers.map { $0.ref.id }
+        if let id = WallpaperCycle.previous(before: activeWallpaper?.ref.id, in: ids) { applyWallpaper(id: id) }
+    }
+
+    /// Reflect the active wallpaper in the menu header and the menu-bar tooltip.
+    private func updateNowPlaying() {
+        if let wallpaper = activeWallpaper {
+            let title = WallpaperLibrary.displayTitle(wallpaper)
+            nowPlayingItem?.title = "Playing: \(title)"
+            statusItem?.button?.toolTip = "Lumora — \(title)"
+        } else {
+            nowPlayingItem?.title = "No wallpaper"
+            statusItem?.button?.toolTip = "Lumora"
+        }
     }
 
     /// Switch every display to the wallpaper with `id` and persist the choice. Shared by the menu and the
