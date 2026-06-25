@@ -71,6 +71,12 @@ enum SnapshotRunner {
                 .frame(width: 400, alignment: .top)
                 .background(Color(nsColor: .windowBackgroundColor)))
             size = CGSize(width: 400, height: 920)
+        case "settings":
+            let prefs = PreferencesModel(Preferences(showDockIcon: true, activeFPS: 90, batteryFPS: 24))
+            root = AnyView(PreferencesSettingsView(preferences: prefs)
+                .frame(width: 560)
+                .background(Color(nsColor: .windowBackgroundColor)))
+            size = CGSize(width: 560, height: 520)
         default:
             FileHandle.standardError.write(Data("unknown scene '\(scene)'\n".utf8)); exit(2)
         }

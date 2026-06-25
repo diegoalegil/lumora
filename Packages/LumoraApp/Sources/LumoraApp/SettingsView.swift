@@ -62,6 +62,12 @@ struct WallpaperListItem: Identifiable, Hashable {
 struct PreferencesSettingsView: View {
     @Bindable var preferences: PreferencesModel
 
+    /// Bridge an Int fps preference to the Double a Slider needs.
+    private func fpsBinding(_ keyPath: ReferenceWritableKeyPath<PreferencesModel, Int>) -> Binding<Double> {
+        Binding(get: { Double(preferences[keyPath: keyPath]) },
+                set: { preferences[keyPath: keyPath] = Int($0) })
+    }
+
     var body: some View {
         Form {
             Section("Appearance") {
@@ -74,6 +80,26 @@ struct PreferencesSettingsView: View {
             Section("Playback") {
                 Toggle("Rotate through a playlist", isOn: $preferences.playlistPlayback)
                     .help("Play the selected playlist with timed rotation and transitions instead of a single fixed wallpaper. Takes effect after you restart Lumora.")
+            }
+            Section("Performance") {
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack {
+                        Text("Frame rate")
+                        Spacer()
+                        Text("\(preferences.activeFPS) fps").monospacedDigit().foregroundStyle(.secondary)
+                    }
+                    Slider(value: fpsBinding(\.activeFPS), in: 15...120, step: 5)
+                }
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack {
+                        Text("On battery or Low Power Mode")
+                        Spacer()
+                        Text("\(preferences.batteryFPS) fps").monospacedDigit().foregroundStyle(.secondary)
+                    }
+                    Slider(value: fpsBinding(\.batteryFPS), in: 10...60, step: 5)
+                }
+                Text("Lower rates save power. New frame rates take effect after you restart Lumora.")
+                    .font(.caption).foregroundStyle(.secondary)
             }
         }
         .formStyle(.grouped)

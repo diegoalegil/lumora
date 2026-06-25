@@ -108,7 +108,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         signalSource = source
 
         let coordinator = PlaybackCoordinator(
-            engine: PlaybackPolicyEngine(),
+            // Honour the user's chosen frame-rate targets (sanitized), read once at launch.
+            engine: PlaybackPolicyEngine(policy: PlaybackPolicy.clamped(
+                activeFPS: preferences.preferences.activeFPS,
+                batteryFPS: preferences.preferences.batteryFPS)),
             source: source,
             displays: { [weak self] in
                 guard let self else { return [] }
