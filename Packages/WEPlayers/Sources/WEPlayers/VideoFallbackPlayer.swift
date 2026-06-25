@@ -112,9 +112,15 @@ final class AssetSchemeHandler: NSObject, WKURLSchemeHandler {
         } else if let data = fileData {
             // The file is already memory-mapped (configure()); honour the <video> element's Range requests so
             // a large clip streams a window at a time and seeking works, without re-mapping per request.
-            if let header = urlSchemeTask.request.value(forHTTPHeaderField: "Range"),
-               let range = AssetByteRange.parse(header, total: data.count) {
-                respond(urlSchemeTask, data: data.subdata(in: range), mime: mime, partialOf: data.count, start: range.lowerBound)
+            if let header = urlSchemeTask.request.value(forHTTPHeaderField: "Range") {
+                if let range = AssetByteRange.parse(header, total: data.count) {
+                    respond(urlSchemeTask, data: data.subdata(in: range), mime: mime, partialOf: data.count, start: range.lowerBound)
+                } else {
+                    // A Range header that can't be satisfied (e.g. `bytes=<fileSize>-`, an end-of-file probe):
+                    // RFC 7233 wants 416, not the whole clip streamed back — which for a hundreds-of-MB webm
+                    // fallback would hand WebKit the entire mapped file for a request that asked for nothing.
+                    respondUnsatisfiableRange(urlSchemeTask, total: data.count)
+                }
             } else {
                 respond(urlSchemeTask, data: data, mime: mime)
             }
@@ -138,6 +144,15 @@ final class AssetSchemeHandler: NSObject, WKURLSchemeHandler {
         let response = HTTPURLResponse(url: url, statusCode: status, httpVersion: "HTTP/1.1", headerFields: headers)!
         task.didReceive(response)
         task.didReceive(data)
+        task.didFinish()
+    }
+
+    /// Reply 416 Range Not Satisfiable with an empty body and a `Content-Range: bytes (unsatisfied)/total` per RFC 7233.
+    private func respondUnsatisfiableRange(_ task: any WKURLSchemeTask, total: Int) {
+        let url = task.request.url ?? URL(string: "\(Self.scheme)://asset/")!
+        let headers = ["Content-Range": "bytes */\(total)", "Content-Length": "0", "Accept-Ranges": "bytes"]
+        let response = HTTPURLResponse(url: url, statusCode: 416, httpVersion: "HTTP/1.1", headerFields: headers)!
+        task.didReceive(response)
         task.didFinish()
     }
 }
