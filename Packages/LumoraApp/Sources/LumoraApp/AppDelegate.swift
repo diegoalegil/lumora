@@ -304,8 +304,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             case .web:   player = WebPlayer()
             case .scene:
                 let scene = ScenePlayer()   // WEScene Metal compositor
-                // Apply the viewer's Customize toggles (e.g. promptbox off to hide an author's prompt box).
-                scene.propertyOverrides = Self.boolOverrides(propertyStore.overrides(for: wallpaper.ref.id))
+                // Apply the viewer's Customize values (colour scheme, sliders, promptbox off, …) to the scene.
+                scene.propertyOverrides = propertyStore.overrides(for: wallpaper.ref.id)
                 // Only capture system audio (→ Screen Recording prompt) if the user opted into audio-reactivity.
                 scene.audioReactive = preferences.preferences.audioReactive
                 player = scene
@@ -324,12 +324,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return SolidColorRenderer(color: .clear)
     }
 
-    /// Narrow the saved Customize overrides to the boolean toggles the scene engine consumes (visibility of
-    /// prompt boxes, optional effects, clock components). Sliders/colours/combos persist but aren't plumbed to
-    /// the renderer yet, so they're dropped here.
-    private static func boolOverrides(_ overrides: [String: PropertyValue]) -> [String: Bool] {
-        overrides.compactMapValues { if case let .bool(flag) = $0 { return flag } else { return nil } }
-    }
 
     /// Scan the installed Steam Workshop library (resolved wallpapers plus skip diagnostics). For local
     /// testing, `LUMORA_LIBRARY_DIR` overrides the source with a folder of `<id>/` wallpaper folders (e.g.

@@ -3,6 +3,7 @@
 // it references, structure observed in the user's OWN packages) into a flat list of renderable image
 // layers, resolving each object's image → model → material → ".tex" texture path. No GPL source used.
 import Foundation
+import WECore
 
 /// A 3-component vector parsed from WE's space-separated string encoding (e.g. `"1920.000 1080.000 0"`).
 public struct SceneVec3: Sendable, Equatable {
@@ -278,10 +279,12 @@ public enum SceneGraphError: Error, Equatable, Sendable, CustomStringConvertible
 /// Builds a `RenderableScene` from a `ScenePackage` by reading scene.json and following each image
 /// object through its model and material to the texture it draws.
 public enum SceneGraph {
-    /// `overrides` are the viewer's per-property toggles from the Customize panel, keyed by the WE property
-    /// name (`promptbox`, `rain`, `time`, …). Only boolean visibility toggles are applied here; an empty map
-    /// (the default) reproduces the scene exactly as authored.
-    public static func load(from package: ScenePackage, overrides: [String: Bool] = [:]) throws -> RenderableScene {
+    /// `overrides` are the viewer's per-property values from the Customize panel, keyed by the WE property
+    /// name (`schemecolor`, `promptbox`, `rain`, `time`, …). A property the author wired to a user value with
+    /// `{ "user": <name>, "value": <default> }` takes the saved override of <name> when one exists — colours,
+    /// sliders and visibility toggles alike — so the wallpaper shows what the user configured, not the author's
+    /// default. An empty map (the default) reproduces the scene exactly as authored.
+    public static func load(from package: ScenePackage, overrides: [String: PropertyValue] = [:]) throws -> RenderableScene {
         guard let sceneEntry = package.sceneJSON else { throw SceneGraphError.missingSceneJSON }
         guard let root = (try? JSONSerialization.jsonObject(with: sceneEntry.data)) as? [String: Any]
         else { throw SceneGraphError.invalidSceneJSON }
@@ -360,7 +363,7 @@ public enum SceneGraph {
                     // The point size comes straight from untrusted scene.json; a non-finite value (e.g.
                     // an overflowing `1e400`) or a wild one would make the text layer's glyph quads vanish
                     // or balloon. Keep it finite and within a sane range, defaulting like a missing field.
-                    let rawPointSize = Self.scalar(object["pointsize"], default: 32)
+                    let rawPointSize = Self.scalar(object["pointsize"], default: 32, overrides: overrides)
                     let pointSize = rawPointSize.isFinite ? min(4096, max(0, rawPointSize)) : 32
                     layers.append(SceneLayer(
                         name: object["name"] as? String ?? "",
@@ -369,8 +372,8 @@ public enum SceneGraph {
                         scale: vec(object["scale"], default: SceneVec3(x: 1, y: 1, z: 1)),
                         size: (object["size"] as? String).map(SceneVec3.init(parsing:)),
                         angles: vec(object["angles"]),
-                        alpha: alphaValue(object["alpha"]),
-                        color: vec(object["color"], default: SceneVec3(x: 1, y: 1, z: 1)),
+                        alpha: alphaValue(object["alpha"], overrides: overrides),
+                        color: vec(object["color"], default: SceneVec3(x: 1, y: 1, z: 1), overrides: overrides),
                         alphaAnimation: alphaAnimation(object["alpha"]),
                         originAnimation: vec3Animation(object["origin"]),
                         parallaxDepth: vec(object["parallaxDepth"]),
@@ -412,8 +415,8 @@ public enum SceneGraph {
                 scale: wt.scale,
                 size: (object["size"] as? String).map(SceneVec3.init(parsing:)),
                 angles: SceneVec3(x: localAngles.x, y: localAngles.y, z: wt.angle),
-                alpha: alphaValue(object["alpha"]),
-                color: vec(object["color"], default: SceneVec3(x: 1, y: 1, z: 1)),
+                alpha: alphaValue(object["alpha"], overrides: overrides),
+                color: vec(object["color"], default: SceneVec3(x: 1, y: 1, z: 1), overrides: overrides),
                 alphaAnimation: alphaAnimation(object["alpha"]),
                 originAnimation: vec3Animation(object["origin"]),
                 parallaxDepth: vec(object["parallaxDepth"]),
@@ -511,7 +514,7 @@ public enum SceneGraph {
     /// viewer has overridden it in the Customize panel, the override wins; otherwise the binding's default
     /// `value` stands. This is how Wallpaper Engine lets a user permanently turn off, say, the author's
     /// "prompt box" (`{ "user": "promptbox", … }`) — without the override it shows by default.
-    private static func isVisible(_ value: Any?, overrides: [String: Bool] = [:]) -> Bool {
+    private static func isVisible(_ value: Any?, overrides: [String: PropertyValue] = [:]) -> Bool {
         if let flag = value as? Bool { return flag }
         if let dict = value as? [String: Any] {
             // A media-player widget (album-art tile, now-playing overlay, controls) drives its own visibility
@@ -526,10 +529,27 @@ public enum SceneGraph {
             // A plain `{ "user": "<name>", "value": Bool }` toggle: a user override of <name> overrides the
             // default. (The combo-conditional form, `"user": { "name", "condition" }`, is left on its default
             // `value` — it depends on a multi-choice selection, not a simple boolean.)
-            if let userKey = dict["user"] as? String, let override = overrides[userKey] { return override }
+            if let userKey = dict["user"] as? String, case let .bool(override)? = overrides[userKey] { return override }
             if let flag = dict["value"] as? Bool { return flag }
         }
         return true
+    }
+
+    /// Resolve a `{ "user": <name>, "value": <default> }` user-property binding to the value that should drive
+    /// the render: the viewer's saved override of <name> when there is one, else the author's `value` default.
+    /// The override (a Customize-panel `PropertyValue`) is handed back in the bare JSON shape the value readers
+    /// already understand — a colour/text `String`, a slider/count `Double` (as `NSNumber`), or a `Bool` — so a
+    /// user-tuned colour scheme or slider reaches the uniform instead of the author's baked-in default.
+    private static func bound(_ object: [String: Any], overrides: [String: PropertyValue]) -> Any? {
+        if let userKey = object["user"] as? String, let override = overrides[userKey] {
+            switch override {
+            case .string(let s): return s
+            case .number(let d): return d as NSNumber
+            case .bool(let b):   return b
+            case .null:          break
+            }
+        }
+        return object["value"]
     }
 
     /// image (model json) → material json → its first pass's texture, blending and shader. The texture
@@ -669,10 +689,10 @@ public enum SceneGraph {
 
     /// `alpha` is either a number or an animated `{ "value": Double, … }` object — take its base value
     /// (non-finite → 1).
-    private static func alphaValue(_ value: Any?) -> Double {
+    private static func alphaValue(_ value: Any?, overrides: [String: PropertyValue] = [:]) -> Double {
         let raw: Double?
         if let number = value as? NSNumber { raw = number.doubleValue }
-        else if let object = value as? [String: Any], let base = object["value"] as? NSNumber { raw = base.doubleValue }
+        else if let object = value as? [String: Any], let base = bound(object, overrides: overrides) as? NSNumber { raw = base.doubleValue }
         else { raw = nil }
         guard let raw, raw.isFinite else { return 1 }
         return raw
@@ -682,9 +702,9 @@ public enum SceneGraph {
     /// (Wallpaper Engine lets the author wire a slider to a font size, an opacity, a count, …). Take the bound
     /// base value either way; without the dict case a bound `pointsize` collapses to the fallback — e.g. a clock
     /// authored at 119 pt renders at the 32 pt default, far too small for the layout it was placed in.
-    private static func scalar(_ value: Any?, default fallback: Double) -> Double {
+    private static func scalar(_ value: Any?, default fallback: Double, overrides: [String: PropertyValue] = [:]) -> Double {
         if let number = value as? NSNumber { return number.doubleValue }
-        if let object = value as? [String: Any], let base = object["value"] as? NSNumber { return base.doubleValue }
+        if let object = value as? [String: Any], let base = bound(object, overrides: overrides) as? NSNumber { return base.doubleValue }
         return fallback
     }
 
@@ -780,9 +800,10 @@ public enum SceneGraph {
     /// A vector property that may be a plain `"x y z"` string or a `{ "value": "x y z", "script"/"animation": … }`
     /// binding — take the base value either way (the script/animation drives it on top at render time). Without
     /// the dict case, a scripted scale/colour/angle would silently fall back to the default.
-    private static func vec(_ value: Any?, default fallback: SceneVec3 = SceneVec3(x: 0, y: 0, z: 0)) -> SceneVec3 {
+    private static func vec(_ value: Any?, default fallback: SceneVec3 = SceneVec3(x: 0, y: 0, z: 0),
+                            overrides: [String: PropertyValue] = [:]) -> SceneVec3 {
         if let string = value as? String { return SceneVec3(parsing: string) }
-        if let object = value as? [String: Any], let string = object["value"] as? String {
+        if let object = value as? [String: Any], let string = bound(object, overrides: overrides) as? String {
             return SceneVec3(parsing: string)
         }
         return fallback

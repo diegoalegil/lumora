@@ -779,10 +779,25 @@ let promptPkg = buildPKG(version: "PKGV0009", files: [
 if let pkg = try? ScenePackage.read(promptPkg) {
     let shown = try? SceneGraph.load(from: pkg)
     Check.that("a prompt-box layer is visible by default", shown?.layers.first?.visible == true)
-    let hidden = try? SceneGraph.load(from: pkg, overrides: ["promptbox": false])
+    let hidden = try? SceneGraph.load(from: pkg, overrides: ["promptbox": .bool(false)])
     Check.that("a Customize override hides the prompt-box layer", hidden?.layers.first?.visible == false)
-    let untouched = try? SceneGraph.load(from: pkg, overrides: ["unrelated": false])
+    let untouched = try? SceneGraph.load(from: pkg, overrides: ["unrelated": .bool(false)])
     Check.that("an unrelated override leaves the layer at its default", untouched?.layers.first?.visible == true)
+}
+// Non-boolean user properties (a colour scheme, an opacity slider, a bound point size) must reach the render
+// too — without this the wallpaper shows the author's baked-in defaults, not what the user picked. A layer's
+// colour/alpha/pointsize wired to `{ "user": <name>, "value": <default> }` takes the saved override of <name>.
+let customPkg = buildPKG(version: "PKGV0009", files: [
+    ("scene.json", Data(#"{"objects":[{"name":"c","text":{"value":"12:00"},"color":{"user":"schemecolor","value":"1 1 1"},"alpha":{"user":"op","value":1},"pointsize":{"user":"sz","value":40}}]}"#.utf8)),
+])
+if let pkg = try? ScenePackage.read(customPkg) {
+    let authored = try? SceneGraph.load(from: pkg)
+    Check.that("an un-overridden colour keeps the author default", authored?.layers.first?.color.x == 1 && authored?.layers.first?.color.y == 1)
+    let tuned = try? SceneGraph.load(from: pkg, overrides: ["schemecolor": .string("0.2 0.4 0.8"), "op": .number(0.5), "sz": .number(96)])
+    let l = tuned?.layers.first
+    Check.that("a user colour override reaches the layer colour", l?.color.x == 0.2 && l?.color.y == 0.4 && l?.color.z == 0.8)
+    Check.that("a user slider override reaches the layer alpha", l?.alpha == 0.5)
+    Check.that("a user slider override reaches the bound point size", l?.pointSize == 96)
 }
 // The scene graph is decoded strictly, so an overflowing exponent is rejected outright (unlike the particle
 // ops, which go through lenient JSONSerialization and clamp ±inf). That makes the non-finite point-size clamp

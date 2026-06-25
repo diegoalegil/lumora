@@ -46,9 +46,9 @@ public final class ScenePlayer: WallpaperRenderer {
     /// The frame rate the playback policy currently wants — 60 active, 30 on battery / low-power, 0 when
     /// paused or occluded. Driven by `apply(_:)`; 60 until a directive says otherwise.
     private var targetFPS = 60
-    /// The viewer's per-property Customize toggles (e.g. `promptbox` off to hide an author's prompt box),
-    /// applied to the scene at load. Set before `load(_:)`; empty renders the scene exactly as authored.
-    public var propertyOverrides: [String: Bool] = [:]
+    /// The viewer's per-property Customize values (a colour scheme, a slider, `promptbox` off to hide an
+    /// author's prompt box), applied to the scene at load. Set before `load(_:)`; empty renders as authored.
+    public var propertyOverrides: [String: PropertyValue] = [:]
     /// Whether the user opted into audio-reactive playback. OFF by default so an audio scene never starts the
     /// system-audio capture that would trigger the "Screen Recording" permission prompt; its visualisers just
     /// render flat until the user enables it in Settings.
