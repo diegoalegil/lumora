@@ -232,8 +232,9 @@ public final class ScenePlayer: WallpaperRenderer {
 /// changes, so the desktop always shows a crisp, correctly-sized frame.
 @MainActor
 private final class SceneHostView: NSView {
-    /// The deep-indigo proof-of-ownership fill shown when a scene can't be rendered.
-    static let fallbackColor = NSColor(srgbRed: 0.16, green: 0.13, blue: 0.28, alpha: 1).cgColor
+    /// Shown when a scene can't be rendered and has no preview: stay transparent so the user's real desktop
+    /// shows through, rather than hijacking it with a solid (purple) fill.
+    static let fallbackColor = NSColor.clear.cgColor
 
     private let onResize: () -> Void
 

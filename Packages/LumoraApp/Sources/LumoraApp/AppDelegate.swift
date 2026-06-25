@@ -313,8 +313,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 }
             }
         }
-        // Fallback proof-of-ownership fill so it's obvious Lumora owns the desktop.
-        return SolidColorRenderer(color: NSColor(srgbRed: 0.16, green: 0.13, blue: 0.28, alpha: 1))
+        // No playable wallpaper (or it failed to load): stay fully transparent so the user's real macOS
+        // desktop shows through, instead of hijacking it with a solid (purple) fill.
+        return SolidColorRenderer(color: .clear)
     }
 
     /// Scan the installed Steam Workshop library (resolved wallpapers plus skip diagnostics). For local
