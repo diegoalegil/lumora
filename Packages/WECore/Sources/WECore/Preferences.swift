@@ -14,13 +14,20 @@ public struct Preferences: Codable, Sendable, Equatable {
     public var playlistPlayback: Bool
     /// The id of the playlist to play on launch, if any (resolved against the library at startup).
     public var activePlaylistID: UUID?
+    /// Target frame rate while a wallpaper is visible on AC power. Applied at launch.
+    public var activeFPS: Int
+    /// Target frame rate while throttled (on battery, Low Power Mode, or thermal pressure). Applied at launch.
+    public var batteryFPS: Int
 
     public init(showDockIcon: Bool = false, launchAtLogin: Bool = false,
-                playlistPlayback: Bool = false, activePlaylistID: UUID? = nil) {
+                playlistPlayback: Bool = false, activePlaylistID: UUID? = nil,
+                activeFPS: Int = 60, batteryFPS: Int = 30) {
         self.showDockIcon = showDockIcon
         self.launchAtLogin = launchAtLogin
         self.playlistPlayback = playlistPlayback
         self.activePlaylistID = activePlaylistID
+        self.activeFPS = activeFPS
+        self.batteryFPS = batteryFPS
     }
 
     // Tolerant decoding: a Preferences value written by an OLDER build (without a key added later) decodes with
@@ -32,5 +39,7 @@ public struct Preferences: Codable, Sendable, Equatable {
         launchAtLogin = try c.decodeIfPresent(Bool.self, forKey: .launchAtLogin) ?? false
         playlistPlayback = try c.decodeIfPresent(Bool.self, forKey: .playlistPlayback) ?? false
         activePlaylistID = try c.decodeIfPresent(UUID.self, forKey: .activePlaylistID)
+        activeFPS = try c.decodeIfPresent(Int.self, forKey: .activeFPS) ?? 60
+        batteryFPS = try c.decodeIfPresent(Int.self, forKey: .batteryFPS) ?? 30
     }
 }

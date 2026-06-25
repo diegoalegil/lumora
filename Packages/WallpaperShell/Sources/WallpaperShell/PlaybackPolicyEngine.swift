@@ -56,6 +56,14 @@ public struct PlaybackPolicy: Sendable, Equatable {
         self.activeFPS = activeFPS
         self.batteryFPS = batteryFPS
     }
+
+    /// Sanitize user-entered rates into a usable policy: the active rate is clamped to 15…120 fps, and the
+    /// throttled rate to 10 fps … the active rate (a throttle that exceeds the normal rate is meaningless).
+    public static func clamped(activeFPS: Int, batteryFPS: Int) -> PlaybackPolicy {
+        let active = min(120, max(15, activeFPS))
+        let battery = min(active, max(10, batteryFPS))
+        return PlaybackPolicy(activeFPS: active, batteryFPS: battery)
+    }
 }
 
 /// Maps the current signals onto a `PlaybackDirective`. Pure and deterministic.

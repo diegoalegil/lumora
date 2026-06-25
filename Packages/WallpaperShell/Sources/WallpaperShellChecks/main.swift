@@ -497,5 +497,6 @@ do {
 
 runLibraryBrowserChecks()
 runWallpaperPropertiesChecks()
+runPerformancePrefsChecks()
 
 Check.summarize()
