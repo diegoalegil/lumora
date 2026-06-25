@@ -244,6 +244,10 @@ public final class PreparedScene {
 /// composited in order. Parallax, rotation and effects build on top of this.
 public final class SceneRenderer {
     public let device: MTLDevice
+    /// On a GPU that can't sample block-compressed textures natively (Apple silicon doesn't support BCn),
+    /// decompress DXT1/DXT5 to RGBA8 on the CPU at decode time so those textures still render instead of
+    /// failing to upload. On a GPU that does support BCn (Intel/AMD) we keep the cheaper native upload.
+    private let expandBlockTextures: Bool
     private let queue: MTLCommandQueue
     private let pipelineOver: MTLRenderPipelineState
     private let pipelineAdditive: MTLRenderPipelineState
@@ -394,6 +398,7 @@ public final class SceneRenderer {
     public init?(device: MTLDevice? = MTLCreateSystemDefaultDevice()) {
         guard let device, let queue = device.makeCommandQueue() else { return nil }
         self.device = device
+        self.expandBlockTextures = !device.supportsBCTextureCompression
         self.queue = queue
         do {
             let library = try device.makeLibrary(source: Self.shaderSource, options: nil)
@@ -509,7 +514,7 @@ public final class SceneRenderer {
         default:
             if let cached = auxCache[name] { return cached }
             if let entry = package.entry(named: "materials/\(name).tex"),
-               let decoded = try? SceneTexture.decodeFirstMip(entry.data),
+               let decoded = try? SceneTexture.decodeFirstMip(entry.data, expandBlocks: expandBlockTextures),
                let texture = MetalTexture.make(decoded, device: device) {
                 // A packaged mask/normal is stored in a POT buffer; its content sub-rect (imageWidth/Height)
                 // is what a shader's g_Texture<n>Resolution.zw/.xy remap needs, not the padded storage size.
@@ -650,7 +655,7 @@ public final class SceneRenderer {
             var isSolidFill = false
             if let path = layer.texturePath,
                let entry = package.entry(named: path),
-               let decoded = try? SceneTexture.decodeFirstMip(entry.data),
+               let decoded = try? SceneTexture.decodeFirstMip(entry.data, expandBlocks: expandBlockTextures),
                let made = MetalTexture.make(decoded, device: device) {
                 texture = made
                 textureW = Double(decoded.imageWidth)
@@ -843,7 +848,7 @@ public final class SceneRenderer {
         if name.hasPrefix("util/") { return (resolveAuxTexture(name, package: package).texture, SIMD2(1, 1)) }
         // Packaged sprite from the scene takes priority.
         if let entry = package.entry(named: "materials/\(name).tex"),
-           let decoded = try? SceneTexture.decodeFirstMip(entry.data),
+           let decoded = try? SceneTexture.decodeFirstMip(entry.data, expandBlocks: expandBlockTextures),
            let made = MetalTexture.make(decoded, device: device) {
             let uvScale = decoded.width > 0 && decoded.height > 0
                 ? SIMD2(Float(min(1.0, Double(decoded.imageWidth) / Double(decoded.width))),
