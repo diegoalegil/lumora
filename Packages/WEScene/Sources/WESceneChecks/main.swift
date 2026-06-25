@@ -56,6 +56,26 @@ import WECore
 }
 @MainActor func near(_ a: Int, _ b: Int, _ tol: Int = 4) -> Bool { abs(a - b) <= tol }
 
+@MainActor func solidA(_ r: UInt8, _ g: UInt8, _ b: UInt8, _ a: UInt8, _ count: Int) -> Data {
+    var d = Data(); d.reserveCapacity(count * 4)
+    for _ in 0 ..< count { d.append(contentsOf: [r, g, b, a]) }
+    return d
+}
+
+/// Compare two raw RGBA byte buffers: the max per-channel delta and the count of bytes beyond `tol`. A size
+/// mismatch is a total failure so a dropped or garbled reference can't slip through as a pass.
+@MainActor func goldenDiff(_ a: Data, _ b: Data, tol: Int = 2) -> (maxDelta: Int, over: Int) {
+    guard a.count == b.count, !a.isEmpty else { return (255, max(a.count, b.count)) }
+    let aa = [UInt8](a), bb = [UInt8](b)
+    var maxDelta = 0, over = 0
+    for i in 0 ..< aa.count {
+        let d = abs(Int(aa[i]) - Int(bb[i]))
+        if d > maxDelta { maxDelta = d }
+        if d > tol { over += 1 }
+    }
+    return (maxDelta, over)
+}
+
 /// An AudioSpectrumProvider that counts how many times the renderer asks for the spectrum — used to prove a
 /// non-audio scene never triggers the per-frame audio-override build. Single-threaded test use only.
 final class CountingSpectrum: AudioSpectrumProvider, @unchecked Sendable {
@@ -407,6 +427,77 @@ if let package = try? ScenePackage.read(pkgData),
     Check.that("a non-audio scene never queries the audio spectrum", counter.count == 0)
 } else {
     Check.that("end-to-end scene produced a frame", false)
+}
+
+// MARK: Golden image (fidelity)
+// Committed clean-room references for the blend / alpha / tint compositing pipeline. Each scene is
+// AUTHOR-DEFINED (no Wallpaper Engine pixels — firewall-safe) and is a full-screen uniform-texture quad, so
+// every output pixel is the same 8-bit-unorm integer blend result and reproduces byte-for-byte across GPUs
+// (no bilinear-filtering ULP). The committed .rgba reference gates regressions; each case also asserts its
+// centre pixel against the hand-computed expected colour so a regenerated reference can't bake in a wrong
+// render. Regenerate after an INTENTIONAL pipeline change: `LUMORA_REGEN_GOLDEN=1 swift run -q WESceneChecks`.
+Check.section("Golden image (fidelity)")
+do {
+    let goldenDir = URL(fileURLWithPath: #filePath).deletingLastPathComponent().appendingPathComponent("Golden")
+    let regen = ProcessInfo.processInfo.environment["LUMORA_REGEN_GOLDEN"] != nil
+    if regen { try? FileManager.default.createDirectory(at: goldenDir, withIntermediateDirectories: true) }
+    let W = 16, H = 16, texels = 8 * 8
+
+    func goldenCheck(_ name: String, _ frame: RenderedFrame?) {
+        guard let frame else { Check.that("golden \(name): produced a frame", false); return }
+        let ref = goldenDir.appendingPathComponent("\(name).rgba")
+        if regen {
+            try? frame.rgba.write(to: ref)
+            print("  regenerated golden \(name) (\(frame.rgba.count) bytes)")
+            return
+        }
+        guard let reference = try? Data(contentsOf: ref) else {
+            Check.that("golden \(name): reference present (run LUMORA_REGEN_GOLDEN=1 to author it)", false); return
+        }
+        let (maxDelta, over) = goldenDiff(frame.rgba, reference)
+        if over > 0 { _ = writePNG(frame, to: "/tmp/lumora_golden_\(name).png") }
+        Check.that("golden \(name): matches the committed reference (maxΔ \(maxDelta), \(over) px over tol)",
+                   maxDelta <= 2 && over == 0)
+    }
+
+    // 1) OVER + a known alpha composite: a half-alpha green texel over an opaque red clear.
+    //    out = src·a + dst·(1−a) with a = 128/255 ⇒ ≈ (127, 128, 0).
+    let g1 = DecodedTexture(format: .rgba8888, width: 8, height: 8, imageWidth: 8, imageHeight: 8,
+                            pixels: solidA(0, 255, 0, 128, texels))
+    let f1 = renderer.render(decoded: g1, alpha: 1, clearColor: SceneVec3(x: 1, y: 0, z: 0), width: W, height: H)
+    if let f = f1 { let (r, g, b) = centerRGB(f)
+        Check.that("golden over_alpha_half: centre is green@0.5 over red ≈ (127,128,0)", near(r, 127) && near(g, 128) && near(b, 0)) }
+    goldenCheck("over_alpha_half", f1)
+
+    // 2) Known TINT: an opaque white texture tinted by the object's colour (0.5, 0.25, 1) ⇒ ≈ (128, 64, 255).
+    let tintPkg = buildPKG([
+        ("scene.json", Data(#"{"general":{"orthogonalprojection":{"width":8,"height":8},"clearcolor":"1 0 0"},"objects":[{"name":"t","image":"models/m.json","origin":"4 4 0","color":"0.5 0.25 1","alpha":1,"visible":true}]}"#.utf8)),
+        ("models/m.json", Data(#"{"material":"materials/mat.json"}"#.utf8)),
+        ("materials/mat.json", Data(#"{"passes":[{"shader":"genericimage2","textures":["t"]}]}"#.utf8)),
+        ("materials/t.tex", buildTexRGBA(8, 8, solid(255, 255, 255, texels))),
+    ])
+    var f2: RenderedFrame?
+    if let pkg = try? ScenePackage.read(tintPkg), let doc = try? SceneGraph.load(from: pkg) {
+        f2 = renderer.render(doc, package: pkg, width: W, height: H)
+        if let f = f2 { let (r, g, b) = centerRGB(f)
+            Check.that("golden over_opaque_tint: centre is white × (0.5,0.25,1) ≈ (128,64,255)", near(r, 128) && near(g, 64) && near(b, 255)) }
+    } else { Check.that("golden over_opaque_tint: scene loads", false) }
+    goldenCheck("over_opaque_tint", f2)
+
+    // 3) ADDITIVE: an opaque red sprite added over a blue clear ⇒ (255, 0, 128).
+    let addPkg = buildPKG([
+        ("scene.json", Data(#"{"general":{"orthogonalprojection":{"width":8,"height":8},"clearcolor":"0 0 0.5"},"objects":[{"name":"a","image":"models/m.json","origin":"4 4 0","alpha":1,"visible":true}]}"#.utf8)),
+        ("models/m.json", Data(#"{"material":"materials/mat.json"}"#.utf8)),
+        ("materials/mat.json", Data(#"{"passes":[{"shader":"genericimage2","blending":"additive","textures":["t"]}]}"#.utf8)),
+        ("materials/t.tex", buildTexRGBA(8, 8, solid(255, 0, 0, texels))),
+    ])
+    var f3: RenderedFrame?
+    if let pkg = try? ScenePackage.read(addPkg), let doc = try? SceneGraph.load(from: pkg) {
+        f3 = renderer.render(doc, package: pkg, width: W, height: H)
+        if let f = f3 { let (r, g, b) = centerRGB(f)
+            Check.that("golden additive: centre is red + blue ≈ (255,0,128)", near(r, 255) && near(g, 0) && near(b, 128)) }
+    } else { Check.that("golden additive: scene loads", false) }
+    goldenCheck("additive", f3)
 }
 
 // Conversely, a scene whose layer carries parallax depth DOES animate (the camera sway moves it over time),

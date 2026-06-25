@@ -20,6 +20,9 @@ let package = Package(
     ],
     targets: [
         .target(name: "WEScene", dependencies: ["WECore", "WEImporter", "WEShaderKit", "WESceneDynamics"]),
-        .executableTarget(name: "WESceneChecks", dependencies: ["WEScene", "WEImporter", "WECore"]),
+        // Golden/ holds committed reference frames read at runtime via #filePath (not bundled as resources),
+        // so exclude them from the build instead of treating them as unhandled resources.
+        .executableTarget(name: "WESceneChecks", dependencies: ["WEScene", "WEImporter", "WECore"],
+                          exclude: ["Golden"]),
     ]
 )
