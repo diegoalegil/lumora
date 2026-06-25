@@ -63,6 +63,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private lazy var settingsController = SettingsWindowController(
         store: playlistStore, preferences: preferences,
         libraryItems: { [weak self] in self?.libraryItems() ?? [] })
+
+    /// The dedicated library browser: a searchable/filterable grid + detail panel. Its model is populated from
+    /// the installed library after the scan; the window is created lazily on first open and reused after that.
+    private let libraryModel = LibraryBrowserModel(entries: [])
+    private lazy var libraryWindow = LibraryWindowController(
+        model: libraryModel, store: playlistStore,
+        onApply: { [weak self] entry in self?.applyWallpaper(id: entry.id) },
+        onReveal: { entry in NSWorkspace.shared.activateFileViewerSelecting([entry.folderURL]) })
     private static let preferencesKey = "LumoraPreferences"
 
     /// The wallpaper to play, chosen at launch from the installed library (nil → solid fallback).
@@ -133,6 +141,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         selectedWallpaperID = UserDefaults.standard.string(forKey: Self.selectedWallpaperKey)
         activeWallpaper = PlayableWallpapers.active(in: playableWallpapers, selectedID: selectedWallpaperID)
         rebuildWallpaperMenu()
+        // Feed the library browser the installed wallpapers and mark which one is currently playing.
+        libraryModel.replace(entries: libraryEntries())
+        libraryModel.activeWallpaperID = activeWallpaper?.ref.id
 
         screenManager.onChange = { [weak self] in self?.reconcile() }
         coordinator.start()      // begin monitoring (no windows yet)
@@ -306,7 +317,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         let menu = NSMenu()
 
-        let wallpaperItem = NSMenuItem(title: "Wallpaper", action: nil, keyEquivalent: "")
+        let browse = NSMenuItem(title: "Browse Wallpapers…", action: #selector(openLibrary), keyEquivalent: "l")
+        browse.target = self
+        menu.addItem(browse)
+
+        let wallpaperItem = NSMenuItem(title: "Quick Switch", action: nil, keyEquivalent: "")
         wallpaperItem.submenu = NSMenu()
         menu.addItem(wallpaperItem)
         wallpaperSubmenu = wallpaperItem.submenu
@@ -406,6 +421,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         activeWallpaper = PlayableWallpapers.active(in: playableWallpapers, selectedID: id)
         reloadRenderers()
         rebuildWallpaperMenu()
+        libraryModel.activeWallpaperID = activeWallpaper?.ref.id
     }
 
     /// TEST-ONLY: open a plain window listing every wallpaper, switching live as the selection moves.
@@ -455,6 +471,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         settingsController.show()
     }
 
+    @objc private func openLibrary() {
+        libraryWindow.show()
+    }
+
     /// The preview image for a wallpaper: the manifest's named `preview` if it's on disk, else the first of the
     /// common preview file names that exists (WE writes preview.gif as often as preview.jpg), else nil.
     private func previewURL(for wallpaper: ResolvedWallpaper) -> URL? {
@@ -477,6 +497,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             WallpaperListItem(id: wallpaper.ref.id,
                               title: WallpaperLibrary.displayTitle(wallpaper),
                               thumbnailURL: previewURL(for: wallpaper))
+        }
+    }
+
+    /// The installed wallpapers as rich entries for the dedicated library browser (carries type, tags and
+    /// description so the grid can filter/sort and the detail panel can show metadata).
+    private func libraryEntries() -> [LibraryEntry] {
+        playableWallpapers.map { wallpaper in
+            LibraryEntry(id: wallpaper.ref.id,
+                         title: WallpaperLibrary.displayTitle(wallpaper),
+                         type: wallpaper.type,
+                         tags: wallpaper.manifest.tags,
+                         description: wallpaper.manifest.description,
+                         thumbnailURL: previewURL(for: wallpaper),
+                         folderURL: wallpaper.ref.folderURL)
         }
     }
 
