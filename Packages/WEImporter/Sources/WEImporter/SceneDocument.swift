@@ -490,15 +490,16 @@ public enum SceneGraph {
     /// mistaken for a now-playing widget. Bounded: one object holds a handful of KB of script at most.
     private static func boundScriptText(in object: [String: Any]) -> String {
         var out = ""
-        func walk(_ any: Any) {
+        func walk(_ any: Any, _ depth: Int) {
+            guard depth < 32 else { return }   // untrusted JSON: bound recursion so a deeply-nested tree can't overflow the stack
             if let d = any as? [String: Any] {
                 if let s = d["script"] as? String { out += s; out += "\n" }
-                for (k, v) in d where k != "script" { walk(v) }
+                for (k, v) in d where k != "script" { walk(v, depth + 1) }
             } else if let a = any as? [Any] {
-                for v in a { walk(v) }
+                for v in a { walk(v, depth + 1) }
             }
         }
-        walk(object)
+        walk(object, 0)
         return out
     }
 
@@ -610,7 +611,10 @@ public enum SceneGraph {
                     if i < textures.count { textures[i] = override } else { textures.append(override) }
                 }
                 let binds: [EffectBind] = ((jsonPass["bind"] as? [[String: Any]]) ?? []).compactMap {
-                    guard let name = $0["name"] as? String, let index = ($0["index"] as? NSNumber)?.intValue else { return nil }
+                    // Reject an out-of-range slot from untrusted JSON — it would later index a Metal fragment
+                    // texture argument table (0…30) and trap. (The texture-override indices above are clamped too.)
+                    guard let name = $0["name"] as? String, let index = ($0["index"] as? NSNumber)?.intValue,
+                          (0...30).contains(index) else { return nil }
                     return EffectBind(name: name, index: index)
                 }
                 passes.append(EffectPass(fragmentShaderPath: "shaders/\(shader).frag",
@@ -740,7 +744,11 @@ public enum SceneGraph {
             out.append(system)
         }
         guard depth < 4 else { return out }
-        for child in (particleJSON["children"] as? [[String: Any]]) ?? [] {
+        // Cap the children breadth (like passes/fbos/attractors) AND the total collected systems: a crafted
+        // self-referential particle file with a huge `children` array would otherwise amplify breadth^depth
+        // (each child is re-resolved + re-parsed) into a hang/OOM. Real effects nest a handful of children.
+        for child in ((particleJSON["children"] as? [[String: Any]]) ?? []).prefix(8) {
+            guard out.count < 64 else { break }
             guard let name = child["name"] as? String, let childJSON = json(package.entry(named: name)) else { continue }
             let off = vec(child["origin"])   // a child's emitter origin is relative to the parent (usually 0)
             let childWorld = SceneVec3(x: worldOrigin.x + off.x, y: worldOrigin.y + off.y, z: worldOrigin.z + off.z)
