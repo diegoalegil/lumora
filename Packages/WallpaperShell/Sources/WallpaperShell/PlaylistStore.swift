@@ -59,6 +59,15 @@ public final class PlaylistStore {
         persist()
     }
 
+    /// Add a fully-formed playlist (e.g. an import), select it, and persist.
+    @discardableResult
+    public func add(_ playlist: Playlist) -> Playlist {
+        library.upsert(playlist)
+        selectedPlaylistID = playlist.id
+        persist()
+        return playlist
+    }
+
     /// Append a wallpaper to a playlist (ignoring duplicates) and persist. This is how the Library grid adds a
     /// wallpaper to a playlist; returns true if it was added.
     @discardableResult

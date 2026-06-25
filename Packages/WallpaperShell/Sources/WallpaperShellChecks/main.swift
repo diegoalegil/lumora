@@ -499,5 +499,6 @@ runLibraryBrowserChecks()
 runWallpaperPropertiesChecks()
 runPerformancePrefsChecks()
 runWallpaperCycleChecks()
+runPlaylistTransferChecks()
 
 Check.summarize()

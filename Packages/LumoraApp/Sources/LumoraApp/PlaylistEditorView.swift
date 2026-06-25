@@ -3,6 +3,8 @@
 // reorder, swipe to delete) and an editor form for the selected one. The editor binds to PlaylistEditorModel
 // (unit-tested in WallpaperShell); this file is presentation, verified visually by the owner.
 import SwiftUI
+import AppKit
+import UniformTypeIdentifiers
 import WECore
 import WallpaperShell
 
@@ -27,7 +29,7 @@ struct PlaylistsSettingsView: View {
                     }
                 }
                 Divider()
-                HStack {
+                HStack(spacing: 12) {
                     Button {
                         store.addPlaylist(name: "New Playlist")
                     } label: {
@@ -35,6 +37,17 @@ struct PlaylistsSettingsView: View {
                     }
                     .buttonStyle(.borderless)
                     Spacer()
+                    Button(action: importPlaylist) {
+                        Image(systemName: "square.and.arrow.down")
+                    }
+                    .buttonStyle(.borderless)
+                    .help("Import a playlist…")
+                    Button(action: exportSelectedPlaylist) {
+                        Image(systemName: "square.and.arrow.up")
+                    }
+                    .buttonStyle(.borderless)
+                    .help("Export the selected playlist…")
+                    .disabled(store.selectedPlaylist == nil)
                 }
                 .padding(8)
             }
@@ -51,6 +64,30 @@ struct PlaylistsSettingsView: View {
             }
         }
         .navigationTitle("Playlists")
+    }
+
+    /// Write the selected playlist to a JSON file the user picks (a portable backup / share).
+    private func exportSelectedPlaylist() {
+        guard let playlist = store.selectedPlaylist, let data = try? PlaylistTransfer.export(playlist) else { return }
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.json]
+        panel.nameFieldStringValue = "\(playlist.name.isEmpty ? "Playlist" : playlist.name).json"
+        panel.canCreateDirectories = true
+        if panel.runModal() == .OK, let url = panel.url {
+            try? data.write(to: url, options: .atomic)
+        }
+    }
+
+    /// Read a playlist JSON file the user picks and add it (with a fresh id) to the library.
+    private func importPlaylist() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.json]
+        panel.allowsMultipleSelection = false
+        if panel.runModal() == .OK, let url = panel.url,
+           let data = try? Data(contentsOf: url),
+           let imported = try? PlaylistTransfer.makeImported(from: data) {
+            store.add(imported)
+        }
     }
 }
 
