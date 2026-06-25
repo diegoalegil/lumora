@@ -9,6 +9,28 @@
 import Foundation
 
 public enum WEShaderTranspiler {
+    /// Collects the silent degradations a transpile performs — an over-long array uniform clamped to the
+    /// cap, an array varying dropped because its length is out of range, an `#include` that resolved to no
+    /// header — so a caller (or the engine's loader) can SURFACE them instead of having an effect quietly
+    /// drop out. Used only by the `…Diagnosed` overloads; the plain `String`-returning entry points pass
+    /// `nil` and behave byte-for-byte as before. Reference type so the same sink threads through the static
+    /// helpers (parseDeclarations, the include resolve) without an `inout` chain.
+    final class Diagnostics {
+        private(set) var messages: [String] = []
+        private var seen = Set<String>()
+        /// Record `message` once (the same clamp can be reached from several passes — e.g. parseDeclarations
+        /// runs for vectorDims and again for the varying list — and a duplicate line is noise, not signal).
+        func note(_ message: String) {
+            guard seen.insert(message).inserted else { return }
+            messages.append(message)
+        }
+    }
+
+    /// When set in the environment, every diagnostic a `…Diagnosed` transpile collects is also written to
+    /// stderr (prefixed so it's greppable in a wallpaper-load log). Off by default — the diagnostics list is
+    /// the primary channel; this is an opt-in convenience for debugging a shader that misbehaves in the field.
+    private static let logDrops = ProcessInfo.processInfo.environment["LUMORA_LOG_SHADER_DROPS"] != nil
+
     /// Upper bound on an array uniform's element count, from the untrusted `[N]` in a shader. The emitted
     /// MSL `Uniforms` struct and `UniformPacker` (which fills a buffer matching that struct) MUST clamp to
     /// the SAME value, or every uniform after an over-long array lands at a different byte offset in the
@@ -26,8 +48,31 @@ public enum WEShaderTranspiler {
                                      combos: [String: Int] = [:],
                                      includes: [String: String] = WEStandardHeaders.all,
                                      pairedVertex: String? = nil) -> String {
+        fragmentToMSL(source, functionName: functionName, combos: combos, includes: includes,
+                      pairedVertex: pairedVertex, diagnostics: nil)
+    }
+
+    /// Like `fragmentToMSL`, but also returns the silent degradations the transpile performed (an array
+    /// clamp, a dropped array varying, an unresolved include). `msl` is byte-for-byte identical to the plain
+    /// overload's; `diagnostics` is empty for a shader the transpiler models fully.
+    public static func fragmentToMSLDiagnosed(_ source: String, functionName: String = "we_fragment",
+                                              combos: [String: Int] = [:],
+                                              includes: [String: String] = WEStandardHeaders.all,
+                                              pairedVertex: String? = nil) -> (msl: String, diagnostics: [String]) {
+        let sink = Diagnostics()
+        let msl = fragmentToMSL(source, functionName: functionName, combos: combos, includes: includes,
+                                pairedVertex: pairedVertex, diagnostics: sink)
+        emitLog(sink, functionName)
+        return (msl, sink.messages)
+    }
+
+    private static func fragmentToMSL(_ source: String, functionName: String,
+                                      combos: [String: Int],
+                                      includes: [String: String],
+                                      pairedVertex: String?,
+                                      diagnostics: Diagnostics?) -> String {
         let combos = ShaderPreprocessor.comboDefaults(source).merging(combos) { _, explicit in explicit }
-        let resolved = ShaderPreprocessor.resolve(source, combos: combos, includes: includes)
+        let resolved = ShaderPreprocessor.resolve(source, combos: combos, includes: includes, diagnostics: diagnostics)
         let uniforms = ShaderUniforms.parse(resolved)
         let samplers = uniforms.filter { $0.type.hasPrefix("sampler") }
         let scalars = uniforms.filter { !$0.type.hasPrefix("sampler") }
@@ -38,9 +83,9 @@ public enum WEShaderTranspiler {
         let varyings: [(type: String, name: String, count: Int?)]
         if let pairedVertex {
             let vertexResolved = ShaderPreprocessor.resolve(pairedVertex, combos: combos, includes: includes)
-            varyings = parseDeclarations(vertexResolved, keyword: "varying")
+            varyings = parseDeclarations(vertexResolved, keyword: "varying", diagnostics: diagnostics)
         } else {
-            varyings = parseDeclarations(resolved, keyword: "varying").filter { isReferenced($0.name, in: resolved) }
+            varyings = parseDeclarations(resolved, keyword: "varying", diagnostics: diagnostics).filter { isReferenced($0.name, in: resolved) }
         }
 
         // Qualify references: scalar varyings come from stage_in, scalar uniforms from the uniform
@@ -77,7 +122,7 @@ public enum WEShaderTranspiler {
         if !scalars.isEmpty {
             msl += "struct Uniforms {\n"
             for uniform in scalars {
-                let array = uniform.arrayCount.map { "[\(min(max($0, 1), maxArrayElements))]" } ?? ""
+                let array = uniform.arrayCount.map { "[\(clampedArrayCount($0, uniform.name, diagnostics))]" } ?? ""
                 msl += "    \(mslType(uniform.type)) \(uniform.name)\(array);\n"
             }
             msl += "};\n\n"
@@ -106,13 +151,31 @@ public enum WEShaderTranspiler {
     public static func vertexToMSL(_ source: String, functionName: String = "we_vertex",
                                    combos: [String: Int] = [:],
                                    includes: [String: String] = WEStandardHeaders.all) -> String {
+        vertexToMSL(source, functionName: functionName, combos: combos, includes: includes, diagnostics: nil)
+    }
+
+    /// Like `vertexToMSL`, but also returns the silent degradations the transpile performed. `msl` is
+    /// byte-for-byte identical to the plain overload's; `diagnostics` is empty for a fully-modelled shader.
+    public static func vertexToMSLDiagnosed(_ source: String, functionName: String = "we_vertex",
+                                            combos: [String: Int] = [:],
+                                            includes: [String: String] = WEStandardHeaders.all) -> (msl: String, diagnostics: [String]) {
+        let sink = Diagnostics()
+        let msl = vertexToMSL(source, functionName: functionName, combos: combos, includes: includes, diagnostics: sink)
+        emitLog(sink, functionName)
+        return (msl, sink.messages)
+    }
+
+    private static func vertexToMSL(_ source: String, functionName: String,
+                                    combos: [String: Int],
+                                    includes: [String: String],
+                                    diagnostics: Diagnostics?) -> String {
         let combos = ShaderPreprocessor.comboDefaults(source).merging(combos) { _, explicit in explicit }
-        let resolved = ShaderPreprocessor.resolve(source, combos: combos, includes: includes)
+        let resolved = ShaderPreprocessor.resolve(source, combos: combos, includes: includes, diagnostics: diagnostics)
         let uniforms = ShaderUniforms.parse(resolved)
         let samplers = uniforms.filter { $0.type.hasPrefix("sampler") }
         let scalars = uniforms.filter { !$0.type.hasPrefix("sampler") }
-        let attributes = parseDeclarations(resolved, keyword: "attribute")
-        let varyings = parseDeclarations(resolved, keyword: "varying")
+        let attributes = parseDeclarations(resolved, keyword: "attribute", diagnostics: diagnostics)
+        let varyings = parseDeclarations(resolved, keyword: "varying", diagnostics: diagnostics)
 
         // Attributes come from stage_in, scalar varyings/gl_Position go to the output struct, scalar
         // uniforms from the buffer. Array varyings stay bare (the body writes a local copied out below).
@@ -146,7 +209,7 @@ public enum WEShaderTranspiler {
         if !scalars.isEmpty {
             msl += "struct Uniforms {\n"
             for uniform in scalars {
-                let array = uniform.arrayCount.map { "[\(min(max($0, 1), maxArrayElements))]" } ?? ""
+                let array = uniform.arrayCount.map { "[\(clampedArrayCount($0, uniform.name, diagnostics))]" } ?? ""
                 msl += "    \(mslType(uniform.type)) \(uniform.name)\(array);\n"
             }
             msl += "};\n\n"
@@ -215,7 +278,8 @@ public enum WEShaderTranspiler {
     /// `<keyword> <type> <name>;` declarations (e.g. `varying`/`attribute`), de-duplicated by name. A
     /// `<name>[N]` array suffix (the blur/godray family declares `varying vec2 v_TexCoord[4]`) is captured
     /// as `count`; a non-literal size like `[RESOLUTION]` doesn't match and the declaration is skipped.
-    private static func parseDeclarations(_ source: String, keyword: String) -> [(type: String, name: String, count: Int?)] {
+    private static func parseDeclarations(_ source: String, keyword: String,
+                                          diagnostics: Diagnostics? = nil) -> [(type: String, name: String, count: Int?)] {
         var result: [(type: String, name: String, count: Int?)] = []
         var seen = Set<String>()
         let pattern = try! NSRegularExpression(pattern: #"^\s*\#(keyword)\s+(\w+)\s+(\w+)\s*(?:\[\s*(\d+)\s*\])?\s*;"#)
@@ -227,10 +291,38 @@ public enum WEShaderTranspiler {
             // Clamp the array length: a shader is untrusted third-party input, and an absurd `[N]` would
             // otherwise expand to N members in a 0..<N loop (OOM/hang). Metal's interpolant budget is far
             // below this; an over-long array is treated as non-array, degrading to a no-op shader.
-            let count = Range(m.range(at: 3), in: line).flatMap { Int(line[$0]) }.flatMap { (1...64).contains($0) ? $0 : nil }
+            let literal = Range(m.range(at: 3), in: line).flatMap { Int(line[$0]) }
+            let count = literal.flatMap { (1...64).contains($0) ? $0 : nil }
+            // A literal `[N]` that fell outside 1...64 is silently dropped to a non-array (the shader then
+            // can't index it and the effect degrades). Surface that — but only the first time the (deduped)
+            // name is seen, so a repeated declaration doesn't double-report.
+            if let literal, count == nil, !seen.contains(name) {
+                diagnostics?.note("\(keyword) '\(name)' has out-of-range array length \(literal); dropped to non-array (allowed 1...64)")
+            }
             if seen.insert(name).inserted { result.append((type: String(line[t]), name: name, count: count)) }   // dedup repeats
         }
         return result
+    }
+
+    /// Clamp an array uniform's `[N]` to `maxArrayElements` (floor 1), recording the clamp as a diagnostic
+    /// when it actually changes the count — the emitted struct and the `UniformPacker` agree on this same
+    /// cap, so an over-long array doesn't desync the buffer layout, but the requested elements past the cap
+    /// are lost and the caller may want to know.
+    private static func clampedArrayCount(_ count: Int, _ name: String, _ diagnostics: Diagnostics?) -> Int {
+        let clamped = min(max(count, 1), maxArrayElements)
+        if clamped != count {
+            diagnostics?.note("array uniform '\(name)' clamped from \(count) to \(clamped)")
+        }
+        return clamped
+    }
+
+    /// Write each collected diagnostic to stderr when `LUMORA_LOG_SHADER_DROPS` is set — an opt-in field
+    /// debugging aid. `functionName` tags the line so a multi-shader load log is attributable.
+    private static func emitLog(_ diagnostics: Diagnostics, _ functionName: String) {
+        guard logDrops, !diagnostics.messages.isEmpty else { return }
+        for message in diagnostics.messages {
+            FileHandle.standardError.write(Data("[lumora shader \(functionName)] \(message)\n".utf8))
+        }
     }
 
     /// Component count of a GLSL type (1 for scalars), or nil for mat/sampler/unknown.
