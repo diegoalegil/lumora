@@ -3,8 +3,15 @@
 import AppKit
 
 let app = NSApplication.shared
-let delegate = AppDelegate()
-app.delegate = delegate
 // Menu-bar only: no Dock icon, no main menu (equivalent to LSUIElement when run unbundled).
 app.setActivationPolicy(.accessory)
-app.run()
+
+if SnapshotRunner.isRequested {
+    // Dev-only: render a SwiftUI scene to PNG and exit. No AppDelegate, so no Steam scan / desktop windows.
+    SnapshotRunner.run()
+    app.run()
+} else {
+    let delegate = AppDelegate()
+    app.delegate = delegate
+    app.run()
+}
