@@ -9,10 +9,14 @@ web, and scene** types — as live desktop wallpapers behind the icons.
 > download, host, or redistribute content.
 
 ## Status
-**Phase 0 complete** — license firewall (CI-enforced), `WECore` contracts, `WallpaperShell`
-(desktop window, multi-display, occlusion/battery playback policy, login item), and a runnable
-menu-bar app that owns the desktop. Pixel-parity harness scaffolding in place. Next: Phase 1
-(video player + importer + library). See the implementation plan and `CONTRIBUTING.md`.
+The core engine is in place. The license firewall is CI-enforced; `WECore` holds the shared contracts
+and `WallpaperShell` owns the desktop window (multi-display, occlusion/battery/thermal playback policy,
+login item) under a runnable menu-bar app. `WEImporter` (importer), `WEShaderKit` (WE-dialect
+shader→MSL transpiler), `WEScene` (clean-room Metal scene renderer), `WESceneDynamics`
+(particles/audio/scenescript), and `WEPlayers` (video/web/scene players) are all implemented and
+exercised by per-package `*Checks` targets. Remaining work is the product layer — playlists, timed
+rotation, transitions, live playback UI — plus the signed `.app` packaging that needs full Xcode.
+See the implementation plan and `CONTRIBUTING.md`.
 
 ## Architecture in one line
 Thin menu-bar app → local Swift packages whose **dependency graph is the license boundary**
@@ -24,23 +28,29 @@ copied). This keeps a future Mac App Store / commercial release possible.
 This environment has CLT only, so `XCTest`/`swift test` are unavailable; verification runs through
 small executable `*Checks` targets instead. One command runs everything:
 ```sh
-bash Scripts/check_all.sh   # firewall audit + WECore/WallpaperShell checks + LumoraApp build
+bash Scripts/check_all.sh   # firewall audit + every package's *Checks + LumoraApp build
 ```
-Individually:
+Individually (each package has its own `<Pkg>Checks` executable; `LumoraApp` is build-only):
 ```sh
-cd Packages/WECore         && swift run WECoreChecks          # core contract checks
-cd Packages/WallpaperShell && swift run WallpaperShellChecks  # policy/coordinator checks
-cd Packages/LumoraApp      && swift build                     # menu-bar app (compile)
-bash Scripts/audit_licenses.sh                                # license firewall gate
+cd Packages/WECore          && swift run WECoreChecks           # core contracts
+cd Packages/WallpaperShell  && swift run WallpaperShellChecks   # desktop window / policy / coordinator
+cd Packages/WEImporter      && swift run WEImporterChecks       # .pkg / scene / texture parsing
+cd Packages/WEShaderKit     && swift run WEShaderKitChecks      # WE-shader → MSL transpiler
+cd Packages/WEScene         && swift run WESceneChecks          # clean-room Metal scene renderer
+cd Packages/WESceneDynamics && swift run WESceneDynamicsChecks  # particles / audio / scenescript
+cd Packages/WEPlayers       && swift run WEPlayersChecks        # video / web / scene players
+cd Packages/LumoraApp       && swift build                      # menu-bar app (compile only)
+bash Scripts/audit_licenses.sh                                 # license firewall gate
 ```
 
-### Running the menu-bar app (Phase 0 "own the desktop")
+### Running the menu-bar app
 ```sh
 cd Packages/LumoraApp && swift run LumoraApp
 ```
-A status-bar item appears; a black wallpaper window is placed behind the icons on every display and
-Space, pausing when occluded / on screen sleep and throttling on battery. (Login-item registration
-and notarization need a real signed `.app` bundle built with full Xcode — Phase 5.)
+A status-bar item appears and a wallpaper window is placed behind the icons on every display and
+Space, pausing when occluded / on screen sleep and throttling on battery. Point it at a library with
+`LUMORA_LIBRARY_DIR=<path-to-workshop-folder> swift run LumoraApp` to render real wallpapers.
+(Login-item registration and notarization need a real signed `.app` bundle built with full Xcode.)
 
 The packaged `.app`, code-signing, and notarization require full Xcode and an Apple Developer ID.
 
