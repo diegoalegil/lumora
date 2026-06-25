@@ -1344,4 +1344,5 @@ if let hard = ParticleSystem.parse(["emitter": [["name": "boxrandom", "rate": 20
 // MARK: - Done
 
 try? fm.removeItem(at: tmpRoot)
+runBCBlockChecks()
 Check.summarize()

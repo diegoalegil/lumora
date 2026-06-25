@@ -39,7 +39,12 @@ public extension SceneTexture {
     /// Decode the largest (first) mip of a `.tex` to upload-ready bytes. Handles the three storage
     /// shapes seen in the library: an embedded image file (PNG/JPG → RGBA8888 via ImageIO), an
     /// LZ4-compressed raw/block buffer, and a verbatim raw/block buffer.
-    static func decodeFirstMip(_ data: Data) throws -> DecodedTexture {
+    ///
+    /// `expandBlocks` opts into CPU decompression of the BC1/DXT1 and BC3/DXT5 block formats to
+    /// straight-alpha RGBA8888 (for a render path that can't upload native BC textures). It defaults to
+    /// false, leaving the historical behaviour — native block bytes are returned verbatim with their block
+    /// `format` preserved — fully intact; unknown/unhandled formats still degrade exactly as before.
+    static func decodeFirstMip(_ data: Data, expandBlocks: Bool = false) throws -> DecodedTexture {
         let (header, mipOffset) = try parse(data)
         let base = data.startIndex
         var cursor = mipOffset
@@ -101,6 +106,14 @@ public extension SceneTexture {
         if let blockBytes = header.format?.blockByteCount {
             let blocks = max(1, (mipWidth + 3) / 4) * max(1, (mipHeight + 3) / 4)
             guard pixels.count >= blocks * blockBytes else { throw SceneTextureError.decodeFailed }
+        }
+        // Opt-in CPU expansion of the BC1/BC3 block formats to RGBA8888. Only these two are CPU-decodable
+        // here; any other format (BC2/RGBA8/RG88/R8/unknown) returns nil from the block decoder and falls
+        // through to the verbatim passthrough below, so the default path is unchanged.
+        if expandBlocks, let format = header.format,
+           let expanded = Self.decodeBlocksToRGBA8(pixels, format: format, width: mipWidth, height: mipHeight) {
+            return DecodedTexture(format: .rgba8888, width: mipWidth, height: mipHeight,
+                                  imageWidth: header.imageWidth, imageHeight: header.imageHeight, pixels: expanded)
         }
         return DecodedTexture(format: header.format ?? .rgba8888, width: mipWidth, height: mipHeight,
                               imageWidth: header.imageWidth, imageHeight: header.imageHeight, pixels: pixels)
