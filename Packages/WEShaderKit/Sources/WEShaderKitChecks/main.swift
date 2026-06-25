@@ -1115,6 +1115,15 @@ Check.that("evaluates additive arithmetic", ShaderPreprocessor.resolve("#if A + 
 Check.that("evaluates a bitwise & (set bit keeps the branch)", ShaderPreprocessor.resolve("#if FLAGS & 2\nx\n#endif", combos: ["FLAGS": 6]) == "x")
 Check.that("a zero bitwise & drops the branch", ShaderPreprocessor.resolve("#if FLAGS & 2\nx\n#endif", combos: ["FLAGS": 1]) == "")
 Check.that("multiplication binds tighter than ==", ShaderPreprocessor.resolve("#if A * 2 == 4\nx\n#endif", combos: ["A": 2]) == "x")
+// A shift operator (<< / >>) must not be mis-read as a single < / > comparison: one bracket would split the
+// condition and mis-evaluate the branch. WE leaves shifts in a #if unevaluated (an unknown name -> 0), so the
+// branch drops. Both combos below would WRONGLY keep the branch under the old one-bracket split.
+Check.that("a << shift is left unevaluated, not split as a < comparison",
+           ShaderPreprocessor.resolve("#if A << B\nx\n#endif", combos: ["A": 0, "B": 1]) == "")
+Check.that("a >> shift is left unevaluated, not split as a > comparison",
+           ShaderPreprocessor.resolve("#if A >> B\nx\n#endif", combos: ["A": 1, "B": 0]) == "")
+// Regression: a genuine single < comparison still evaluates after the shift guard.
+Check.that("a real < comparison still evaluates", ShaderPreprocessor.resolve("#if A < 2\nx\n#endif", combos: ["A": 1]) == "x")
 // Regression: WE's effect shaders annotate combo branches inline, e.g. `#if TYPE == 4 // Cutout square`.
 // A trailing // comment must be stripped before the condition is evaluated (as GLSL/C do). Leaving it in
 // makes the right-hand side unparseable, so the comparison silently reads as `… == 0` and EVERY branch

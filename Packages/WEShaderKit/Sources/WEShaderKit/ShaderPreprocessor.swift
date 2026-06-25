@@ -330,7 +330,7 @@ public enum ShaderPreprocessor {
         // Arithmetic / bitwise sub-expressions (`#if COMBO + 1 == 2`, `#if FLAGS & 2`). Split lowest-precedence
         // first so the recursion binds tighter operators last; handled after comparisons so e.g. `A * 2 == 4`
         // evaluates the product first. Overflow- and divide-by-zero-safe. `-` (unary ambiguity) and shifts
-        // (`<<`/`>>` would clash with the `<`/`>` split above) are intentionally not evaluated.
+        // (`<<`/`>>`, which the `<`/`>` comparison split deliberately skips) are intentionally not evaluated.
         for op in ["|", "&", "+", "*"] {
             if let (lhs, rhs) = splitFirstTopLevel(expr, op) {
                 let a = value(of: lhs, combos, defined, depth + 1), b = value(of: rhs, combos, defined, depth + 1)
@@ -383,10 +383,20 @@ public enum ShaderPreprocessor {
 
     /// Split `s` at the first top-level occurrence of `op` into (left, right); nil if absent.
     private static func splitFirstTopLevel(_ s: String, _ op: String) -> (String, String)? {
+        // A single '<' or '>' that is really half of a shift operator (`<<` / `>>`) is not a comparison:
+        // skip the whole doubled token so e.g. `A << 2` isn't split on one bracket and mis-evaluated. The
+        // shift then falls through to the unknown-name → 0 path, i.e. left unevaluated (see the comment in
+        // `value(of:)`'s arithmetic loop).
+        let isAngle = op == "<" || op == ">"
         var depth = 0, i = s.startIndex
         while i < s.endIndex {
             if s[i] == "(" { depth += 1 } else if s[i] == ")" { depth -= 1 }
             else if depth == 0, s[i...].hasPrefix(op) {
+                let next = s.index(after: i)
+                if isAngle, next < s.endIndex, s[next] == s[i] {
+                    i = s.index(after: next)   // step past both chars of the shift operator
+                    continue
+                }
                 return (String(s[s.startIndex..<i]), String(s[s.index(i, offsetBy: op.count)...]))
             }
             i = s.index(after: i)
