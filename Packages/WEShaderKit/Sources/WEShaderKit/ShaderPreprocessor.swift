@@ -331,17 +331,27 @@ public enum ShaderPreprocessor {
         // first so the recursion binds tighter operators last; handled after comparisons so e.g. `A * 2 == 4`
         // evaluates the product first. Overflow- and divide-by-zero-safe. `-` (unary ambiguity) and shifts
         // (`<<`/`>>` would clash with the `<`/`>` split above) are intentionally not evaluated.
-        for op in ["|", "&", "+", "*", "/"] {
+        for op in ["|", "&", "+", "*"] {
             if let (lhs, rhs) = splitFirstTopLevel(expr, op) {
                 let a = value(of: lhs, combos, defined, depth + 1), b = value(of: rhs, combos, defined, depth + 1)
                 switch op {
                 case "|": return a | b
                 case "&": return a & b
                 case "+": return a &+ b
-                case "*": return a &* b
-                default:  return b != 0 ? a / b : 0
+                default:  return a &* b
                 }
             }
+        }
+        // Division is left-associative (`8 / 4 / 2` == `(8/4)/2` == 1, not `8/(4/2)` == 4), unlike the
+        // commutative operators above where split order is irrelevant — fold the top-level operands left to
+        // right. Divide-by-zero yields 0, matching the rest of the evaluator.
+        if let parts = splitTopLevel(expr, "/"), parts.count > 1 {
+            var acc = value(of: parts[0], combos, defined, depth + 1)
+            for part in parts.dropFirst() {
+                let b = value(of: part, combos, defined, depth + 1)
+                acc = b != 0 ? acc / b : 0
+            }
+            return acc
         }
         if expr.hasPrefix("!") { return value(of: String(expr.dropFirst()), combos, defined, depth + 1) == 0 ? 1 : 0 }
         if expr.hasPrefix("("), expr.hasSuffix(")") { return value(of: String(expr.dropFirst().dropLast()), combos, defined, depth + 1) }

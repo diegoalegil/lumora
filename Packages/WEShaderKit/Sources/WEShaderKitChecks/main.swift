@@ -1268,4 +1268,6 @@ Check.that("the packed uniform after the array sits at the struct's offset (caps
            && layoutPacked.withUnsafeBytes { $0.bindMemory(to: Float.self)[cap] } == 0.1)
 
 runDiagnosticsChecks()
+runAuditFixChecks()
+
 Check.summarize()
