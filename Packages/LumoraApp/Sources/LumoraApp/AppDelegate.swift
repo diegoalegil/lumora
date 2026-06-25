@@ -164,8 +164,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         coordinator.start()      // begin monitoring (no windows yet)
         screenManager.start()    // build windows -> onChange -> reconcile attaches renderers
 
-        // Test mode: surface the picker on launch so a live pass doesn't have to hunt for the menu-bar icon.
-        if ProcessInfo.processInfo.environment["LUMORA_LIBRARY_DIR"] != nil { openTestPicker() }
+        // Make the app discoverable on launch: a menu-bar-only app with no window is easy to miss entirely
+        // (and looks like "nothing happened"). Show a Dock icon and open the library window so the real UI is
+        // right there. Menu-bar-only mode stays available via Settings → Appearance.
+        NSApp.setActivationPolicy(.regular)
+        openLibrary()
     }
 
     func applicationWillTerminate(_ notification: Notification) {

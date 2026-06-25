@@ -21,7 +21,7 @@ public struct Preferences: Codable, Sendable, Equatable {
     /// The ids of wallpapers the user has starred as favorites.
     public var favorites: Set<String>
 
-    public init(showDockIcon: Bool = false, launchAtLogin: Bool = false,
+    public init(showDockIcon: Bool = true, launchAtLogin: Bool = false,
                 playlistPlayback: Bool = false, activePlaylistID: UUID? = nil,
                 activeFPS: Int = 60, batteryFPS: Int = 30, favorites: Set<String> = []) {
         self.showDockIcon = showDockIcon
@@ -38,7 +38,7 @@ public struct Preferences: Codable, Sendable, Equatable {
     // them. The encoder stays synthesized.
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        showDockIcon = try c.decodeIfPresent(Bool.self, forKey: .showDockIcon) ?? false
+        showDockIcon = try c.decodeIfPresent(Bool.self, forKey: .showDockIcon) ?? true
         launchAtLogin = try c.decodeIfPresent(Bool.self, forKey: .launchAtLogin) ?? false
         playlistPlayback = try c.decodeIfPresent(Bool.self, forKey: .playlistPlayback) ?? false
         activePlaylistID = try c.decodeIfPresent(UUID.self, forKey: .activePlaylistID)

@@ -323,17 +323,17 @@ do {
     final class ApplyRecorder { var applied: [Preferences] = [] }
     let rec = ApplyRecorder()
     let model = PreferencesModel(Preferences(), onApply: { rec.applied.append($0) })
-    Check.that("starts with the Dock icon hidden (menu-bar only)", model.showDockIcon == false)
-    model.showDockIcon = true
-    Check.that("toggling the Dock icon applies live", model.showDockIcon == true && rec.applied.last?.showDockIcon == true)
+    Check.that("starts with the Dock icon shown (discoverable by default)", model.showDockIcon == true)
+    model.showDockIcon = false
+    Check.that("toggling the Dock icon applies live", model.showDockIcon == false && rec.applied.last?.showDockIcon == false)
     let countAfterFirst = rec.applied.count
-    model.showDockIcon = true   // no-op
+    model.showDockIcon = false   // no-op
     Check.that("a no-op edit does not re-apply", rec.applied.count == countAfterFirst)
     model.launchAtLogin = true
     Check.that("toggling launch-at-login applies live", rec.applied.last?.launchAtLogin == true)
     // set(_:) replaces without re-applying (e.g. after loading from disk)
-    model.set(Preferences(showDockIcon: false))
-    Check.that("set(_:) replaces without firing apply", model.showDockIcon == false && rec.applied.count == countAfterFirst + 1)
+    model.set(Preferences(showDockIcon: true))
+    Check.that("set(_:) replaces without firing apply", model.showDockIcon == true && rec.applied.count == countAfterFirst + 1)
 }
 
 // MARK: PlaylistStore (observable app state)
