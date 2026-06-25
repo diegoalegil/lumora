@@ -44,6 +44,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var rotationTimer: Timer?
     private let playerFactory = DefaultWallpaperPlayerFactory()
     private var appliedSelection: Playlist?
+    /// The "rotate the whole library" fallback playlist, built once with a stable identity (see refreshPlaylistPlayback).
+    private var allWallpapersPlaylist: Playlist?
 
     // Product layer: the playlist library/store and live-applying preferences behind the settings window.
     private lazy var preferences: PreferencesModel = {
@@ -151,6 +153,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // Feed the library browser the installed wallpapers and mark which one is currently playing.
         libraryModel.replace(entries: libraryEntries())
         libraryModel.activeWallpaperID = activeWallpaper?.ref.id
+        // Build the "all wallpapers" rotation fallback once, so its identity is stable across reconciles.
+        allWallpapersPlaylist = playableWallpapers.isEmpty ? nil
+            : Playlist(name: "All Wallpapers", items: playableWallpapers.map { WallpaperReference(id: $0.ref.id) })
         // Restore starred favorites and persist any change back through the preferences store.
         libraryModel.favorites = preferences.preferences.favorites
         libraryModel.onFavoritesChange = { [weak self] favorites in self?.preferences.favorites = favorites }
@@ -218,8 +223,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         })
 
         // A coarse tick is plenty: rotation intervals are seconds-to-minutes and the cross-fade reads the
-        // wall clock each step. .common mode keeps it ticking during menu tracking.
-        let timer = Timer(timeInterval: 0.5, target: self, selector: #selector(rotationTick), userInfo: nil, repeats: true)
+        // wall clock each step. .common mode keeps it ticking during menu tracking. A block timer with a weak
+        // capture avoids the target/selector retain cycle (the RunLoop retains the timer, which would otherwise
+        // transitively pin the whole AppDelegate graph).
+        let timer = Timer(timeInterval: 0.5, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.rotationTick() }   // added to RunLoop.main → fires on the main thread
+        }
         RunLoop.main.add(timer, forMode: .common)
         rotationTimer = timer
     }
@@ -236,8 +245,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let effective: Playlist?
         if let selection, !selection.items.isEmpty {
             effective = selection
-        } else if !playableWallpapers.isEmpty {
-            effective = Playlist(name: "All Wallpapers", items: playableWallpapers.map { WallpaperReference(id: $0.ref.id) })
+        } else if let fallback = allWallpapersPlaylist {
+            // Cached so it keeps a STABLE identity: the plan diff compares whole Playlist values (id included),
+            // and rebuilding the fallback with a fresh UUID on every reconcile would make an unrelated screen
+            // change look like a new playlist and needlessly restart (flash) every display.
+            effective = fallback
         } else {
             effective = nil
         }
