@@ -40,6 +40,25 @@ public struct Preferences: Codable, Sendable, Equatable {
         self.audioReactive = audioReactive
     }
 
+    /// What the app should present at launch. On the very FIRST launch we make Lumora discoverable — force the
+    /// Dock icon on and open the Library — so a new user finds the real UI. On every later launch we honor the
+    /// saved `showDockIcon` and don't reopen the window, so a menu-bar-only choice survives a relaunch instead
+    /// of being overridden each time.
+    public struct LaunchPresentation: Equatable, Sendable {
+        public var showsDockIcon: Bool
+        public var opensLibrary: Bool
+        public init(showsDockIcon: Bool, opensLibrary: Bool) {
+            self.showsDockIcon = showsDockIcon
+            self.opensLibrary = opensLibrary
+        }
+    }
+
+    public static func launchPresentation(isFirstLaunch: Bool, showDockIcon: Bool) -> LaunchPresentation {
+        isFirstLaunch
+            ? LaunchPresentation(showsDockIcon: true, opensLibrary: true)
+            : LaunchPresentation(showsDockIcon: showDockIcon, opensLibrary: false)
+    }
+
     // Tolerant decoding: a Preferences value written by an OLDER build (without a key added later) decodes with
     // that field's default instead of failing — otherwise adding any preference would silently reset all of
     // them. The encoder stays synthesized.

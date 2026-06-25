@@ -88,6 +88,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var testPicker: TestPickerWindowController?   // test-only quick switcher
     private static let selectedWallpaperKey = "LumoraSelectedWallpaperID"
     private static let pausedKey = "LumoraPaused"
+    private static let hasLaunchedBeforeKey = "LumoraHasLaunchedBefore"
 
     override init() {
         // Window factory: build the desktop window + an empty host. Renderers are attached in
@@ -164,11 +165,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         coordinator.start()      // begin monitoring (no windows yet)
         screenManager.start()    // build windows -> onChange -> reconcile attaches renderers
 
-        // Make the app discoverable on launch: a menu-bar-only app with no window is easy to miss entirely
-        // (and looks like "nothing happened"). Show a Dock icon and open the library window so the real UI is
-        // right there. Menu-bar-only mode stays available via Settings → Appearance.
-        NSApp.setActivationPolicy(.regular)
-        openLibrary()
+        // Make the app discoverable on the FIRST launch only: a menu-bar-only app with no window is easy to
+        // miss (it looks like "nothing happened"), so show a Dock icon and open the library window the first
+        // time. On every later launch, honor the saved Appearance preference instead — applyPreferences above
+        // already set the policy, so a user who chose menu-bar-only keeps it instead of having the Dock icon
+        // and library forced back each launch. Menu-bar-only stays available via Settings → Appearance.
+        let isFirstLaunch = !UserDefaults.standard.bool(forKey: Self.hasLaunchedBeforeKey)
+        UserDefaults.standard.set(true, forKey: Self.hasLaunchedBeforeKey)
+        let launch = Preferences.launchPresentation(isFirstLaunch: isFirstLaunch,
+                                                    showDockIcon: preferences.preferences.showDockIcon)
+        if launch.showsDockIcon { NSApp.setActivationPolicy(.regular) }
+        if launch.opensLibrary { openLibrary() }
     }
 
     func applicationWillTerminate(_ notification: Notification) {

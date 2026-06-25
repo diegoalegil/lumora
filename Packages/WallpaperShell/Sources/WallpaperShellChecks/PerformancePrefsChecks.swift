@@ -30,4 +30,19 @@ func runPerformancePrefsChecks() {
     let data = try? JSONEncoder().encode(prefs)
     let back = data.flatMap { try? JSONDecoder().decode(Preferences.self, from: $0) }
     Check.that("fps round-trips", back?.activeFPS == 90 && back?.batteryFPS == 24)
+
+    Check.section("Preferences launch presentation (F34)")
+
+    // First launch makes the app discoverable regardless of the (default) preference.
+    let first = Preferences.launchPresentation(isFirstLaunch: true, showDockIcon: false)
+    Check.that("first launch forces the Dock icon", first.showsDockIcon)
+    Check.that("first launch opens the Library", first.opensLibrary)
+
+    // A later launch honors the saved Appearance choice and never reopens the Library — a menu-bar-only
+    // user keeps menu-bar-only instead of having the Dock icon forced back on every relaunch.
+    let menuBarOnly = Preferences.launchPresentation(isFirstLaunch: false, showDockIcon: false)
+    Check.that("menu-bar-only survives a relaunch", !menuBarOnly.showsDockIcon)
+    Check.that("a relaunch doesn't reopen the Library", !menuBarOnly.opensLibrary)
+    let dockUser = Preferences.launchPresentation(isFirstLaunch: false, showDockIcon: true)
+    Check.that("a saved Dock-icon choice is honored on relaunch", dockUser.showsDockIcon)
 }
