@@ -43,12 +43,15 @@ public enum KeyValuesError: Error, Equatable, Sendable, CustomStringConvertible 
 /// value) and strict only about structure (balanced braces, a value after every key).
 public enum KeyValuesParser {
     /// The deepest object nesting the parser will follow. Real Steam/VDF files nest only a handful of
-    /// levels; a far higher ceiling still rejects a crafted file of thousands of `{` before the recursive
-    /// descent could exhaust the stack and crash the process.
-    private static let maxNestingDepth = 256
+    /// levels; this ceiling rejects a crafted file of nested `{` well before the recursive descent could
+    /// approach a stack-overflow trap — kept low enough to stay safe even on a small-stack worker thread.
+    private static let maxNestingDepth = 64
+    /// Reject an absurdly large VDF before materializing it: real Steam config files are kilobytes.
+    private static let maxInputBytes = 32 << 20   // 32 MB
 
     /// Parse a KeyValues/VDF document into its top-level object node.
     public static func parse(_ text: String) throws -> KVNode {
+        guard text.utf8.count <= maxInputBytes else { throw KeyValuesError.unexpectedEnd }
         var tokenizer = Tokenizer(Array(text.unicodeScalars))
         let pairs = try parsePairs(&tokenizer, expectClose: false, depth: 0)
         return .object(pairs)
