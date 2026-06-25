@@ -96,6 +96,11 @@ public final class AudioBandMapper {
                 vDSP.squareMagnitudes(split, result: &power)
             }
         }
+        // vDSP packs the Nyquist component into imagp[0], so squareMagnitudes leaves power[0] = DC² + Nyquist².
+        // No band ever reads the true Nyquist bin (bands top out at halfN-1), yet the lowest sub-bin bands
+        // interpolate into bin 0 — so strip the Nyquist term, leaving a clean DC magnitude there instead of
+        // leaking ~24 kHz energy (cymbals/hiss/aliasing) into the deepest bass band.
+        power[0] = real[0] * real[0]
         return power
     }
 
@@ -125,7 +130,8 @@ public final class AudioBandMapper {
                 // The continuous bin coordinate of the band center; clamp to [0, halfN-1] so floor and floor+1
                 // stay valid. Allowing floor 0 lets two sub-bin bands whose centers both sit below bin 1 still
                 // get distinct values (interpolating into the DC bin) instead of both snapping to bin 1; at the
-                // very top a degenerate frac=0 reads the last bin exactly.
+                // very top a degenerate frac=0 reads the last bin exactly. (bin 0 is cleaned to pure DC in
+                // magnitudeSpectrum, so this never folds in the packed-FFT Nyquist term.)
                 let centerHz = (lo + hi) * 0.5
                 let pos = min(Float(halfN - 1), max(0, centerHz / binHz))
                 let floorBin = min(halfN - 2, Int(pos))

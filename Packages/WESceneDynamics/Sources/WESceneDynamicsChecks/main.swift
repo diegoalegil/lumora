@@ -327,4 +327,6 @@ Check.that("an infinite-loop init() doesn't hang construction and update() still
            initSpin != nil && initSpin?.updateString("ok") == "ok")
 
 runAudioBandInterpolationChecks()
+runAudioBandDCChecks()
+
 Check.summarize()
