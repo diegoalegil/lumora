@@ -183,6 +183,11 @@ public final class ScenePlayer: WallpaperRenderer {
     /// Composite the prepared scene at the view's pixel size and the current time into its layer.
     private func present() {
         guard let hostView, hostView.bounds.width > 1, hostView.bounds.height > 1 else { return }
+        // Render at — and back the layer with — the display's device pixels. The frame is composited at
+        // bounds × backingScale; matching the layer's contentsScale shows it 1:1 instead of compositing the
+        // Retina-sized frame into a 1× layer and letting the display upscale it (which looked soft/pixelated).
+        let scale = hostView.window?.backingScaleFactor ?? 2
+        hostView.layer?.contentsScale = scale
         ensurePrepared()
         // A puppet-rigged scene only renders live when every puppet layer assembled into a sane mesh
         // (`puppetReady`). Otherwise drawing its raw layer atlas would show scattered body parts, so fall back
@@ -195,7 +200,6 @@ public final class ScenePlayer: WallpaperRenderer {
         }
         startLoopIfAnimated()
 
-        let scale = hostView.window?.backingScaleFactor ?? 2
         let width = max(1, Int(hostView.bounds.width * scale))
         let height = max(1, Int(hostView.bounds.height * scale))
 
