@@ -651,7 +651,7 @@ public final class SceneRenderer {
                 let runtime = layer.textScript.flatMap { SceneScriptRuntime(script: $0) }
                 let prepText = PreparedTextLayer(runtime: runtime, staticText: layer.textValue ?? "",
                                                  font: font, color: SIMD3(Float(layer.color.x), Float(layer.color.y), Float(layer.color.z)),
-                                                 pointSize: layer.pointSize, device: device, horizontalAlign: layer.horizontalAlign, verticalAlign: layer.verticalAlign)
+                                                 device: device, horizontalAlign: layer.horizontalAlign, verticalAlign: layer.verticalAlign)
                 let center = SIMD2(Float(layer.origin.x / orthoW * 2 - 1), Float(layer.origin.y / orthoH * 2 - 1))
                 // A text/clock layer can be rolled too (angles.z): apply the same aspect-corrected rotation the
                 // image path uses, so a tilted clock/label renders tilted instead of snapping axis-aligned.

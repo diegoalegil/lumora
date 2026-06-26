@@ -17,8 +17,6 @@ final class PreparedTextLayer {
     private let font: CTFont
     private let color: SIMD3<Float>
     private let device: MTLDevice
-    /// Point size in scene units — maps the glyph height to the scene so the quad is the right size.
-    let pointSize: Double
     /// "left" | "center" | "right" — which edge of the rendered string sits at the layer origin.
     let horizontalAlign: String?
     /// "top" | "center" | "bottom" — which edge of the rendered string sits at the layer origin (y is up).
@@ -30,12 +28,11 @@ final class PreparedTextLayer {
     private var cachedScale: Double = 0                 // pixel-density the cached texture was rasterised at
 
     init(runtime: SceneScriptRuntime?, staticText: String, font: CTFont, color: SIMD3<Float>,
-         pointSize: Double, device: MTLDevice, horizontalAlign: String? = nil, verticalAlign: String? = nil) {
+         device: MTLDevice, horizontalAlign: String? = nil, verticalAlign: String? = nil) {
         self.runtime = runtime
         self.staticText = staticText
         self.font = font
         self.color = color
-        self.pointSize = pointSize
         self.device = device
         self.horizontalAlign = horizontalAlign
         self.verticalAlign = verticalAlign
