@@ -166,8 +166,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // and library forced back each launch. Menu-bar-only stays available via Settings → Appearance.
         let isFirstLaunch = !UserDefaults.standard.bool(forKey: Self.hasLaunchedBeforeKey)
         UserDefaults.standard.set(true, forKey: Self.hasLaunchedBeforeKey)
+        // Treat a launch as a background login-item start only when Launch-at-Login is enabled, so the Library
+        // doesn't pop up on every login. With it off (the common case) every Dock launch opens the Library —
+        // otherwise clicking a Dock icon that opens no window reads as "nothing happened". An explicit Dock
+        // click on an already-running app is handled by applicationShouldHandleReopen.
         let launch = Preferences.launchPresentation(isFirstLaunch: isFirstLaunch,
-                                                    showDockIcon: preferences.preferences.showDockIcon)
+                                                    showDockIcon: preferences.preferences.showDockIcon,
+                                                    launchedAtLogin: preferences.preferences.launchAtLogin)
         if launch.showsDockIcon { NSApp.setActivationPolicy(.regular) }
         if launch.opensLibrary { openLibrary() }
     }

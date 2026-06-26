@@ -70,10 +70,11 @@ public struct Preferences: Codable, Sendable, Equatable {
         self.libraryFolderPath = libraryFolderPath
     }
 
-    /// What the app should present at launch. On the very FIRST launch we make Lumora discoverable — force the
-    /// Dock icon on and open the Library — so a new user finds the real UI. On every later launch we honor the
-    /// saved `showDockIcon` and don't reopen the window, so a menu-bar-only choice survives a relaunch instead
-    /// of being overridden each time.
+    /// What the app should present at launch. The very FIRST launch always makes Lumora discoverable — force the
+    /// Dock icon on and open the Library — so a new user finds the real UI. After that, a Dock-visible app that
+    /// the user launched themselves still opens the Library: a Dock icon that opens to no window reads as
+    /// "I clicked it and nothing happened". A menu-bar-only app (no Dock icon) stays quiet, and a background
+    /// login-item start stays quiet too, so the window doesn't pop up on every login.
     public struct LaunchPresentation: Equatable, Sendable {
         public var showsDockIcon: Bool
         public var opensLibrary: Bool
@@ -83,10 +84,13 @@ public struct Preferences: Codable, Sendable, Equatable {
         }
     }
 
-    public static func launchPresentation(isFirstLaunch: Bool, showDockIcon: Bool) -> LaunchPresentation {
-        isFirstLaunch
-            ? LaunchPresentation(showsDockIcon: true, opensLibrary: true)
-            : LaunchPresentation(showsDockIcon: showDockIcon, opensLibrary: false)
+    /// - Parameter launchedAtLogin: true when this process was started automatically as a login item (a
+    ///   background start), so the Library shouldn't pop up. A user-initiated launch passes false.
+    public static func launchPresentation(isFirstLaunch: Bool, showDockIcon: Bool,
+                                          launchedAtLogin: Bool = false) -> LaunchPresentation {
+        if isFirstLaunch { return LaunchPresentation(showsDockIcon: true, opensLibrary: true) }
+        return LaunchPresentation(showsDockIcon: showDockIcon,
+                                  opensLibrary: showDockIcon && !launchedAtLogin)
     }
 
     // Tolerant decoding: a Preferences value written by an OLDER build (without a key added later) decodes with
