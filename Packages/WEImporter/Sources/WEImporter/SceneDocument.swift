@@ -543,6 +543,10 @@ public enum SceneGraph {
                script.contains("mediaPlayback") || script.contains("MediaPlaybackEvent") || script.contains("mediaThumbnail") {
                 return false
             }
+            // The author's "prompt box" (a self-promo / "how to close this" overlay, bound to the `promptbox`
+            // user property) is never shown in Lumora — it's intrusive and adds nothing to a wallpaper. Force it
+            // hidden regardless of the scene's default or any saved override.
+            if (dict["user"] as? String) == "promptbox" { return false }
             // A plain `{ "user": "<name>", "value": Bool }` toggle: a user override of <name> overrides the
             // default. (The combo-conditional form, `"user": { "name", "condition" }`, is left on its default
             // `value` — it depends on a multi-choice selection, not a simple boolean.)

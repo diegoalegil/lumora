@@ -791,19 +791,21 @@ let boundSizePkg = buildPKG(version: "PKGV0009", files: [
 if let pkg = try? ScenePackage.read(boundSizePkg), let doc = try? SceneGraph.load(from: pkg) {
     Check.that("a user-bound point size takes its bound base value", doc.layers.first?.pointSize == 119.5)
 }
-// A layer whose visibility is a `{ "user": "<name>", "value": Bool }` toggle (an author's prompt box, an
-// optional effect) defaults to its `value`, but the viewer's Customize override of that property wins. With no
-// override the prompt box shows (as Wallpaper Engine does); overriding `promptbox`→false hides it.
+// The author "prompt box" (visibility bound to the `promptbox` user property) is force-hidden in Lumora: it's
+// an intrusive self-promo overlay that never adds to a wallpaper, so it never shows — not by the scene's
+// `value` default, and not even if a saved override would turn it on. A normal `{ user, value }` visibility
+// toggle still honours its default and a Customize override.
 let promptPkg = buildPKG(version: "PKGV0009", files: [
-    ("scene.json", Data(#"{"objects":[{"name":"box","image":"models/box.json","visible":{"user":"promptbox","value":true}}]}"#.utf8)),
+    ("scene.json", Data(#"{"objects":[{"name":"box","image":"models/box.json","visible":{"user":"promptbox","value":true}},{"name":"fx","image":"models/box.json","visible":{"user":"rain","value":true}}]}"#.utf8)),
 ])
 if let pkg = try? ScenePackage.read(promptPkg) {
     let shown = try? SceneGraph.load(from: pkg)
-    Check.that("a prompt-box layer is visible by default", shown?.layers.first?.visible == true)
-    let hidden = try? SceneGraph.load(from: pkg, overrides: ["promptbox": .bool(false)])
-    Check.that("a Customize override hides the prompt-box layer", hidden?.layers.first?.visible == false)
-    let untouched = try? SceneGraph.load(from: pkg, overrides: ["unrelated": .bool(false)])
-    Check.that("an unrelated override leaves the layer at its default", untouched?.layers.first?.visible == true)
+    Check.that("the prompt box is hidden despite its value:true default", shown?.layers.first(where: { $0.name == "box" })?.visible == false)
+    Check.that("a non-promptbox toggle keeps its default", shown?.layers.first(where: { $0.name == "fx" })?.visible == true)
+    let forced = try? SceneGraph.load(from: pkg, overrides: ["promptbox": .bool(true)])
+    Check.that("an override turning the prompt box on is ignored", forced?.layers.first(where: { $0.name == "box" })?.visible == false)
+    let fxOff = try? SceneGraph.load(from: pkg, overrides: ["rain": .bool(false)])
+    Check.that("a Customize override still hides a normal toggle", fxOff?.layers.first(where: { $0.name == "fx" })?.visible == false)
 }
 // Non-boolean user properties (a colour scheme, an opacity slider, a bound point size) must reach the render
 // too — without this the wallpaper shows the author's baked-in defaults, not what the user picked. A layer's
