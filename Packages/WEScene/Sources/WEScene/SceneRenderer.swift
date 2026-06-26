@@ -644,7 +644,25 @@ public final class SceneRenderer {
         let videoVRAMBudget = 384 * 1024 * 1024
         var videoVRAMUsed = 0
         var puppetLayerCount = 0, puppetReadyCount = 0   // a scene is puppet-ready only if every puppet assembles
-        for layer in document.layers where layer.visible {
+        // De-overlap piled text: some wallpapers bake several text components (author credits, clock parts) at
+        // the SAME origin because their per-component positioning is a SceneScript Lumora can't fully run, so
+        // they superimpose into an unreadable smear. Where ≥3 visible text layers share one exact origin, stack
+        // them vertically by their heights so they read as a list. A shadow/outline pair (2 layers) is below the
+        // threshold and left untouched, and a scene with no such pile is unaffected (byte-identical).
+        var textStackOffset: [Int: Double] = [:]
+        do {
+            var groups: [Int64: [(idx: Int, height: Double)]] = [:]
+            for (i, l) in document.layers.enumerated() where l.visible && l.isTextLayer {
+                let key = Int64(l.origin.x.rounded()) &* 1_000_000 &+ Int64(l.origin.y.rounded())
+                let h = max(1, (l.size?.y ?? l.pointSize) * Double(abs(l.scale.y) > 0 ? abs(l.scale.y) : 1))
+                groups[key, default: []].append((idx: i, height: h))
+            }
+            for members in groups.values where members.count >= 3 {
+                var cumulative = 0.0
+                for m in members { textStackOffset[m.idx] = cumulative; cumulative += m.height }
+            }
+        }
+        for (layerIndex, layer) in document.layers.enumerated() where layer.visible {
             // A text layer (clock, label) draws rendered glyphs: build its font + (optional) script runtime;
             // the quad's size is derived at render time from the rasterised string. No packed texture.
             if layer.isTextLayer {
@@ -654,7 +672,10 @@ public final class SceneRenderer {
                 let prepText = PreparedTextLayer(runtime: runtime, staticText: layer.textValue ?? "",
                                                  font: font, color: SIMD3(Float(layer.color.x), Float(layer.color.y), Float(layer.color.z)),
                                                  device: device, horizontalAlign: layer.horizontalAlign, verticalAlign: layer.verticalAlign)
-                let center = SIMD2(Float(layer.origin.x / orthoW * 2 - 1), Float(layer.origin.y / orthoH * 2 - 1))
+                // Stack downward by the de-overlap offset (scene y is up, so subtract) when this text is part of
+                // a same-origin pile; 0 for everything else.
+                let stackY = textStackOffset[layerIndex] ?? 0
+                let center = SIMD2(Float(layer.origin.x / orthoW * 2 - 1), Float((layer.origin.y - stackY) / orthoH * 2 - 1))
                 // A text/clock layer can be rolled too (angles.z): apply the same aspect-corrected rotation the
                 // image path uses, so a tilted clock/label renders tilted instead of snapping axis-aligned.
                 let textRoll = Float(layer.angles.z)
