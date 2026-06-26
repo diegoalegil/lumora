@@ -58,18 +58,53 @@ struct WallpaperListItem: Identifiable, Hashable {
     var reference: WallpaperReference { WallpaperReference(id: id) }
 }
 
-/// The Preferences pane: a native Form with the Dock-icon and launch-at-login toggles, applied live.
+/// Presentation copy for the render-quality tiers (kept in the app layer — it's purely UI text).
+extension RenderQuality {
+    var title: String {
+        switch self {
+        case .maximum:    return "Maximum"
+        case .balanced:   return "Balanced"
+        case .powerSaver: return "Power Saver"
+        }
+    }
+    var detail: String {
+        switch self {
+        case .maximum:    return "120 fps on a ProMotion display, at full native resolution — the best your Mac can show. Eases to 60 fps on battery."
+        case .balanced:   return "60 fps at full native resolution — smooth and light on power."
+        case .powerSaver: return "30 fps at full native resolution — the lightest on the battery, with exactly the same sharpness."
+        }
+    }
+    var symbol: String {
+        switch self {
+        case .maximum:    return "bolt.fill"
+        case .balanced:   return "speedometer"
+        case .powerSaver: return "leaf.fill"
+        }
+    }
+}
+
+/// The Preferences pane: a native Form with the render-quality picker plus the Dock-icon, login and playlist
+/// toggles, applied live.
 struct PreferencesSettingsView: View {
     @Bindable var preferences: PreferencesModel
 
-    /// Bridge an Int fps preference to the Double a Slider needs.
-    private func fpsBinding(_ keyPath: ReferenceWritableKeyPath<PreferencesModel, Int>) -> Binding<Double> {
-        Binding(get: { Double(preferences[keyPath: keyPath]) },
-                set: { preferences[keyPath: keyPath] = Int($0) })
-    }
-
     var body: some View {
         Form {
+            Section("Quality") {
+                Picker("Render quality", selection: $preferences.renderQuality) {
+                    ForEach(RenderQuality.allCases, id: \.self) { quality in
+                        Label(quality.title, systemImage: quality.symbol).tag(quality)
+                    }
+                }
+                .pickerStyle(.inline)
+                .labelsHidden()
+                Text(preferences.renderQuality.detail)
+                    .font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Text("Every tier renders at full native Retina resolution — only the frame rate changes, so nothing ever looks softer. Takes effect after you restart Lumora.")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             Section("Appearance") {
                 Toggle("Show Lumora in the Dock", isOn: $preferences.showDockIcon)
                     .help("Off keeps Lumora as a menu-bar-only app.")
@@ -80,26 +115,6 @@ struct PreferencesSettingsView: View {
             Section("Playback") {
                 Toggle("Rotate through a playlist", isOn: $preferences.playlistPlayback)
                     .help("Play the selected playlist with timed rotation and transitions instead of a single fixed wallpaper. Takes effect after you restart Lumora.")
-            }
-            Section("Performance") {
-                VStack(alignment: .leading, spacing: 4) {
-                    HStack {
-                        Text("Frame rate")
-                        Spacer()
-                        Text("\(preferences.activeFPS) fps").monospacedDigit().foregroundStyle(.secondary)
-                    }
-                    Slider(value: fpsBinding(\.activeFPS), in: 15...120, step: 5)
-                }
-                VStack(alignment: .leading, spacing: 4) {
-                    HStack {
-                        Text("On battery or Low Power Mode")
-                        Spacer()
-                        Text("\(preferences.batteryFPS) fps").monospacedDigit().foregroundStyle(.secondary)
-                    }
-                    Slider(value: fpsBinding(\.batteryFPS), in: 10...60, step: 5)
-                }
-                Text("Lower rates save power. New frame rates take effect after you restart Lumora.")
-                    .font(.caption).foregroundStyle(.secondary)
             }
         }
         .formStyle(.grouped)
