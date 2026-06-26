@@ -32,7 +32,8 @@ public final class ScenePlayer: WallpaperRenderer {
     private var document: RenderableScene?
     private var prepared: PreparedScene?
 
-    private var timer: Timer?
+    private var displayLink: CADisplayLink?
+    private var lastTimestamp: CFTimeInterval = 0   // for the real per-frame delta; 0 before the first tick
     private var elapsed = 0.0
     private var isPaused = false
     private var lastDirective: PlaybackDirective?   // dedup identical directives so a burst of unchanged
@@ -52,13 +53,21 @@ public final class ScenePlayer: WallpaperRenderer {
         fps > 0 ? 1.0 / Double(fps) : nil
     }
 
+    /// The display-link refresh range for a target frame rate. The quality tier feeds this through the playback
+    /// directive (Máxima 120 / Equilibrada 60 / Ahorro 30); the display caps it to its own max (so 120 becomes
+    /// 60 on a non-ProMotion panel). Pure, so it's unit-testable.
+    nonisolated public static func frameRateRange(forTargetFPS fps: Int) -> CAFrameRateRange {
+        let f = Float(max(1, fps))
+        return CAFrameRateRange(minimum: f, maximum: f, preferred: f)
+    }
+
     public init() {}
 
     public func makeHostedView() -> NSView {
         let view = SceneHostView(device: renderer?.device,
-                                 pixelFormat: renderer?.compositePixelFormat ?? .rgba8Unorm) { [weak self] in
-            self?.present()
-        }
+                                 pixelFormat: renderer?.compositePixelFormat ?? .rgba8Unorm,
+                                 onResize: { [weak self] in self?.present() },
+                                 onWindowChange: { [weak self] in self?.viewMovedToWindow() })
         hostView = view
         return view
     }
@@ -73,6 +82,7 @@ public final class ScenePlayer: WallpaperRenderer {
         document = try SceneGraph.load(from: scenePackage, overrides: propertyOverrides)
         prepared = nil
         elapsed = 0.0   // reset the animation clock so a reload (playlist switch, re-apply) starts the new scene at t=0
+        lastTimestamp = 0
         previewImage = WallpaperPreview.image(besides: wallpaper.mainFileURL)
     }
 
@@ -83,32 +93,26 @@ public final class ScenePlayer: WallpaperRenderer {
 
     public func pause() {
         isPaused = true
-        stopLoop()     // freeze on the last frame
+        stopLink()     // freeze on the last frame
     }
 
     public func apply(_ directive: PlaybackDirective) {
-        // An unchanged directive leaves the scene exactly as it already is — re-applying it would call
-        // resume() → present(), a full synchronous GPU render + readback, for nothing. The policy engine
-        // re-emits the resolved directive to every display on any signal change (occlusion/thermal/power),
-        // so identical directives arrive in bursts; skip them. (A static scene still renders on view-ready
-        // via the host view's resize callback, so dedup can't leave it blank.)
+        // An unchanged directive leaves the scene exactly as it already is — re-applying it would re-render for
+        // nothing. The policy engine re-emits the resolved directive to every display on any signal change
+        // (occlusion/thermal/power), so identical directives arrive in bursts; skip them. (A static scene still
+        // renders on view-ready via the host view's resize callback, so dedup can't leave it blank.)
         guard directive != lastDirective else { return }
         lastDirective = directive
         guard directive.renderingEnabled else { pause(); return }
-        let rateChanged = directive.targetFPS != targetFPS
-        let wasRunning = timer != nil
         targetFPS = directive.targetFPS
+        // Re-point the display link at the new rate (e.g. the Mac went on battery) — no loop to rebuild.
+        displayLink?.preferredFrameRateRange = Self.frameRateRange(forTargetFPS: targetFPS)
         resume()
-        // If the loop was already running and the policy changed the rate (e.g. the Mac went on battery),
-        // rebuild the timer so the new interval takes effect instead of staying at the previous rate.
-        if rateChanged, wasRunning {
-            stopLoop()
-            startLoopIfAnimated()
-        }
     }
 
     public func tearDown() {
-        stopLoop()
+        displayLink?.invalidate()
+        displayLink = nil
         hostView?.removeFromSuperview()
         hostView = nil
         package = nil
@@ -124,27 +128,40 @@ public final class ScenePlayer: WallpaperRenderer {
         prepared = renderer.prepare(document, package: package)
     }
 
-    private func startLoopIfAnimated() {
-        guard !isPaused, timer == nil, let prepared, prepared.hasAnimation,
-              let interval = Self.frameInterval(forTargetFPS: targetFPS) else { return }
-        // A block timer with a weak self avoids the retain cycle a `target: self` timer creates (the run
-        // loop keeps the timer alive, so a strong target would outlive a torn-down player). The block is
-        // nonisolated but the timer is added to the main run loop, so it always fires on the main thread —
-        // assume the main actor to call `tick()` (instead of an async hop that would lag the frame).
-        let timer = Timer(timeInterval: interval, repeats: true) { _ in
-            MainActor.assumeIsolated { [weak self] in self?.tick() }
-        }
-        RunLoop.main.add(timer, forMode: .common)
-        self.timer = timer
+    /// (Re)build the display link when the host view gains a window, so it binds to that window's display and
+    /// migrates with it across monitors (picking up a 120 Hz ProMotion panel's higher refresh). Torn down when
+    /// the view leaves its window.
+    private func viewMovedToWindow() {
+        displayLink?.invalidate()
+        displayLink = nil
+        guard let hostView, hostView.window != nil else { return }
+        let link = hostView.displayLink(target: self, selector: #selector(step(_:)))
+        link.preferredFrameRateRange = Self.frameRateRange(forTargetFPS: targetFPS)
+        link.isPaused = true   // unpaused by startLinkIfAnimated() once there's animation to drive
+        link.add(to: .main, forMode: .common)
+        displayLink = link
+        present()              // draw the first frame as soon as the view is on screen
     }
 
-    private func stopLoop() {
-        timer?.invalidate()
-        timer = nil
+    /// Start ticking the display link for an animated, visible scene. A still scene (no parallax/keyframes/
+    /// effects/particles/script) leaves the link paused and renders a single frame.
+    private func startLinkIfAnimated() {
+        guard !isPaused, let prepared, prepared.hasAnimation, targetFPS > 0 else { return }
+        displayLink?.preferredFrameRateRange = Self.frameRateRange(forTargetFPS: targetFPS)
+        displayLink?.isPaused = false
     }
 
-    private func tick() {
-        elapsed += Self.frameInterval(forTargetFPS: targetFPS) ?? 0
+    private func stopLink() {
+        displayLink?.isPaused = true
+    }
+
+    /// The display-link callback: advance the clock by the REAL time since the last frame (so animation tracks
+    /// wall-clock at any refresh rate, and feeds engine.time/frametime), then render. Fires on the main thread.
+    @objc private func step(_ link: CADisplayLink) {
+        let now = link.timestamp
+        let dt = lastTimestamp > 0 ? max(0, now - lastTimestamp) : (Self.frameInterval(forTargetFPS: targetFPS) ?? (1.0 / 60))
+        lastTimestamp = now
+        elapsed += dt
         present()
     }
 
@@ -161,7 +178,7 @@ public final class ScenePlayer: WallpaperRenderer {
             hostView.showFallback(previewImage)
             return
         }
-        startLoopIfAnimated()
+        startLinkIfAnimated()
 
         // Render into the next drawable at its exact device-pixel size and present it. nextDrawable() is nil
         // when there's no Metal device, the layer has no size yet, or every drawable is in flight — fall back
@@ -203,9 +220,12 @@ private final class SceneHostView: NSView {
     private let metalLayer = CAMetalLayer()
     private let fallbackLayer = CALayer()
     private let onResize: () -> Void
+    private let onWindowChange: () -> Void
 
-    init(device: MTLDevice?, pixelFormat: MTLPixelFormat, onResize: @escaping () -> Void) {
+    init(device: MTLDevice?, pixelFormat: MTLPixelFormat,
+         onResize: @escaping () -> Void, onWindowChange: @escaping () -> Void) {
         self.onResize = onResize
+        self.onWindowChange = onWindowChange
         super.init(frame: .zero)
         wantsLayer = true
         metalLayer.device = device
@@ -250,6 +270,11 @@ private final class SceneHostView: NSView {
         super.viewDidChangeBackingProperties()
         updateLayerGeometry()
         onResize()
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        onWindowChange()
     }
 
     /// The next drawable to render into, or nil if the layer has no device/size yet or all drawables are in

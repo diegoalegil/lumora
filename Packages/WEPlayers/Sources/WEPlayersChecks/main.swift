@@ -3,6 +3,7 @@
 // tests). The AVKit/AppKit rendering path is validated by running LumoraApp.
 import Foundation
 import JavaScriptCore
+import QuartzCore
 import WECore
 import WEPlayers
 
@@ -206,6 +207,14 @@ Check.section("ScenePlayer frame pacing")
 Check.that("a 60fps directive drives a 1/60s loop interval", ScenePlayer.frameInterval(forTargetFPS: 60) == 1.0 / 60.0)
 Check.that("a battery 30fps throttle drives a 1/30s interval", ScenePlayer.frameInterval(forTargetFPS: 30) == 1.0 / 30.0)
 Check.that("a 0fps (paused / occluded) directive drives no loop", ScenePlayer.frameInterval(forTargetFPS: 0) == nil)
+
+// The quality tier's target fps maps to a display-link refresh range (the display caps it to its own max).
+Check.that("Máxima (120) drives a 120 Hz refresh range",
+           ScenePlayer.frameRateRange(forTargetFPS: 120) == CAFrameRateRange(minimum: 120, maximum: 120, preferred: 120))
+Check.that("Equilibrada (60) drives a 60 Hz refresh range",
+           ScenePlayer.frameRateRange(forTargetFPS: 60) == CAFrameRateRange(minimum: 60, maximum: 60, preferred: 60))
+Check.that("Ahorro (30) drives a 30 Hz refresh range",
+           ScenePlayer.frameRateRange(forTargetFPS: 30) == CAFrameRateRange(minimum: 30, maximum: 30, preferred: 30))
 
 Check.section("WebPlayer.containsEscapingSymlink")
 do {
