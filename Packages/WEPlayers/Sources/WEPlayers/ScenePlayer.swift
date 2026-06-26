@@ -35,23 +35,14 @@ public final class ScenePlayer: WallpaperRenderer {
     private var isPaused = false
     private var lastDirective: PlaybackDirective?   // dedup identical directives so a burst of unchanged
                                                     // policy signals doesn't trigger redundant full renders
-    // System-audio spectrum for audio-reactive scenes. Capture only starts for a scene that actually uses
-    // audio (so non-audio wallpapers never trigger the Screen Recording permission prompt); if permission
-    // is denied the engine stays silent and the scene renders flat.
-    private let audio = AudioEngine()
-    private var sceneUsesAudio = false
     private var loggedRenderFailure = false
     private var previewImage: CGImage?   // the wallpaper's own thumbnail, shown if the scene can't render
     /// The frame rate the playback policy currently wants — 60 active, 30 on battery / low-power, 0 when
     /// paused or occluded. Driven by `apply(_:)`; 60 until a directive says otherwise.
     private var targetFPS = 60
-    /// The viewer's per-property Customize values (a colour scheme, a slider, `promptbox` off to hide an
-    /// author's prompt box), applied to the scene at load. Set before `load(_:)`; empty renders as authored.
+    /// The viewer's per-property Customize values (a colour scheme, a slider, a visibility toggle), applied to
+    /// the scene at load. Set before `load(_:)`; empty renders as authored.
     public var propertyOverrides: [String: PropertyValue] = [:]
-    /// Whether the user opted into audio-reactive playback. OFF by default so an audio scene never starts the
-    /// system-audio capture that would trigger the "Screen Recording" permission prompt; its visualisers just
-    /// render flat until the user enables it in Settings.
-    public var audioReactive = false
 
     /// The render-loop tick interval for a target frame rate, or nil when the rate is 0 — a paused or
     /// occluded directive (targetFPS 0) wants no continuous rendering, just the last still frame held.
@@ -77,43 +68,16 @@ public final class ScenePlayer: WallpaperRenderer {
         document = try SceneGraph.load(from: scenePackage, overrides: propertyOverrides)
         prepared = nil
         elapsed = 0.0   // reset the animation clock so a reload (playlist switch, re-apply) starts the new scene at t=0
-        sceneUsesAudio = Self.usesAudio(scenePackage)
         previewImage = WallpaperPreview.image(besides: wallpaper.mainFileURL)
-    }
-
-    /// Whether the scene reacts to audio (so we should capture system audio for it). A cheap substring scan,
-    /// done once on load, that keeps the Screen Recording permission prompt off wallpapers that don't react to
-    /// sound. Two paths react: shaders that read the `g_AudioSpectrum` globals, and JS SceneScript visualisers
-    /// (audio-bar clones) that pull the spectrum through the audio-buffer API — the latter live inline in
-    /// scene.json or in a `scripts/*.js` file, not in a shader.
-    private static func usesAudio(_ package: ScenePackage) -> Bool {
-        for entry in package.entries {
-            let path = entry.path
-            let isShader = path.hasSuffix(".frag") || path.hasSuffix(".vert")
-            let isScript = path.hasSuffix(".js") || path == "scene.json"
-            // Only shader/script entries can reference audio. Check the suffix BEFORE decoding, so a multi-MB
-            // .tex atlas or embedded .mp4 isn't materialised as a UTF-8 string on the load path.
-            guard isShader || isScript, let text = String(data: entry.data, encoding: .utf8) else { continue }
-            if isShader {
-                if text.contains("g_AudioSpectrum") || text.contains("audioprocessing") { return true }
-            } else {
-                if text.contains("registerAudioBuffers") || text.contains("AUDIO_RESOLUTION") { return true }
-            }
-        }
-        return false
     }
 
     public func resume() {
         isPaused = false
-        // Only sample system audio when the scene needs it AND the user opted in — otherwise starting SCStream
-        // would pop the "Screen Recording" prompt just to show a wallpaper. Off, the scene renders fine, flat.
-        if sceneUsesAudio && audioReactive { audio.start() }   // no-op if already running or permission unavailable
         present()
     }
 
     public func pause() {
         isPaused = true
-        audio.stop()   // release the audio tap while frozen — no point capturing for a still frame
         stopLoop()     // freeze on the last frame
     }
 
@@ -139,7 +103,6 @@ public final class ScenePlayer: WallpaperRenderer {
     }
 
     public func tearDown() {
-        audio.stop()
         stopLoop()
         hostView?.removeFromSuperview()
         hostView = nil
@@ -204,7 +167,7 @@ public final class ScenePlayer: WallpaperRenderer {
         let height = max(1, Int(hostView.bounds.height * scale))
 
         if let renderer, let prepared, prepared.isRenderable,
-           let frame = renderer.render(prepared, width: width, height: height, time: elapsed, audio: audio),
+           let frame = renderer.render(prepared, width: width, height: height, time: elapsed),
            let image = frame.makeCGImage() {
             hostView.layer?.backgroundColor = nil
             hostView.layer?.contents = image

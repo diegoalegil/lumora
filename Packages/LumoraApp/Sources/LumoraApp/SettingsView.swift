@@ -81,12 +81,6 @@ struct PreferencesSettingsView: View {
                 Toggle("Rotate through a playlist", isOn: $preferences.playlistPlayback)
                     .help("Play the selected playlist with timed rotation and transitions instead of a single fixed wallpaper. Takes effect after you restart Lumora.")
             }
-            Section("Audio") {
-                Toggle("Audio-reactive wallpapers", isOn: $preferences.audioReactive)
-                    .help("Let wallpapers with audio visualisers react to your system sound. This needs macOS Screen Recording permission (the only way to capture system audio), so it's off by default — leave it off and those scenes just render their bars still. Takes effect after you restart Lumora.")
-                Text("Off by default: capturing system audio requires Screen Recording permission. Turn this on only if you want audio visualisers to move.")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
             Section("Performance") {
                 VStack(alignment: .leading, spacing: 4) {
                     HStack {

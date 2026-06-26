@@ -336,10 +336,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             case .web:   player = WebPlayer()
             case .scene:
                 let scene = ScenePlayer()   // WEScene Metal compositor
-                // Apply the viewer's Customize values (colour scheme, sliders, promptbox off, …) to the scene.
+                // Apply the viewer's Customize values (colour scheme, sliders, visibility toggles) to the scene.
                 scene.propertyOverrides = propertyStore.overrides(for: wallpaper.ref.id)
-                // Only capture system audio (→ Screen Recording prompt) if the user opted into audio-reactivity.
-                scene.audioReactive = preferences.preferences.audioReactive
                 player = scene
             }
             if let player {
