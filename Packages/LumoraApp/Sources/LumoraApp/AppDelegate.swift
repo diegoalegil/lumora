@@ -192,6 +192,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         renderers.removeAll()
     }
 
+    /// Clicking the Dock icon (or re-activating the app) when no window is showing must open the Library —
+    /// otherwise the app looks dead: "I click it in the Dock and nothing happens." Reopen the library when
+    /// there's no visible window, activate, and return true so AppKit skips its own default handling.
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows: Bool) -> Bool {
+        if !hasVisibleWindows { openLibrary() }
+        NSApp.activate(ignoringOtherApps: true)
+        return true
+    }
+
     /// Keep the renderer set in sync with the live windows, then re-evaluate playback.
     private func reconcile() {
         let liveIDs = Set(screenManager.windows.keys)
