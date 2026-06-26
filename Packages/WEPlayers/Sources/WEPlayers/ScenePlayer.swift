@@ -3,6 +3,8 @@
 // once with WEScene's compositor, and drives a light animation loop (a gentle camera parallax) into a
 // layer-backed view. Scenes without parallax render a single still frame. Apple frameworks only. No GPL.
 import AppKit
+import Metal
+import QuartzCore
 import WECore
 import WEImporter
 import WEScene
@@ -53,7 +55,10 @@ public final class ScenePlayer: WallpaperRenderer {
     public init() {}
 
     public func makeHostedView() -> NSView {
-        let view = SceneHostView { [weak self] in self?.present() }
+        let view = SceneHostView(device: renderer?.device,
+                                 pixelFormat: renderer?.compositePixelFormat ?? .rgba8Unorm) { [weak self] in
+            self?.present()
+        }
         hostView = view
         return view
     }
@@ -143,44 +148,41 @@ public final class ScenePlayer: WallpaperRenderer {
         present()
     }
 
-    /// Composite the prepared scene at the view's pixel size and the current time into its layer.
+    /// Composite the prepared scene at the current time straight into the host's CAMetalLayer drawable — no
+    /// per-frame GPU→CPU readback — or fall back to the wallpaper's preview / a transparent fill.
     private func present() {
         guard let hostView, hostView.bounds.width > 1, hostView.bounds.height > 1 else { return }
-        // Render at — and back the layer with — the display's device pixels. The frame is composited at
-        // bounds × backingScale; matching the layer's contentsScale shows it 1:1 instead of compositing the
-        // Retina-sized frame into a 1× layer and letting the display upscale it (which looked soft/pixelated).
-        let scale = hostView.window?.backingScaleFactor ?? 2
-        hostView.layer?.contentsScale = scale
         ensurePrepared()
         // A puppet-rigged scene only renders live when every puppet layer assembled into a sane mesh
         // (`puppetReady`). Otherwise drawing its raw layer atlas would show scattered body parts, so fall back
-        // to the wallpaper's own static preview — or, if it ships none, the solid fill. Never the scattered
+        // to the wallpaper's own static preview — or, if it ships none, a transparent fill. Never the scattered
         // geometry: a scene without a preview must not slip through to the live render here.
         if document?.usesPuppet == true, prepared?.puppetReady != true {
-            hostView.layer?.contents = previewImage
-            hostView.layer?.backgroundColor = previewImage == nil ? SceneHostView.fallbackColor : nil
+            hostView.showFallback(previewImage)
             return
         }
         startLoopIfAnimated()
 
-        let width = max(1, Int(hostView.bounds.width * scale))
-        let height = max(1, Int(hostView.bounds.height * scale))
-
+        // Render into the next drawable at its exact device-pixel size and present it. nextDrawable() is nil
+        // when there's no Metal device, the layer has no size yet, or every drawable is in flight — fall back
+        // to the preview for that frame rather than risk a mismatch or a blank.
         if let renderer, let prepared, prepared.isRenderable,
-           let frame = renderer.render(prepared, width: width, height: height, time: elapsed),
-           let image = frame.makeCGImage() {
-            hostView.layer?.backgroundColor = nil
-            hostView.layer?.contents = image
-        } else if let previewImage {
-            // The scene has no renderable layers (e.g. an unsupported animated texture) — show the
+           let drawable = hostView.nextDrawable() {
+            let width = drawable.texture.width, height = drawable.texture.height
+            if width > 0, height > 0 {
+                _ = renderer.render(prepared, width: width, height: height, time: elapsed,
+                                    into: drawable.texture, present: { $0.present(drawable) })
+                hostView.showLive()
+                return
+            }
+        }
+        if let previewImage {
+            // No renderable layers (e.g. an unsupported animated texture), or no free drawable — show the
             // wallpaper's own preview thumbnail rather than an empty fill.
-            hostView.layer?.backgroundColor = nil
-            hostView.layer?.contents = previewImage
+            hostView.showFallback(previewImage)
         } else {
-            // No Metal device, decode failure, or nothing visible — show the proof-of-ownership fill
-            // instead of a transparent (invisible) layer.
-            hostView.layer?.contents = nil
-            hostView.layer?.backgroundColor = SceneHostView.fallbackColor
+            // No Metal device, decode failure, or nothing visible — stay transparent so the real desktop shows.
+            hostView.showFallback(nil)
             if !loggedRenderFailure {
                 NSLog("Lumora: scene render failed; showing the preview/fallback fill")
                 loggedRenderFailure = true
@@ -189,33 +191,86 @@ public final class ScenePlayer: WallpaperRenderer {
     }
 }
 
-/// A layer-backed view that re-composites the scene whenever it is resized or its backing scale
-/// changes, so the desktop always shows a crisp, correctly-sized frame.
+/// A Metal-backed host view: live frames are presented straight into a CAMetalLayer drawable (no readback),
+/// and a sibling layer shows the wallpaper's preview / a transparent fill when the scene can't render. It
+/// re-sizes the drawable to the display's device pixels on every resize / backing-scale change.
 @MainActor
 private final class SceneHostView: NSView {
     /// Shown when a scene can't be rendered and has no preview: stay transparent so the user's real desktop
-    /// shows through, rather than hijacking it with a solid (purple) fill.
+    /// shows through, rather than hijacking it with a solid fill.
     static let fallbackColor = NSColor.clear.cgColor
 
+    private let metalLayer = CAMetalLayer()
+    private let fallbackLayer = CALayer()
     private let onResize: () -> Void
 
-    init(onResize: @escaping () -> Void) {
+    init(device: MTLDevice?, pixelFormat: MTLPixelFormat, onResize: @escaping () -> Void) {
         self.onResize = onResize
         super.init(frame: .zero)
         wantsLayer = true
-        layer?.contentsGravity = .resizeAspectFill
+        metalLayer.device = device
+        metalLayer.pixelFormat = pixelFormat
+        metalLayer.framebufferOnly = true          // we only render into + present it, never read it back
+        metalLayer.isOpaque = true                 // a wallpaper fills the screen; opaque composites cheaper
+        metalLayer.contentsGravity = .resizeAspectFill
+        fallbackLayer.contentsGravity = .resizeAspectFill
+        fallbackLayer.isHidden = true
+        layer?.addSublayer(metalLayer)
+        layer?.addSublayer(fallbackLayer)
     }
 
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("not supported") }
 
+    /// Keep both sub-layers filling the view at the display's true device-pixel resolution, so the live frame
+    /// maps 1:1 (no upscale → no blur) and the drawable is the right size before any render.
+    private func updateLayerGeometry() {
+        let scale = window?.backingScaleFactor ?? 2
+        CATransaction.begin(); CATransaction.setDisableActions(true)
+        metalLayer.frame = bounds
+        metalLayer.contentsScale = scale
+        metalLayer.drawableSize = CGSize(width: max(1, bounds.width * scale), height: max(1, bounds.height * scale))
+        fallbackLayer.frame = bounds
+        fallbackLayer.contentsScale = scale
+        CATransaction.commit()
+    }
+
+    override func layout() {
+        super.layout()
+        updateLayerGeometry()
+    }
+
     override func setFrameSize(_ newSize: NSSize) {
         super.setFrameSize(newSize)
+        updateLayerGeometry()
         onResize()
     }
 
     override func viewDidChangeBackingProperties() {
         super.viewDidChangeBackingProperties()
+        updateLayerGeometry()
         onResize()
+    }
+
+    /// The next drawable to render into, or nil if the layer has no device/size yet or all drawables are in
+    /// flight — the caller then holds the last frame or shows the preview, never crashing.
+    func nextDrawable() -> CAMetalDrawable? {
+        guard metalLayer.device != nil,
+              metalLayer.drawableSize.width >= 1, metalLayer.drawableSize.height >= 1 else { return nil }
+        return metalLayer.nextDrawable()
+    }
+
+    /// Show the live Metal frame (the drawable just presented).
+    func showLive() {
+        metalLayer.isHidden = false
+        fallbackLayer.isHidden = true
+    }
+
+    /// Show the wallpaper's preview image (or a transparent fill when nil) instead of a live frame.
+    func showFallback(_ image: CGImage?) {
+        metalLayer.isHidden = true
+        fallbackLayer.contents = image
+        fallbackLayer.backgroundColor = image == nil ? Self.fallbackColor : nil
+        fallbackLayer.isHidden = false
     }
 }
