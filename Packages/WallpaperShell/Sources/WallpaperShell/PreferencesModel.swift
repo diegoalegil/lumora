@@ -31,14 +31,6 @@ public final class PreferencesModel {
         get { preferences.playlistPlayback }
         set { update { $0.playlistPlayback = newValue } }
     }
-    public var activeFPS: Int {
-        get { preferences.activeFPS }
-        set { update { $0.activeFPS = newValue } }
-    }
-    public var batteryFPS: Int {
-        get { preferences.batteryFPS }
-        set { update { $0.batteryFPS = newValue } }
-    }
     public var favorites: Set<String> {
         get { preferences.favorites }
         set { update { $0.favorites = newValue } }

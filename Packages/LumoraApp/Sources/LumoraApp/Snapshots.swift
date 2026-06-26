@@ -74,7 +74,7 @@ enum SnapshotRunner {
                 .background(Color(nsColor: .windowBackgroundColor)))
             size = CGSize(width: 400, height: 920)
         case "settings":
-            let prefs = PreferencesModel(Preferences(showDockIcon: true, activeFPS: 90, batteryFPS: 24))
+            let prefs = PreferencesModel(Preferences(showDockIcon: true, renderQuality: .balanced))
             root = AnyView(PreferencesSettingsView(preferences: prefs)
                 .frame(width: 560)
                 .background(Color(nsColor: .windowBackgroundColor)))

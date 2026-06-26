@@ -15,21 +15,13 @@ func runPerformancePrefsChecks() {
                PlaybackPolicy.clamped(activeFPS: 24, batteryFPS: 60).batteryFPS == 24)
     Check.that("a normal battery rate passes", PlaybackPolicy.clamped(activeFPS: 60, batteryFPS: 30).batteryFPS == 30)
 
-    Check.section("Preferences fps decode")
+    Check.section("Preferences decode")
 
-    // An older preferences blob (no fps keys) decodes to the defaults rather than failing.
+    // An older preferences blob (missing later-added keys) decodes to the defaults rather than failing.
     let legacy = Data(#"{"showDockIcon":true}"#.utf8)
     let decoded = (try? JSONDecoder().decode(Preferences.self, from: legacy)) ?? Preferences()
-    Check.that("missing fps keys default to 60/30", decoded.activeFPS == 60 && decoded.batteryFPS == 30)
+    Check.that("a missing render-quality key defaults to maximum", decoded.renderQuality == .maximum)
     Check.that("other fields still decode", decoded.showDockIcon == true)
-
-    // Round-trip with explicit fps.
-    var prefs = Preferences()
-    prefs.activeFPS = 90
-    prefs.batteryFPS = 24
-    let data = try? JSONEncoder().encode(prefs)
-    let back = data.flatMap { try? JSONDecoder().decode(Preferences.self, from: $0) }
-    Check.that("fps round-trips", back?.activeFPS == 90 && back?.batteryFPS == 24)
 
     Check.section("Preferences launch presentation (F34)")
 
