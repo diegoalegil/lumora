@@ -68,7 +68,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }()
     private lazy var settingsController = SettingsWindowController(
         store: playlistStore, preferences: preferences,
-        libraryItems: { [weak self] in self?.libraryItems() ?? [] })
+        libraryItems: { [weak self] in self?.libraryItems() ?? [] },
+        onApply: { [weak self] id in self?.applyWallpaper(id: id) })
 
     /// The dedicated library browser: a searchable/filterable grid + detail panel. Its model is populated from
     /// the installed library after the scan; the window is created lazily on first open and reused after that.

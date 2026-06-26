@@ -12,17 +12,22 @@ final class SettingsWindowController {
     private let store: PlaylistStore
     private let preferences: PreferencesModel
     private let libraryItems: () -> [WallpaperListItem]
+    private let onApply: (String) -> Void
 
-    init(store: PlaylistStore, preferences: PreferencesModel, libraryItems: @escaping () -> [WallpaperListItem]) {
+    init(store: PlaylistStore, preferences: PreferencesModel,
+         libraryItems: @escaping () -> [WallpaperListItem],
+         onApply: @escaping (String) -> Void) {
         self.store = store
         self.preferences = preferences
         self.libraryItems = libraryItems
+        self.onApply = onApply
     }
 
     /// Bring the settings window to the front, creating it on first use.
     func show() {
         if window == nil {
-            let root = SettingsView(store: store, preferences: preferences, libraryItems: libraryItems())
+            let root = SettingsView(store: store, preferences: preferences,
+                                    libraryItems: libraryItems(), onApply: onApply)
             let hosting = NSHostingController(rootView: root)
             let window = NSWindow(contentViewController: hosting)
             window.title = "Lumora"

@@ -28,8 +28,11 @@ struct SettingsView: View {
     @Bindable var preferences: PreferencesModel
     /// The installed wallpapers offered when building a playlist (injected; empty until the library scan wires in).
     let libraryItems: [WallpaperListItem]
+    /// Set the desktop wallpaper to the one with this id — wired to the app's single-wallpaper apply path.
+    let onApply: (String) -> Void
 
-    @State private var section: SettingsSection? = .playlists
+    /// Open straight to the Library: that's where a user goes to "pick a wallpaper", the app's primary action.
+    @State private var section: SettingsSection? = .library
 
     var body: some View {
         NavigationSplitView {
@@ -39,8 +42,8 @@ struct SettingsView: View {
             .navigationSplitViewColumnWidth(min: 160, ideal: 184, max: 220)
             .navigationTitle("Lumora")
         } detail: {
-            switch section ?? .playlists {
-            case .library:     LibrarySettingsView(items: libraryItems, store: store)
+            switch section ?? .library {
+            case .library:     LibrarySettingsView(items: libraryItems, store: store, onApply: onApply)
             case .playlists:   PlaylistsSettingsView(store: store, libraryItems: libraryItems)
             case .preferences: PreferencesSettingsView(preferences: preferences)
             }
@@ -122,11 +125,16 @@ struct PreferencesSettingsView: View {
     }
 }
 
-/// The Library pane: a grid of installed wallpapers (thumbnails). Right-click a wallpaper to add it to a
-/// playlist — that's how a playlist gets its items.
+/// The Library pane: a grid of installed wallpapers (thumbnails). Click a wallpaper to set it as the desktop
+/// wallpaper; right-click to add it to a playlist instead.
 struct LibrarySettingsView: View {
     let items: [WallpaperListItem]
     @Bindable var store: PlaylistStore
+    /// Set the desktop wallpaper to the one with this id.
+    let onApply: (String) -> Void
+    /// The wallpaper the user just clicked, so the grid can show which one was applied (the live desktop is the
+    /// real confirmation; this is the in-window echo).
+    @State private var appliedID: String?
 
     private let columns = [GridItem(.adaptive(minimum: 160), spacing: 16)]
 
@@ -140,12 +148,30 @@ struct LibrarySettingsView: View {
                 ScrollView {
                     LazyVGrid(columns: columns, spacing: 16) {
                         ForEach(items) { item in
-                            VStack(alignment: .leading, spacing: 6) {
-                                WallpaperThumbnail(url: item.thumbnailURL)
-                                    .frame(height: 96)
-                                    .clipShape(RoundedRectangle(cornerRadius: 8))
-                                Text(item.title).font(.caption).lineLimit(1)
+                            Button {
+                                appliedID = item.id
+                                onApply(item.id)
+                            } label: {
+                                VStack(alignment: .leading, spacing: 6) {
+                                    ZStack(alignment: .topTrailing) {
+                                        WallpaperThumbnail(url: item.thumbnailURL)
+                                            .frame(height: 96)
+                                            .clipShape(RoundedRectangle(cornerRadius: 8))
+                                            .overlay(
+                                                RoundedRectangle(cornerRadius: 8)
+                                                    .strokeBorder(Color.accentColor,
+                                                                  lineWidth: appliedID == item.id ? 3 : 0))
+                                        if appliedID == item.id {
+                                            Image(systemName: "checkmark.circle.fill")
+                                                .foregroundStyle(.white, Color.accentColor)
+                                                .padding(6)
+                                        }
+                                    }
+                                    Text(item.title).font(.caption).lineLimit(1)
+                                }
                             }
+                            .buttonStyle(.plain)
+                            .help("Click to set as your wallpaper")
                             .contextMenu { addToPlaylistMenu(for: item) }
                         }
                     }
