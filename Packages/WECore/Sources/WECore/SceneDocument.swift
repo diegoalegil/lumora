@@ -3,7 +3,6 @@
 // This is intentionally thin in Phase 0 — just enough structure (and the Animatable usage) to
 // freeze the polymorphic-field decoding contract early.
 import Foundation
-import simd
 
 /// A minimal decode of `scene.json`. Phase 3+ expands `objects`/materials/effects into the
 /// real render graph (in WEScene); here we capture top-level shape and prove polymorphic fields.

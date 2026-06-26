@@ -12,7 +12,6 @@ public struct PlaylistLibrary: Codable, Sendable, Equatable {
     public init(_ playlists: [Playlist] = []) { self.playlists = playlists }
 
     public func playlist(id: UUID) -> Playlist? { playlists.first { $0.id == id } }
-    public func contains(id: UUID) -> Bool { playlists.contains { $0.id == id } }
     public var count: Int { playlists.count }
     public var isEmpty: Bool { playlists.isEmpty }
 
