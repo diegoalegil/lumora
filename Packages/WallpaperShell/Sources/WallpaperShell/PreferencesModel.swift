@@ -35,6 +35,10 @@ public final class PreferencesModel {
         get { preferences.favorites }
         set { update { $0.favorites = newValue } }
     }
+    public var libraryFolderPath: String? {
+        get { preferences.libraryFolderPath }
+        set { update { $0.libraryFolderPath = newValue } }
+    }
     public var renderQuality: RenderQuality {
         get { preferences.renderQuality }
         set { update { $0.renderQuality = newValue } }

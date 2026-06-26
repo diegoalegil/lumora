@@ -53,16 +53,21 @@ public struct Preferences: Codable, Sendable, Equatable {
     public var activePlaylistID: UUID?
     /// The ids of wallpapers the user has starred as favorites.
     public var favorites: Set<String>
+    /// A user-chosen folder of `<id>/` wallpaper folders (an extracted Wallpaper Engine `431960/` set), used
+    /// when Steam's Workshop install isn't where the wallpapers live. nil = scan the standard Steam location.
+    public var libraryFolderPath: String?
 
     public init(showDockIcon: Bool = true, launchAtLogin: Bool = false,
                 playlistPlayback: Bool = false, activePlaylistID: UUID? = nil,
-                favorites: Set<String> = [], renderQuality: RenderQuality = .maximum) {
+                favorites: Set<String> = [], renderQuality: RenderQuality = .maximum,
+                libraryFolderPath: String? = nil) {
         self.showDockIcon = showDockIcon
         self.launchAtLogin = launchAtLogin
         self.playlistPlayback = playlistPlayback
         self.activePlaylistID = activePlaylistID
         self.favorites = favorites
         self.renderQuality = renderQuality
+        self.libraryFolderPath = libraryFolderPath
     }
 
     /// What the app should present at launch. On the very FIRST launch we make Lumora discoverable — force the
@@ -95,5 +100,6 @@ public struct Preferences: Codable, Sendable, Equatable {
         activePlaylistID = try c.decodeIfPresent(UUID.self, forKey: .activePlaylistID)
         favorites = try c.decodeIfPresent(Set<String>.self, forKey: .favorites) ?? []
         renderQuality = try c.decodeIfPresent(RenderQuality.self, forKey: .renderQuality) ?? .maximum
+        libraryFolderPath = try c.decodeIfPresent(String.self, forKey: .libraryFolderPath)
     }
 }

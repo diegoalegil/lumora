@@ -149,18 +149,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         // Discover the user's installed wallpapers once, before windows are built, so reconcile()
         // can pick a renderer. Disk-only; nothing is downloaded.
-        let library = Self.scanLibrary()
-        NSLog("Lumora: \(LibrarySummary.line(for: library))")
-        playableWallpapers = WallpaperLibrary.presentable(PlayableWallpapers.all(in: library.wallpapers))
-        selectedWallpaperID = UserDefaults.standard.string(forKey: Self.selectedWallpaperKey)
-        activeWallpaper = PlayableWallpapers.active(in: playableWallpapers, selectedID: selectedWallpaperID)
-        rebuildWallpaperMenu()
-        // Feed the library browser the installed wallpapers and mark which one is currently playing.
-        libraryModel.replace(entries: libraryEntries())
-        libraryModel.activeWallpaperID = activeWallpaper?.ref.id
-        // Build the "all wallpapers" rotation fallback once, so its identity is stable across reconciles.
-        allWallpapersPlaylist = playableWallpapers.isEmpty ? nil
-            : Playlist(name: "All Wallpapers", items: playableWallpapers.map { WallpaperReference(id: $0.ref.id) })
+        reloadLibrary()
         // Restore starred favorites and persist any change back through the preferences store.
         libraryModel.favorites = preferences.preferences.favorites
         libraryModel.onFavoritesChange = { [weak self] favorites in self?.preferences.favorites = favorites }
@@ -356,20 +345,63 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
 
+    /// Scan the library and refresh everything that depends on it — the playable set, the active wallpaper, the
+    /// menu, and the Library browser. Called at launch and after the user picks a different wallpaper folder.
+    private func reloadLibrary() {
+        let library = scanLibrary()
+        NSLog("Lumora: \(LibrarySummary.line(for: library))")
+        playableWallpapers = WallpaperLibrary.presentable(PlayableWallpapers.all(in: library.wallpapers))
+        selectedWallpaperID = UserDefaults.standard.string(forKey: Self.selectedWallpaperKey)
+        activeWallpaper = PlayableWallpapers.active(in: playableWallpapers, selectedID: selectedWallpaperID)
+        rebuildWallpaperMenu()
+        libraryModel.replace(entries: libraryEntries())
+        libraryModel.activeWallpaperID = activeWallpaper?.ref.id
+        allWallpapersPlaylist = playableWallpapers.isEmpty ? nil
+            : Playlist(name: "All Wallpapers", items: playableWallpapers.map { WallpaperReference(id: $0.ref.id) })
+    }
+
+    /// Let the user pick the folder that holds their wallpapers (an extracted `431960/`), for when Wallpaper
+    /// Engine isn't installed through Steam at the standard path. Persists the choice, rescans, and replays.
+    @objc private func chooseLibraryFolder() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        panel.prompt = "Choose"
+        panel.message = "Pick the folder that holds your Wallpaper Engine wallpapers — a 431960 folder, or any folder of <id> subfolders."
+        NSApp.activate(ignoringOtherApps: true)
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        preferences.libraryFolderPath = url.path
+        reloadLibrary()
+        reloadRenderers()
+        openLibrary()
+    }
+
     /// Scan the installed Steam Workshop library (resolved wallpapers plus skip diagnostics). For local
     /// testing, `LUMORA_LIBRARY_DIR` overrides the source with a folder of `<id>/` wallpaper folders (e.g.
     /// an extracted `431960/`), so a dev machine without a Steam install can still drive a live pass.
-    private static func scanLibrary() -> LibraryScanResult {
+    private func scanLibrary() -> LibraryScanResult {
         let scanner = WallpaperLibraryScanner()
+        // 1. Dev override.
         if let override = ProcessInfo.processInfo.environment["LUMORA_LIBRARY_DIR"], !override.isEmpty {
-            let dir = URL(fileURLWithPath: override, isDirectory: true)
-            let folders = ((try? FileManager.default.contentsOfDirectory(
-                at: dir, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles])) ?? [])
-                .filter { (try? $0.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true }
-                .sorted { $0.lastPathComponent < $1.lastPathComponent }
-            return scanner.scan(folders: folders)
+            return scanner.scan(folders: Self.wallpaperSubfolders(in: URL(fileURLWithPath: override, isDirectory: true)))
         }
+        // 2. A folder the user picked (e.g. an extracted 431960/), for when Wallpaper Engine isn't installed
+        //    through Steam at the standard path — the common case on a Mac.
+        if let path = preferences.preferences.libraryFolderPath, !path.isEmpty,
+           FileManager.default.fileExists(atPath: path) {
+            return scanner.scan(folders: Self.wallpaperSubfolders(in: URL(fileURLWithPath: path, isDirectory: true)))
+        }
+        // 3. The standard Steam Workshop install.
         return scanner.scanLibrary(using: SteamLibraryLocator())
+    }
+
+    /// The immediate `<id>/` subfolders of a wallpaper-library directory, name-sorted.
+    private static func wallpaperSubfolders(in dir: URL) -> [URL] {
+        ((try? FileManager.default.contentsOfDirectory(
+            at: dir, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles])) ?? [])
+            .filter { (try? $0.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true }
+            .sorted { $0.lastPathComponent < $1.lastPathComponent }
     }
 
     // MARK: Menu bar
@@ -411,6 +443,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let settings = NSMenuItem(title: "Settings…", action: #selector(openSettings), keyEquivalent: ",")
         settings.target = self
         menu.addItem(settings)
+
+        let chooseFolder = NSMenuItem(title: "Choose Wallpaper Folder…", action: #selector(chooseLibraryFolder), keyEquivalent: "")
+        chooseFolder.target = self
+        menu.addItem(chooseFolder)
         menu.addItem(.separator())
 
         // The plain test picker is a development aid (driven by LUMORA_LIBRARY_DIR), not part of the shipping
