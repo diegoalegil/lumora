@@ -807,6 +807,31 @@ if let pkg = try? ScenePackage.read(promptPkg) {
     let fxOff = try? SceneGraph.load(from: pkg, overrides: ["rain": .bool(false)])
     Check.that("a Customize override still hides a normal toggle", fxOff?.layers.first(where: { $0.name == "fx" })?.visible == false)
 }
+// A promptbox property the author suffixed (e.g. `promptbox2`) or wrapped in the combo form is still caught.
+let promptPkg2 = buildPKG(version: "PKGV0009", files: [
+    ("scene.json", Data(#"{"objects":[{"name":"a","image":"models/box.json","visible":{"user":"promptbox2","value":true}},{"name":"b","image":"models/box.json","visible":{"user":{"name":"PromptBox","condition":"1"},"value":true}}]}"#.utf8)),
+])
+if let pkg = try? ScenePackage.read(promptPkg2), let doc = try? SceneGraph.load(from: pkg) {
+    Check.that("a suffixed promptbox name is hidden", doc.layers.first(where: { $0.name == "a" })?.visible == false)
+    Check.that("a combo-form promptbox name is hidden", doc.layers.first(where: { $0.name == "b" })?.visible == false)
+}
+// Un-customised template text — a "customizable text" placeholder, a literal "Text Layer" default, or an
+// author social-promo watermark — is hidden so it never gets stamped on the desktop. A real title (a stylised
+// "Frieren" split into "Fri"/"eren", a "Chainsaw Man") and a scripted clock are NEVER caught.
+Check.that("the CN customizable-text placeholder is junk", SceneGraph.isTemplateJunkText("（可自定义文字 Customizable text）"))
+Check.that("the EN customizable-text placeholder is junk", SceneGraph.isTemplateJunkText("Customizable Text"))
+Check.that("the literal Text Layer default is junk", SceneGraph.isTemplateJunkText(" Text Layer "))
+Check.that("a Bilibili self-promo watermark is junk", SceneGraph.isTemplateJunkText("Bilibili/抖音 夜莺Night"))
+Check.that("a real title fragment is NOT junk", !SceneGraph.isTemplateJunkText("Fri"))
+Check.that("a real title is NOT junk", !SceneGraph.isTemplateJunkText("Chainsaw Man"))
+Check.that("a clock string is NOT junk", !SceneGraph.isTemplateJunkText("11:56"))
+let junkTextPkg = buildPKG(version: "PKGV0009", files: [
+    ("scene.json", Data(#"{"objects":[{"name":"ph","text":{"user":"_2","value":"（可自定义文字）"},"font":"f.ttf"},{"name":"title","text":"Frieren","font":"f.ttf"}]}"#.utf8)),
+])
+if let pkg = try? ScenePackage.read(junkTextPkg), let doc = try? SceneGraph.load(from: pkg) {
+    Check.that("a placeholder text layer is hidden", doc.layers.first(where: { $0.name == "ph" })?.visible == false)
+    Check.that("a real title text layer stays visible", doc.layers.first(where: { $0.name == "title" })?.visible == true)
+}
 // Non-boolean user properties (a colour scheme, an opacity slider, a bound point size) must reach the render
 // too — without this the wallpaper shows the author's baked-in defaults, not what the user picked. A layer's
 // colour/alpha/pointsize wired to `{ "user": <name>, "value": <default> }` takes the saved override of <name>.

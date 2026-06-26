@@ -391,7 +391,10 @@ public enum SceneGraph {
                         anglesAnimation: vec3Animation(object["angles"]),
                         colorAnimation: vec3Animation(object["color"]),
                         parallaxDepth: vec(object["parallaxDepth"]),
-                        visible: isVisible(object["visible"], overrides: overrides),
+                        // Hide un-customised template placeholders and author self-promo watermarks (a static
+                        // "customizable text" / social-handle string) — never a real title or a scripted clock.
+                        visible: isVisible(object["visible"], overrides: overrides)
+                            && !(script == nil && Self.isTemplateJunkText(value)),
                         blending: nil, shader: nil, effects: [],
                         textValue: value, textScript: script,
                         fontPath: object["font"] as? String,
@@ -543,10 +546,12 @@ public enum SceneGraph {
                script.contains("mediaPlayback") || script.contains("MediaPlaybackEvent") || script.contains("mediaThumbnail") {
                 return false
             }
-            // The author's "prompt box" (a self-promo / "how to close this" overlay, bound to the `promptbox`
+            // The author's "prompt box" (a self-promo / "how to close this" overlay, bound to a `promptbox`
             // user property) is never shown in Lumora — it's intrusive and adds nothing to a wallpaper. Force it
-            // hidden regardless of the scene's default or any saved override.
-            if (dict["user"] as? String) == "promptbox" { return false }
+            // hidden regardless of the scene's default or any saved override. Match the property name whether
+            // it's the plain string form (`"user": "promptbox"`) or the combo form (`"user": { "name": … }`),
+            // and accept any name CONTAINING "promptbox" (authors suffix it, e.g. `promptbox2`).
+            if Self.userPropertyName(dict["user"])?.lowercased().contains("promptbox") == true { return false }
             // A plain `{ "user": "<name>", "value": Bool }` toggle: a user override of <name> overrides the
             // default. (The combo-conditional form, `"user": { "name", "condition" }`, is left on its default
             // `value` — it depends on a multi-choice selection, not a simple boolean.)
@@ -554,6 +559,37 @@ public enum SceneGraph {
             if let flag = dict["value"] as? Bool { return flag }
         }
         return true
+    }
+
+    /// The property name a `visible`/`text` binding's `user` field refers to, from either the plain string form
+    /// (`"user": "name"`) or the combo form (`"user": { "name": "...", "condition": "..." }`).
+    private static func userPropertyName(_ user: Any?) -> String? {
+        if let name = user as? String { return name }
+        if let dict = user as? [String: Any] { return dict["name"] as? String }
+        return nil
+    }
+
+    /// True when a text layer's authored value is Wallpaper-Engine template *junk* the user never customised —
+    /// an un-replaced "customizable text" placeholder, the literal "Text Layer" default, or an author self-promo
+    /// watermark (a social handle / "this prompt box can be turned off" notice). These add nothing to a wallpaper
+    /// and read as broken/unprofessional, so Lumora hides the layer rather than stamping the placeholder on the
+    /// desktop. Matched case-insensitively against a tight signature list so real titles (a stylised "Frieren",
+    /// "Chainsaw Man", "君の名は。") are never caught.
+    public static func isTemplateJunkText(_ value: String?) -> Bool {
+        guard let value else { return false }
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return false }
+        let lower = trimmed.lowercased()
+        // Un-customised placeholder markers (the author left the template's "type your text here" default).
+        let placeholders = ["可自定义文字", "customizable text", "在此输入", "请输入", "输入文字", "输入文本", "your text here", "edit text", "sample text"]
+        if placeholders.contains(where: { lower.contains($0.lowercased()) }) { return true }
+        if lower == "text layer" || lower == "text" || lower == "new text" { return true }
+        // Author self-promo / instructional watermarks (social handles, "turn this off" notices, maker credits).
+        let promo = ["bilibili", "哔哩哔哩", "抖音", "微博", "公众号", "qq群", "老有话说", "wallpaper maker",
+                     "permanently turned off", "user settings bar", "可永久关闭", "用户设置栏",
+                     "夜莺night", "动态制作", "动效制作", "weibo"]
+        if promo.contains(where: { lower.contains($0.lowercased()) }) { return true }
+        return false
     }
 
     /// Resolve a `{ "user": <name>, "value": <default> }` user-property binding to the value that should drive
