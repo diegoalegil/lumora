@@ -25,14 +25,6 @@ public struct PuppetMesh: Sendable, Equatable {
         self.indices = indices
         self.assembled = assembled
     }
-
-    /// Axis-aligned bounds of the model-space positions (for placing the mesh in the scene).
-    public var bounds: (min: SIMD2<Float>, max: SIMD2<Float>) {
-        guard let first = positions.first else { return (SIMD2(0, 0), SIMD2(0, 0)) }
-        var lo = first, hi = first
-        for p in positions { lo = SIMD2(min(lo.x, p.x), min(lo.y, p.y)); hi = SIMD2(max(hi.x, p.x), max(hi.y, p.y)) }
-        return (lo, hi)
-    }
 }
 
 public enum PuppetModel {

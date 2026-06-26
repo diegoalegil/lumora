@@ -6,21 +6,6 @@
 import Foundation
 import WECore
 
-/// A request to show a wallpaper, where, and how to transition into it. The typed event the switch bus carries
-/// (never an untyped `NotificationCenter` payload).
-public struct WallpaperRequest: Sendable, Equatable {
-    public let reference: WallpaperReference
-    public let displayTarget: DisplayTarget
-    public let transition: TransitionSettings
-
-    public init(reference: WallpaperReference, displayTarget: DisplayTarget = .all,
-                transition: TransitionSettings = .init()) {
-        self.reference = reference
-        self.displayTarget = displayTarget
-        self.transition = transition
-    }
-}
-
 /// One wallpaper mounted on a display's surface. The real implementation owns an `NSWindow` + renderer; tests
 /// use a recording double. Opacity is what the cross-fade drives. Main-actor isolated — the desktop is only
 /// ever updated on the main thread.
