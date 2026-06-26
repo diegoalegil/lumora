@@ -934,6 +934,13 @@ public final class SceneRenderer {
         var overrides: [String: [Float]] = [
             "g_Time": [time],
             "g_ModelViewProjectionMatrix": [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1],
+            // The pointer rests at the screen centre: a cursor-reactive effect (e.g. iris-follow-cursor) reads
+            // these to nudge a region toward the mouse, and on a desktop wallpaper there's no live pointer to
+            // track. Centre + an identity projection make the displacement evaluate to zero, so the effect is a
+            // no-op rather than dividing by a zero matrix's w (which produced a NaN UV that blanked the layer).
+            "g_PointerPosition": [0.5, 0.5],
+            "g_PointerPositionLast": [0.5, 0.5],
+            "g_EffectTextureProjectionMatrixInverse": [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1],
         ]
         for (number, res) in resolutions {
             overrides["g_Texture\(number)Resolution"] =
