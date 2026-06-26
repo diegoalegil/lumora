@@ -115,10 +115,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         signalSource = source
 
         let coordinator = PlaybackCoordinator(
-            // Honour the user's chosen frame-rate targets (sanitized), read once at launch.
+            // Frame rate follows the chosen quality tier (Máxima 120 / Equilibrada 60 / Ahorro 30), sanitized,
+            // read once at launch; the battery/thermal policy throttles to the tier's lower rate.
             engine: PlaybackPolicyEngine(policy: PlaybackPolicy.clamped(
-                activeFPS: preferences.preferences.activeFPS,
-                batteryFPS: preferences.preferences.batteryFPS)),
+                activeFPS: preferences.preferences.renderQuality.params.activeFPS,
+                batteryFPS: preferences.preferences.renderQuality.params.batteryFPS)),
             source: source,
             displays: { [weak self] in
                 guard let self else { return [] }

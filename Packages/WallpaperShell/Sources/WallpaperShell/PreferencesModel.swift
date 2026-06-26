@@ -43,6 +43,10 @@ public final class PreferencesModel {
         get { preferences.favorites }
         set { update { $0.favorites = newValue } }
     }
+    public var renderQuality: RenderQuality {
+        get { preferences.renderQuality }
+        set { update { $0.renderQuality = newValue } }
+    }
     public var activePlaylistID: UUID? {
         get { preferences.activePlaylistID }
         set { update { $0.activePlaylistID = newValue } }

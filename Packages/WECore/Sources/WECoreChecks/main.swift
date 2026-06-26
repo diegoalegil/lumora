@@ -435,4 +435,20 @@ do {
     }
 }
 
+Check.section("RenderQuality")
+Check.that("Máxima is 120/60 fps at full native scale",
+           RenderQuality.maximum.params == RenderQualityParams(activeFPS: 120, batteryFPS: 60, renderScaleCap: 1.0))
+Check.that("Equilibrada is 60/30 fps at full native scale",
+           RenderQuality.balanced.params == RenderQualityParams(activeFPS: 60, batteryFPS: 30, renderScaleCap: 1.0))
+Check.that("Ahorro is 30/20 fps but STILL full native scale (no sharpness loss)",
+           RenderQuality.powerSaver.params == RenderQualityParams(activeFPS: 30, batteryFPS: 20, renderScaleCap: 1.0))
+Check.that("every tier renders at full native resolution", RenderQuality.allCases.allSatisfy { $0.params.renderScaleCap == 1.0 })
+Check.that("higher tiers never have a lower active fps than lower tiers",
+           RenderQuality.maximum.params.activeFPS > RenderQuality.balanced.params.activeFPS &&
+           RenderQuality.balanced.params.activeFPS > RenderQuality.powerSaver.params.activeFPS)
+Check.that("renderQuality defaults to maximum when absent from a prefs blob",
+           (try? JSONDecoder().decode(Preferences.self, from: Data("{}".utf8)))?.renderQuality == .maximum)
+Check.that("renderQuality round-trips through Codable",
+           (try? JSONDecoder().decode(Preferences.self, from: Data(#"{"renderQuality":"powerSaver"}"#.utf8)))?.renderQuality == .powerSaver)
+
 Check.summarize()
