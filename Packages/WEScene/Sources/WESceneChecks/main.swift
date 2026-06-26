@@ -512,6 +512,43 @@ do {
     goldenCheck("additive", f3)
 }
 
+// CAMetalLayer present path: render(into: target) must produce the EXACT bytes the readback render() does, so
+// the live no-readback present path is provably pixel-identical to the verified offscreen path. Only the
+// on-screen drawable present itself is owner-visual; the render is proven here.
+do {
+    let W = 24, H = 24
+    let pkg = buildPKG([
+        ("scene.json", Data(#"{"general":{"orthogonalprojection":{"width":8,"height":8},"clearcolor":"1 0 0"},"objects":[{"name":"t","image":"models/m.json","origin":"4 4 0","color":"0.5 0.25 1","alpha":1,"visible":true}]}"#.utf8)),
+        ("models/m.json", Data(#"{"material":"materials/mat.json"}"#.utf8)),
+        ("materials/mat.json", Data(#"{"passes":[{"shader":"genericimage2","textures":["t"]}]}"#.utf8)),
+        ("materials/t.tex", buildTexRGBA(8, 8, solid(255, 255, 255, 64))),
+    ])
+    if let package = try? ScenePackage.read(pkg), let document = try? SceneGraph.load(from: package),
+       let reference = renderer.render(renderer.prepare(document, package: package), width: W, height: H, time: 0) {
+        let prepared = renderer.prepare(document, package: package)
+        let desc = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: renderer.compositePixelFormat,
+                                                            width: W, height: H, mipmapped: false)
+        desc.usage = [.renderTarget, .shaderRead]
+        desc.storageMode = .shared
+        if let target = renderer.device.makeTexture(descriptor: desc) {
+            // present nil → composite encodes into target, commits and waits; target then holds the frame.
+            _ = renderer.render(prepared, width: W, height: H, time: 0, into: target)
+            var bytes = Data(count: W * H * 4)
+            bytes.withUnsafeMutableBytes { raw in
+                guard let base = raw.baseAddress else { return }
+                target.getBytes(base, bytesPerRow: W * 4, from: MTLRegionMake2D(0, 0, W, H), mipmapLevel: 0)
+            }
+            let (maxDelta, over) = goldenDiff(bytes, reference.rgba, tol: 0)
+            Check.that("render(into:) is byte-identical to the readback render (maxΔ \(maxDelta), \(over) differ)",
+                       maxDelta == 0 && over == 0)
+        } else {
+            Check.that("render(into:) equivalence: target texture allocated", false)
+        }
+    } else {
+        Check.that("render(into:) equivalence scene loads + renders", false)
+    }
+}
+
 // Conversely, a scene whose layer carries parallax depth DOES animate (the camera sway moves it over time),
 // so it must report animation and keep its render loop running.
 let parallaxJSON = Data(#"{"general":{"orthogonalprojection":{"width":8,"height":8},"clearcolor":"1 0 0"},"objects":[{"name":"base","image":"models/m.json","origin":"4 4 0","alpha":1,"parallaxDepth":"0.5 0.5"}]}"#.utf8)

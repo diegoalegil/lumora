@@ -244,6 +244,9 @@ public final class PreparedScene {
 /// composited in order. Parallax, rotation and effects build on top of this.
 public final class SceneRenderer {
     public let device: MTLDevice
+    /// The pixel format the final composite is written in. A CAMetalLayer hosting the live frame binds its
+    /// drawable to this, so render(into:) can target the drawable directly with no channel swap or blit.
+    public let compositePixelFormat: MTLPixelFormat = .rgba8Unorm
     /// On a GPU that can't sample block-compressed textures natively (Apple silicon doesn't support BCn),
     /// decompress DXT1/DXT5 to RGBA8 on the CPU at decode time so those textures still render instead of
     /// failing to upload. On a GPU that does support BCn (Intel/AMD) we keep the cheaper native upload.
@@ -1390,7 +1393,9 @@ public final class SceneRenderer {
     /// configured with depth drift slightly — the wallpaper breathes instead of sitting perfectly still.
     /// `time = 0` is the still composite (no sway).
     public func render(_ scene: PreparedScene, width: Int, height: Int, time: Double = 0,
-                       audio: AudioSpectrumProvider = SilentSpectrum()) -> RenderedFrame? {
+                       audio: AudioSpectrumProvider = SilentSpectrum(),
+                       into target: MTLTexture? = nil,
+                       present: ((MTLCommandBuffer) -> Void)? = nil) -> RenderedFrame? {
         // A zero (or negative) render size makes Metal abort the whole process on the texture descriptor — a
         // view's bounds can momentarily be 0 during window setup/teardown or a display reconfiguration. There's
         // nothing to draw at that size, so report no frame instead of crashing.
@@ -1460,7 +1465,7 @@ public final class SceneRenderer {
             // Two-pass: the scene minus the droplets is composed to `background`; the final pass copies it,
             // then draws the refractive droplets sampling that background with normal-map displacement.
             var viewport = SIMD2<Float>(Float(width), Float(height))
-            frame = withRenderPass(clearColor: scene.clearColor, width: width, height: height) { encoder in
+            frame = compositeFrame(into: target, present: present, clearColor: scene.clearColor, width: width, height: height) { encoder in
                 var quad = QuadUniform(center: SIMD2(0, 0), halfExtent: SIMD2(1, 1), uvScale: SIMD2(1, 1))
                 var bgAlpha: Float = 1
                 var bgTint = SIMD3<Float>(1, 1, 1)
@@ -1497,7 +1502,7 @@ public final class SceneRenderer {
             // bright-pass glow over it. Only scenes whose `general.bloom` ships a real strength take this path;
             // every other scene falls through to the single-pass branch below, unchanged.
             var params = SIMD2<Float>(scene.bloomThreshold, scene.bloomStrength)
-            frame = withRenderPass(clearColor: scene.clearColor, width: width, height: height) { encoder in
+            frame = compositeFrame(into: target, present: present, clearColor: scene.clearColor, width: width, height: height) { encoder in
                 var quad = QuadUniform(center: SIMD2(0, 0), halfExtent: SIMD2(1, 1), uvScale: SIMD2(1, 1))
                 encoder.setRenderPipelineState(pipelineBloom)
                 encoder.setVertexBytes(&quad, length: MemoryLayout<QuadUniform>.stride, index: 0)
@@ -1507,7 +1512,7 @@ public final class SceneRenderer {
                 encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
             }
         } else {
-            frame = withRenderPass(clearColor: scene.clearColor, width: width, height: height) { encoder in
+            frame = compositeFrame(into: target, present: present, clearColor: scene.clearColor, width: width, height: height) { encoder in
                 drawSceneContent(encoder, scene: scene, time: time, aspectScale: aspectScale,
                                  swayX: swayX, swayY: swayY, effectResult: effectResult)
             }
@@ -1835,7 +1840,42 @@ public final class SceneRenderer {
         }
     }
 
-    /// Set up an offscreen target, run `draw` inside a clear render pass, and read the pixels back.
+    /// Encode a clear-then-`draw` render pass into `target` on `commandBuffer` — no commit, wait, or readback.
+    /// Shared by the readback path (withRenderPass) and the direct-to-drawable present path (composite).
+    private func encodeComposite(into target: MTLTexture, clearColor: SceneVec3,
+                                 commandBuffer: MTLCommandBuffer, draw: (MTLRenderCommandEncoder) -> Void) -> Bool {
+        let pass = MTLRenderPassDescriptor()
+        pass.colorAttachments[0].texture = target
+        pass.colorAttachments[0].loadAction = .clear
+        pass.colorAttachments[0].storeAction = .store
+        pass.colorAttachments[0].clearColor = MTLClearColor(
+            red: clearColor.x, green: clearColor.y, blue: clearColor.z, alpha: 1)
+        guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: pass) else { return false }
+        draw(encoder)
+        encoder.endEncoding()
+        return true
+    }
+
+    /// Run the final composite either into the reusable readback target (returns a RenderedFrame — the
+    /// offscreen / Checks path) or straight into an external `target` (a CAMetalLayer drawable) that `present`
+    /// then schedules, with NO CPU readback. Both paths stay synchronous (waitUntilCompleted), so the per-frame
+    /// effect-texture pool is safe to recycle right after either one.
+    private func compositeFrame(into target: MTLTexture?, present: ((MTLCommandBuffer) -> Void)?,
+                                clearColor: SceneVec3, width: Int, height: Int,
+                                draw: (MTLRenderCommandEncoder) -> Void) -> RenderedFrame? {
+        guard let target else {
+            return withRenderPass(clearColor: clearColor, width: width, height: height, draw: draw)
+        }
+        guard width > 0, height > 0, let commandBuffer = queue.makeCommandBuffer(),
+              encodeComposite(into: target, clearColor: clearColor, commandBuffer: commandBuffer, draw: draw)
+        else { return nil }
+        present?(commandBuffer)              // e.g. commandBuffer.present(drawable) — scheduled, not read back
+        commandBuffer.commit()
+        commandBuffer.waitUntilCompleted()   // keep the synchronous model so the effect pool stays safe
+        return nil
+    }
+
+    /// Set up the reusable offscreen target, run `draw` inside a clear render pass, and read the pixels back.
     private func withRenderPass(clearColor: SceneVec3, width: Int, height: Int,
                                 draw: (MTLRenderCommandEncoder) -> Void) -> RenderedFrame? {
         // Metal aborts the process if a texture descriptor has a zero dimension; the public render entries that
@@ -1856,18 +1896,9 @@ public final class SceneRenderer {
             output = made
             pooledOutput = made
         }
-        guard let commandBuffer = queue.makeCommandBuffer() else { return nil }
-
-        let pass = MTLRenderPassDescriptor()
-        pass.colorAttachments[0].texture = output
-        pass.colorAttachments[0].loadAction = .clear
-        pass.colorAttachments[0].storeAction = .store
-        pass.colorAttachments[0].clearColor = MTLClearColor(
-            red: clearColor.x, green: clearColor.y, blue: clearColor.z, alpha: 1)
-
-        guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: pass) else { return nil }
-        draw(encoder)
-        encoder.endEncoding()
+        guard let commandBuffer = queue.makeCommandBuffer(),
+              encodeComposite(into: output, clearColor: clearColor, commandBuffer: commandBuffer, draw: draw)
+        else { return nil }
         commandBuffer.commit()
         // The frame's single CPU barrier: this composite reads every effect/background texture produced earlier
         // this frame, so (tracked resources, shared queue) it can't start until all of them finish, and waiting
