@@ -246,7 +246,9 @@ public final class SceneRenderer {
     public let device: MTLDevice
     /// The pixel format the final composite is written in. A CAMetalLayer hosting the live frame binds its
     /// drawable to this, so render(into:) can target the drawable directly with no channel swap or blit.
-    public let compositePixelFormat: MTLPixelFormat = .rgba8Unorm
+    /// sRGB so the live path matches the offscreen target: layers blend in linear light and the GPU encodes
+    /// to sRGB on store (the headless render targets are already sRGB — keep the live drawable consistent).
+    public let compositePixelFormat: MTLPixelFormat = .rgba8Unorm_srgb
     /// On a GPU that can't sample block-compressed textures natively (Apple silicon doesn't support BCn),
     /// decompress DXT1/DXT5 to RGBA8 on the CPU at decode time so those textures still render instead of
     /// failing to upload. On a GPU that does support BCn (Intel/AMD) we keep the cheaper native upload.
@@ -545,7 +547,7 @@ public final class SceneRenderer {
         descriptor.vertexFunction = vertex
         descriptor.fragmentFunction = fragment
         let color = descriptor.colorAttachments[0]!
-        color.pixelFormat = .rgba8Unorm
+        color.pixelFormat = .rgba8Unorm_srgb   // matches the sRGB composite target (linear blending)
         color.isBlendingEnabled = true
         color.rgbBlendOperation = .add
         color.alphaBlendOperation = .add
@@ -569,7 +571,7 @@ public final class SceneRenderer {
         descriptor.fragmentFunction = fragment
         descriptor.vertexDescriptor = vertexDescriptor
         let color = descriptor.colorAttachments[0]!
-        color.pixelFormat = .rgba8Unorm
+        color.pixelFormat = .rgba8Unorm_srgb   // matches the sRGB composite target (linear blending)
         color.isBlendingEnabled = true
         color.rgbBlendOperation = .add
         color.alphaBlendOperation = .add
@@ -591,7 +593,7 @@ public final class SceneRenderer {
         descriptor.vertexFunction = vertex
         descriptor.fragmentFunction = fragment
         let color = descriptor.colorAttachments[0]!
-        color.pixelFormat = .rgba8Unorm
+        color.pixelFormat = .rgba8Unorm_srgb   // matches the sRGB composite target (linear blending)
         color.isBlendingEnabled = true
         color.rgbBlendOperation = .add
         color.alphaBlendOperation = .add
@@ -1889,7 +1891,7 @@ public final class SceneRenderer {
             output = pooled
         } else {
             let descriptor = MTLTextureDescriptor.texture2DDescriptor(
-                pixelFormat: .rgba8Unorm, width: width, height: height, mipmapped: false)
+                pixelFormat: .rgba8Unorm_srgb, width: width, height: height, mipmapped: false)   // sRGB: layers blend in linear light, encode to sRGB on store (matches WE)
             descriptor.usage = [.renderTarget, .shaderRead]
             descriptor.storageMode = .shared
             guard let made = device.makeTexture(descriptor: descriptor) else { return nil }

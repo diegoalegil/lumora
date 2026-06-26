@@ -472,16 +472,18 @@ do {
                    maxDelta <= 2 && over == 0)
     }
 
-    // 1) OVER + a known alpha composite: a half-alpha green texel over an opaque red clear.
-    //    out = src·a + dst·(1−a) with a = 128/255 ⇒ ≈ (127, 128, 0).
+    // 1) OVER + a known alpha composite: a half-alpha green texel over an opaque red clear. Blending is in
+    //    LINEAR light (sRGB target): green/red decode to 1.0, mix at a≈0.5 → 0.5 linear per channel, encode to
+    //    sRGB ≈ 188 ⇒ ≈ (187, 188, 0). (In gamma space this was (127,128,0).)
     let g1 = DecodedTexture(format: .rgba8888, width: 8, height: 8, imageWidth: 8, imageHeight: 8,
                             pixels: solidA(0, 255, 0, 128, texels))
     let f1 = renderer.render(decoded: g1, alpha: 1, clearColor: SceneVec3(x: 1, y: 0, z: 0), width: W, height: H)
     if let f = f1 { let (r, g, b) = centerRGB(f)
-        Check.that("golden over_alpha_half: centre is green@0.5 over red ≈ (127,128,0)", near(r, 127) && near(g, 128) && near(b, 0)) }
+        Check.that("golden over_alpha_half: centre is green@0.5 over red in linear ≈ (187,188,0)", near(r, 187) && near(g, 188) && near(b, 0)) }
     goldenCheck("over_alpha_half", f1)
 
-    // 2) Known TINT: an opaque white texture tinted by the object's colour (0.5, 0.25, 1) ⇒ ≈ (128, 64, 255).
+    // 2) Known TINT: an opaque white texture tinted by the object's colour (0.5, 0.25, 1). In linear light the
+    //    tint scales the decoded 1.0 white → (0.5, 0.25, 1.0) linear, encode to sRGB ≈ (188, 137, 255). (gamma: (128,64,255).)
     let tintPkg = buildPKG([
         ("scene.json", Data(#"{"general":{"orthogonalprojection":{"width":8,"height":8},"clearcolor":"1 0 0"},"objects":[{"name":"t","image":"models/m.json","origin":"4 4 0","color":"0.5 0.25 1","alpha":1,"visible":true}]}"#.utf8)),
         ("models/m.json", Data(#"{"material":"materials/mat.json"}"#.utf8)),
@@ -492,11 +494,12 @@ do {
     if let pkg = try? ScenePackage.read(tintPkg), let doc = try? SceneGraph.load(from: pkg) {
         f2 = renderer.render(doc, package: pkg, width: W, height: H)
         if let f = f2 { let (r, g, b) = centerRGB(f)
-            Check.that("golden over_opaque_tint: centre is white × (0.5,0.25,1) ≈ (128,64,255)", near(r, 128) && near(g, 64) && near(b, 255)) }
+            Check.that("golden over_opaque_tint: centre is white × (0.5,0.25,1) in linear ≈ (188,137,255)", near(r, 188) && near(g, 137) && near(b, 255)) }
     } else { Check.that("golden over_opaque_tint: scene loads", false) }
     goldenCheck("over_opaque_tint", f2)
 
-    // 3) ADDITIVE: an opaque red sprite added over a blue clear ⇒ (255, 0, 128).
+    // 3) ADDITIVE: an opaque red sprite added over a blue clear (0.5). On the sRGB target the clear's 0.5 is
+    //    a linear value encoded to sRGB ≈ 188, and red adds into an already-full red ⇒ ≈ (255, 0, 188). (gamma: (255,0,128).)
     let addPkg = buildPKG([
         ("scene.json", Data(#"{"general":{"orthogonalprojection":{"width":8,"height":8},"clearcolor":"0 0 0.5"},"objects":[{"name":"a","image":"models/m.json","origin":"4 4 0","alpha":1,"visible":true}]}"#.utf8)),
         ("models/m.json", Data(#"{"material":"materials/mat.json"}"#.utf8)),
@@ -507,7 +510,7 @@ do {
     if let pkg = try? ScenePackage.read(addPkg), let doc = try? SceneGraph.load(from: pkg) {
         f3 = renderer.render(doc, package: pkg, width: W, height: H)
         if let f = f3 { let (r, g, b) = centerRGB(f)
-            Check.that("golden additive: centre is red + blue ≈ (255,0,128)", near(r, 255) && near(g, 0) && near(b, 128)) }
+            Check.that("golden additive: centre is red + blue clear in linear ≈ (255,0,188)", near(r, 255) && near(g, 0) && near(b, 188)) }
     } else { Check.that("golden additive: scene loads", false) }
     goldenCheck("additive", f3)
 }
