@@ -5,6 +5,59 @@ import Foundation
 import Metal
 import WEShaderKit
 
+// MARK: - Transpiler fuzzer (on demand: `WEShaderKitChecks fuzz [corpusDir] [iterations]`)
+
+/// Deterministic PRNG so a crash/hang at iteration N reproduces exactly.
+struct ShaderFuzzRNG {
+    var state: UInt64
+    mutating func next() -> UInt64 { state = state &* 6364136223846793005 &+ 1442695040888963407; return state }
+    mutating func below(_ n: Int) -> Int { n <= 0 ? 0 : Int(truncatingIfNeeded: next() >> 11) % n }
+}
+
+/// One of five mutations of a shader's source: truncate, random bytes, an overwritten run, an injected run of
+/// nested parentheses (to stress the arithmetic-harmoniser recursion), or appended garbage.
+func shaderMutate(_ seed: String, _ rng: inout ShaderFuzzRNG) -> String {
+    var d = Array(seed.utf8)
+    switch rng.below(5) {
+    case 0: d = Array(d.prefix(rng.below(d.count + 1)))
+    case 1: for _ in 0 ... rng.below(16) where !d.isEmpty { d[rng.below(d.count)] = UInt8(rng.below(256)) }
+    case 2: if !d.isEmpty { let i = rng.below(d.count); let v = d[i]; for k in i ..< min(d.count, i + 1 + rng.below(64)) { d[k] = v } }
+    case 3:   // moderate nesting (the 8192-char line guard bounds the recursion; 4000-deep is verified safe)
+        let pad = Array(String(repeating: rng.below(2) == 0 ? "(" : ")", count: rng.below(500)).utf8)
+        d.insert(contentsOf: pad, at: d.isEmpty ? 0 : rng.below(d.count))
+    default: for _ in 0 ... rng.below(128) { d.append(UInt8(rng.below(256))) }
+    }
+    return String(decoding: d, as: UTF8.self)
+}
+
+/// Mutate corpus shaders and run each through the WE→MSL transpiler, looking for a trap or a hang (a
+/// catastrophic regex, an unbounded recursion) that the transpiler — which runs on untrusted .pkg shaders at
+/// render time — must never hit. A clean run is evidence it stays bounded on hostile input.
+func runShaderFuzz(corpus: String, iters: Int) {
+    var seeds: [String] = []
+    if let names = try? FileManager.default.contentsOfDirectory(atPath: corpus) {
+        for name in names where name.hasSuffix(".frag") || name.hasSuffix(".vert") {
+            if let s = try? String(contentsOfFile: corpus + "/" + name, encoding: .utf8) { seeds.append(s) }
+        }
+    }
+    guard !seeds.isEmpty else { print("shaderfuzz: no .frag/.vert in \(corpus)"); exit(1) }
+    FileHandle.standardError.write(Data("shaderfuzz: \(seeds.count) seeds, \(iters) iters\n".utf8))
+    for i in 0 ..< iters {
+        var rng = ShaderFuzzRNG(state: UInt64(bitPattern: Int64(i)) &* 2654435761 &+ 0x9E37_79B9_7F4A_7C15)
+        let m = shaderMutate(seeds[rng.below(seeds.count)], &rng)
+        if i % 2 == 0 { _ = WEShaderTranspiler.fragmentToMSL(m) } else { _ = WEShaderTranspiler.vertexToMSL(m) }
+        if i % 20_000 == 0 { FileHandle.standardError.write(Data("  shaderfuzz \(i)\n".utf8)) }
+    }
+    print("shaderfuzz: completed \(iters) iterations, 0 crashes/hangs")
+}
+
+if CommandLine.arguments.count > 1, CommandLine.arguments[1] == "fuzz" {
+    let corpus = CommandLine.arguments.count > 2 ? CommandLine.arguments[2] : "/tmp/lumora_shaders"
+    let iters = CommandLine.arguments.count > 3 ? (Int(CommandLine.arguments[3]) ?? 200_000) : 200_000
+    runShaderFuzz(corpus: corpus, iters: iters)
+    exit(0)
+}
+
 // Dev mode: a .frag file lists its uniforms (or, with a trailing `msl` argument, prints the transpiled
 // Metal source with line numbers); a directory measures transpiler coverage (how many real shaders
 // transpile to MSL that Metal accepts).
