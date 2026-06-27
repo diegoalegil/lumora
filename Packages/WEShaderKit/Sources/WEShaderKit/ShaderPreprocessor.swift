@@ -50,7 +50,7 @@ public enum ShaderPreprocessor {
                 stack.append(Frame(parentEmitting: parent, taken: value, active: value))
             } else if trimmed.hasPrefix("#elif ") {
                 guard var frame = stack.popLast() else { continue }
-                frame.active = frame.parentEmitting && !frame.taken && evaluate(stripTrailingComment(String(trimmed.dropFirst(6))), combos: combos, defined: definedNames)
+                frame.active = frame.parentEmitting && !frame.taken && evaluate(directiveExpression(String(trimmed.dropFirst(6))), combos: combos, defined: definedNames)
                 frame.taken = frame.taken || frame.active
                 stack.append(frame)
             } else if trimmed.hasPrefix("#else") {
@@ -289,10 +289,20 @@ public enum ShaderPreprocessor {
     /// shaders annotate branches like `#if TYPE == 4 // Cutout square`, and leaving the comment in makes the
     /// right-hand side unparseable so the comparison silently reads as `… == 0` and the branch is mis-taken.
     private static func condition(_ line: String) -> String {
-        let line = stripTrailingComment(line).trimmingCharacters(in: .whitespaces)
+        let line = directiveExpression(line)
         if line.hasPrefix("#ifdef ") { return "defined " + line.dropFirst(7).trimmingCharacters(in: .whitespaces) }
         if line.hasPrefix("#ifndef ") { return "!defined " + line.dropFirst(8).trimmingCharacters(in: .whitespaces) }
         return String(line.dropFirst(4)).trimmingCharacters(in: .whitespaces)   // after "#if "
+    }
+
+    /// Strip a directive line's trailing junk before the condition is parsed: a `//`/`/*` comment, then a stray
+    /// `;` some templates leave on the line (`#elif AUDIOSAMPLES == 32;`). Without this the comparison's
+    /// right-hand side parses as `32;` → reads as 0 → `== 0` → the branch is wrongly skipped and its
+    /// declarations vanish (a `float[] = g_AudioSpectrum…` array that a later line then indexes undeclared).
+    private static func directiveExpression(_ raw: String) -> String {
+        var s = stripTrailingComment(raw).trimmingCharacters(in: .whitespaces)
+        while s.hasSuffix(";") { s = String(s.dropLast()).trimmingCharacters(in: .whitespaces) }
+        return s
     }
 
     /// Evaluate a `#if` condition against the combos: `||`, `&&`, `!`, the comparisons `== != <= >= < >`,
