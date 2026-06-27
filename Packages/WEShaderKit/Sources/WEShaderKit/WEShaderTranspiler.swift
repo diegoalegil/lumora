@@ -532,7 +532,24 @@ public enum WEShaderTranspiler {
                         if !isMember, componentwiseFns.contains(name) {
                             result += name + "(" + harmonizeArgList(inner, dims) + ")"
                         } else {
-                            let args = splitTopLevelArgs(inner).map { harmonizeArithmetic(harmonizeComponentwiseArgs($0, dims), dims) }
+                            var args = splitTopLevelArgs(inner).map { harmonizeArithmetic(harmonizeComponentwiseArgs($0, dims), dims) }
+                            // A 2D texture's `.sample(sampler, coord[, level(…)])` needs a float2 coordinate, but
+                            // WE's HLSL-derived shaders pass a wider varying (`vec4 v_TexCoord`) or expression
+                            // straight in and lean on implicit truncation — which MSL rejects ("no matching member
+                            // function for call to 'sample'"). Truncate the coordinate (the argument after the
+                            // sampler) to `.xy` when it types wider than two. A coordinate already ≤ 2 wide isn't
+                            // matched, so every sample that already compiles is reproduced byte-for-byte. The
+                            // arithmetic harmoniser above already narrows a coordinate that's a width-mismatched
+                            // expression; this catches the simple operand it leaves alone.
+                            if isMember, name == "sample", args.count >= 2 {
+                                let lead = String(args[1].prefix(while: { $0 == " " }))
+                                let coord = args[1].trimmingCharacters(in: .whitespaces)
+                                if let d = operandDim(coord, dims), d > 2 {
+                                    args[1] = lead + truncated(coord, to: 2)
+                                } else if operandDim(coord, dims) == nil, let d = expressionDim(coord, dims), d > 2 {
+                                    args[1] = lead + "(\(coord)).xy"
+                                }
+                            }
                             result += name + "(" + args.joined(separator: ",") + ")"
                         }
                         i = k + 1; continue
