@@ -1485,10 +1485,16 @@ public final class SceneRenderer {
                 // synchronous effect chain (the chain's output replaces it and lands in effectResult). Borrow
                 // it from the per-frame pool instead of allocating a fresh ~33 MB texture every frame; it's
                 // returned by recycleEffectTextures() once the frame is composited.
+                // A single-layer scene has nothing behind this layer but the scene's clear colour, so clear the
+                // effect input to it (opaque) — the effect then blends its edge into that colour instead of a
+                // transparent void, killing the stray seam. A multi-layer scene keeps the transparent clear so
+                // the effect result composites correctly over the layers underneath.
+                let backdrop: SIMD3<Float>? = scene.layers.count == 1
+                    ? SIMD3(Float(scene.clearColor.x), Float(scene.clearColor.y), Float(scene.clearColor.z)) : nil
                 guard var texture = renderQuadToTexture(currentTexture(layer, time: time), center: center,
                                                         halfExtent: layer.halfExtent, uvScale: layer.uvScale,
                                                         tint: layer.tint, width: width, height: height,
-                                                        rotA: layer.rotA, rotB: layer.rotB,
+                                                        rotA: layer.rotA, rotB: layer.rotB, backdrop: backdrop,
                                                         allocTarget: { w, h, fmt in self.borrowEffectTarget(width: w, height: h, pixelFormat: fmt) }) else { continue }
                 for effect in layer.effects {
                     guard let output = applyEffect(effect, to: texture, time: Float(time), width: width, height: height,
@@ -1808,13 +1814,18 @@ public final class SceneRenderer {
         return center
     }
 
-    /// Render one quad (a layer's texture at its placement, tint baked in, full opacity) onto a
-    /// transparent target, to feed an effect chain. Returns nil if the target can't be made. The target
-    /// comes from `allocTarget` (the per-frame pool in the live path, a fresh texture in the one-time dry
-    /// run); the pass clears it before drawing, so a recycled (dirty) texture is safe.
+    /// Render one quad (a layer's texture at its placement, tint baked in, full opacity) onto a target, to
+    /// feed an effect chain. Returns nil if the target can't be made. The target comes from `allocTarget` (the
+    /// per-frame pool in the live path, a fresh texture in the one-time dry run); the pass clears it before
+    /// drawing, so a recycled (dirty) texture is safe. The target clears to TRANSPARENT by default so the
+    /// effect result composites over the layers below; a `backdrop` (the scene clear colour, passed only for a
+    /// single-layer scene) clears it OPAQUE instead, so an effect that samples across the layer's edge blends
+    /// into that colour rather than leaving a semi-transparent fringe — the stray seam against a flat
+    /// background the owner flagged on the single-image scene 2636878454.
     private func renderQuadToTexture(_ source: MTLTexture, center: SIMD2<Float>, halfExtent: SIMD2<Float>,
                                      uvScale: SIMD2<Float>, tint: SIMD3<Float>, width: Int, height: Int,
                                      rotA: SIMD2<Float> = SIMD2(1, 0), rotB: SIMD2<Float> = SIMD2(0, 1),
+                                     backdrop: SIMD3<Float>? = nil,
                                      allocTarget: ((Int, Int, MTLPixelFormat) -> MTLTexture?)? = nil) -> MTLTexture? {
         let texture: MTLTexture?
         if let allocTarget {
@@ -1833,7 +1844,9 @@ public final class SceneRenderer {
         pass.colorAttachments[0].texture = texture
         pass.colorAttachments[0].loadAction = .clear
         pass.colorAttachments[0].storeAction = .store
-        pass.colorAttachments[0].clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 0)
+        pass.colorAttachments[0].clearColor = backdrop.map {
+            MTLClearColor(red: Double($0.x), green: Double($0.y), blue: Double($0.z), alpha: 1)
+        } ?? MTLClearColor(red: 0, green: 0, blue: 0, alpha: 0)
         guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: pass) else { return nil }
 
         var quad = QuadUniform(center: center, halfExtent: halfExtent, uvScale: uvScale, rotA: rotA, rotB: rotB)
