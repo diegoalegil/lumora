@@ -274,6 +274,114 @@ final class CountingSpectrum: AudioSpectrumProvider, @unchecked Sendable {
     print("benchall: \(results.count) scenes, \(sub60) sub-60fps")
 }
 
+/// Decode a reference PNG (a Windows Wallpaper Engine capture) into top-row-first RGBA8 in the SAME layout
+/// `RenderedFrame.rgba` uses (deviceRGB, premultipliedLast — references are opaque so alpha is moot), so the
+/// metrics compare pixel-for-pixel. Returns nil if the file is missing or undecodable.
+@MainActor func loadReferenceRGBA(_ path: String) -> (rgba: [UInt8], width: Int, height: Int)? {
+    guard FileManager.default.fileExists(atPath: path),
+          let src = CGImageSourceCreateWithURL(URL(fileURLWithPath: path) as CFURL, nil),
+          let img = CGImageSourceCreateImageAtIndex(src, 0, nil), img.width > 0, img.height > 0 else { return nil }
+    let w = img.width, h = img.height
+    var buf = [UInt8](repeating: 0, count: w * h * 4)
+    let ok = buf.withUnsafeMutableBytes { (raw: UnsafeMutableRawBufferPointer) -> Bool in
+        guard let ctx = CGContext(data: raw.baseAddress, width: w, height: h, bitsPerComponent: 8,
+                                  bytesPerRow: w * 4, space: CGColorSpaceCreateDeviceRGB(),
+                                  bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return false }
+        ctx.draw(img, in: CGRect(x: 0, y: 0, width: w, height: h))
+        return true
+    }
+    return ok ? (buf, w, h) : nil
+}
+
+/// Mean absolute error across the RGB channels in 0–255 units (the average per-channel pixel difference);
+/// 0 = identical. Catches the colour/tone shifts that a luma-only SSIM can miss (a gamma or hue drift).
+func meanAbsErrorRGB(_ a: [UInt8], _ b: [UInt8]) -> Double {
+    guard a.count == b.count, a.count >= 4 else { return 255 }
+    var sum = 0.0, n = 0, i = 0
+    while i + 2 < a.count {
+        sum += Double(abs(Int(a[i]) - Int(b[i]))) + Double(abs(Int(a[i + 1]) - Int(b[i + 1])))
+            +  Double(abs(Int(a[i + 2]) - Int(b[i + 2])))
+        n += 3; i += 4
+    }
+    return n > 0 ? sum / Double(n) : 255
+}
+
+/// Mean SSIM over non-overlapping 8×8 luma windows (the structural-similarity index, averaged). 1.0 = identical
+/// structure; lower = structural divergence (a blanked layer, a dropped effect, a shifted composition). Luma-only
+/// so a structurally-faithful frame scores high even with a small colour shift; pair it with MAE for the full read.
+func meanSSIM(_ a: [UInt8], _ b: [UInt8], width: Int, height: Int) -> Double {
+    guard a.count == width * height * 4, b.count == a.count, width >= 8, height >= 8 else { return 0 }
+    func luma(_ p: [UInt8]) -> [Double] {
+        var l = [Double](repeating: 0, count: width * height)
+        for i in 0 ..< width * height {
+            let j = i * 4
+            l[i] = 0.299 * Double(p[j]) + 0.587 * Double(p[j + 1]) + 0.114 * Double(p[j + 2])
+        }
+        return l
+    }
+    let la = luma(a), lb = luma(b)
+    let c1 = 6.5025, c2 = 58.5225, win = 8, npix = Double(8 * 8)   // (0.01·255)², (0.03·255)²
+    var total = 0.0, count = 0, by = 0
+    while by + win <= height {
+        var bx = 0
+        while bx + win <= width {
+            var ma = 0.0, mb = 0.0
+            for y in by ..< by + win { for x in bx ..< bx + win { let i = y * width + x; ma += la[i]; mb += lb[i] } }
+            ma /= npix; mb /= npix
+            var va = 0.0, vb = 0.0, cov = 0.0
+            for y in by ..< by + win {
+                for x in bx ..< bx + win {
+                    let i = y * width + x, da = la[i] - ma, db = lb[i] - mb
+                    va += da * da; vb += db * db; cov += da * db
+                }
+            }
+            va /= npix - 1; vb /= npix - 1; cov /= npix - 1
+            total += ((2 * ma * mb + c1) * (2 * cov + c2)) / ((ma * ma + mb * mb + c1) * (va + vb + c2))
+            count += 1; bx += win
+        }
+        by += win
+    }
+    return count > 0 ? total / Double(count) : 0
+}
+
+/// Per-scene fidelity gate against the Windows WE reference frames (gap parity-008). For each `<dir>/<id>/scene.pkg`
+/// with a matching reference PNG under `referenceDir`, render at the REFERENCE's resolution and report SSIM
+/// (structure) + MAE (colour/tone), worst-first. A scene with no reference is skipped, so the gate works
+/// incrementally as captures arrive. Exits 2 if any compared scene falls below the SSIM floor; a no-op (exit 0)
+/// until at least one reference exists, so it is safe to wire into check_all before the corpus is populated.
+@MainActor func parityGate(_ dir: String, referenceDir: String, renderer: SceneRenderer) {
+    let fm = FileManager.default
+    let ssimFloor = 0.80   // structure must broadly match WE; tighten once a real reference corpus is measured
+    func referencePath(_ id: String) -> String? {
+        ["\(referenceDir)/\(id).png", "\(referenceDir)/\(id)/static.png", "\(referenceDir)/\(id)/\(id).png"]
+            .first { fm.fileExists(atPath: $0) }
+    }
+    var rows: [(id: String, ssim: Double, mae: Double)] = []
+    var skipped = 0
+    for name in ((try? fm.contentsOfDirectory(atPath: dir)) ?? []).sorted() {
+        let pkgPath = dir + "/" + name + "/scene.pkg"
+        guard fm.fileExists(atPath: pkgPath) else { continue }
+        guard let refPath = referencePath(name), let ref = loadReferenceRGBA(refPath) else { skipped += 1; continue }
+        guard let data = try? Data(contentsOf: URL(fileURLWithPath: pkgPath)),
+              let package = try? ScenePackage.read(data),
+              let document = try? SceneGraph.load(from: package),
+              let frame = renderer.render(document, package: package, width: ref.width, height: ref.height) else {
+            print("  RENDER-FAILED \(name)"); continue
+        }
+        let rgba = [UInt8](frame.rgba)
+        rows.append((name, meanSSIM(rgba, ref.rgba, width: ref.width, height: ref.height),
+                     meanAbsErrorRGB(rgba, ref.rgba)))
+    }
+    print("parity vs \(referenceDir): \(rows.count) compared, \(skipped) without a reference (skipped)")
+    var failed = 0
+    for r in rows.sorted(by: { $0.ssim < $1.ssim }) {
+        if r.ssim < ssimFloor { failed += 1 }
+        print(String(format: "  %@  SSIM %.4f  MAE %6.2f%@", r.id, r.ssim, r.mae, r.ssim < ssimFloor ? "  FAIL" : ""))
+    }
+    print("parity: \(rows.count - failed)/\(rows.count) at or above SSIM \(ssimFloor)")
+    if !rows.isEmpty { exit(failed == 0 ? 0 : 2) }
+}
+
 // Optional dev mode: a scene.pkg path renders one wallpaper; a directory batch-renders a contact sheet.
 if CommandLine.arguments.count > 1 {
     let arg = CommandLine.arguments[1]
@@ -283,6 +391,9 @@ if CommandLine.arguments.count > 1 {
     if isDir.boolValue {
         if CommandLine.arguments.count > 3, CommandLine.arguments[2] == "regress" {
             regressGate(arg, baselinePath: CommandLine.arguments[3], renderer: renderer); exit(0)
+        }
+        if CommandLine.arguments.count > 3, CommandLine.arguments[2] == "parity" {
+            parityGate(arg, referenceDir: CommandLine.arguments[3], renderer: renderer); exit(0)
         }
         if CommandLine.arguments.count > 2, CommandLine.arguments[2] == "benchall" {
             let w = CommandLine.arguments.count > 3 ? (Int(CommandLine.arguments[3]) ?? 3456) : 3456
@@ -618,6 +729,48 @@ if let package = try? ScenePackage.read(pkgData),
 // (no bilinear-filtering ULP). The committed .rgba reference gates regressions; each case also asserts its
 // centre pixel against the hand-computed expected colour so a regenerated reference can't bake in a wrong
 // render. Regenerate after an INTENTIONAL pipeline change: `LUMORA_REGEN_GOLDEN=1 swift run -q WESceneChecks`.
+Check.section("Parity metrics (SSIM/MAE)")
+do {
+    // Synthetic contract: identical buffers score a perfect SSIM 1.0 / MAE 0; a perturbed copy scores below.
+    let w = 32, h = 24
+    var base = [UInt8](repeating: 0, count: w * h * 4)
+    for y in 0 ..< h {
+        for x in 0 ..< w {
+            let i = (y * w + x) * 4
+            base[i] = UInt8(x * 255 / (w - 1)); base[i + 1] = UInt8(y * 255 / (h - 1)); base[i + 2] = 128; base[i + 3] = 255
+        }
+    }
+    Check.that("SSIM of a frame against itself is 1.0",
+               abs(meanSSIM(base, base, width: w, height: h) - 1.0) < 1e-9)
+    Check.that("MAE of a frame against itself is 0",
+               meanAbsErrorRGB(base, base) == 0)
+    var noisy = base
+    for i in stride(from: 0, to: noisy.count, by: 4) { noisy[i] = noisy[i] >= 128 ? noisy[i] - 40 : noisy[i] + 40 }
+    Check.that("SSIM drops below 1 for a perturbed frame", meanSSIM(noisy, base, width: w, height: h) < 0.999)
+    Check.that("MAE rises above 0 for a perturbed frame", meanAbsErrorRGB(noisy, base) > 1)
+    // A vertically flipped copy diverges — the gate would catch an upside-down render against a reference.
+    var flipped = base
+    for y in 0 ..< h { for x in 0 ..< w {
+        let s = (y * w + x) * 4, d = ((h - 1 - y) * w + x) * 4
+        for k in 0 ..< 4 { flipped[d + k] = base[s + k] }
+    } }
+    Check.that("a vertical flip is detected (SSIM well below 1)", meanSSIM(flipped, base, width: w, height: h) < 0.9)
+
+    // Round-trip: a non-uniform frame written to PNG and decoded back must match (proves the decoder's RGBA
+    // layout and row order line up with RenderedFrame.rgba — i.e. the reference loader needs no flip).
+    let frame = RenderedFrame(width: w, height: h, rgba: Data(base))
+    let path = "/tmp/lumora_parity_selftest.png"
+    if writePNG(frame, to: path), let rt = loadReferenceRGBA(path) {
+        Check.that("PNG round-trip preserves size", rt.width == w && rt.height == h)
+        Check.that("PNG round-trip is structurally identical (decoder orientation matches)",
+                   meanSSIM([UInt8](frame.rgba), rt.rgba, width: w, height: h) > 0.999)
+        Check.that("PNG round-trip is colour-identical (deviceRGB, no profile drift)",
+                   meanAbsErrorRGB([UInt8](frame.rgba), rt.rgba) < 1.5)
+    } else {
+        Check.that("PNG round-trip encode+decode succeeds", false)
+    }
+}
+
 Check.section("Golden image (fidelity)")
 do {
     let goldenDir = URL(fileURLWithPath: #filePath).deletingLastPathComponent().appendingPathComponent("Golden")
