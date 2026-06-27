@@ -65,7 +65,7 @@ private struct PreparedParticles {
     let isRefractive: Bool           // draw by refracting the background through the normal map
     let uvScale: SIMD2<Float>        // content/POT crop of the sprite (as layers use), so a padded sprite
                                      // samples only its content region instead of stretching it over the quad
-    let instanceBuffer: MTLBuffer    // sized for `count` instances, refilled each frame (not reallocated)
+    let instanceBuffers: [MTLBuffer] // one per in-flight slot (ring-buffered); refilled each frame, not reallocated
 }
 
 /// How a pass's sampler slot gets its texture each frame: the effect's input ("previous"), a named
@@ -266,11 +266,23 @@ public final class SceneRenderer {
     private let haloTexture: MTLTexture            // soft radial glow for unshipped built-in sprites
     private let effectRenderer: EffectRenderer?   // compiles + runs per-layer post-process effects
     private var auxCache: [String: (texture: MTLTexture, content: SIMD2<Int>)] = [:]   // resolved aux, by name
-    private var pooledOutput: MTLTexture?              // reused frame target (rendering is synchronous)
+    private var pooledOutput: MTLTexture?              // reused frame target (readback path is synchronous)
     private var pooledBackground: MTLTexture?          // reused composited-scene target for refractive scenes
-    // Effect render targets are reused across frames instead of reallocated every frame. Rendering is fully
-    // synchronous (each pass waits for the GPU), and targets are only recycled after the frame is composited,
-    // so a borrowed texture is never aliased while still in use.
+    // Async present pipeline. The live path (compositeFrame with a present closure) no longer blocks the CPU on
+    // the GPU each frame, so the CPU can encode the next frame while the GPU runs this one. `inFlightSemaphore`
+    // caps the frames in flight at `maxFramesInFlight`. The only resource the CPU rewrites per frame is each
+    // particle system's instance buffer, so those are ring-buffered (one copy per in-flight slot, indexed by
+    // `currentParticleSlot`); every other reused target is a Metal-tracked texture, so the GPU automatically
+    // orders a later frame's reuse after the earlier frame's reads — no CPU stall needed. The readback path
+    // (withRenderPass) stays synchronous and always uses slot 0.
+    private static let maxFramesInFlight = 3
+    private let inFlightSemaphore = DispatchSemaphore(value: SceneRenderer.maxFramesInFlight)
+    private var frameSlotCounter = 0
+    private var currentParticleSlot = 0
+    // Effect render targets are reused across frames instead of reallocated every frame. They are Metal-tracked
+    // textures recycled at the end of the frame; a later frame that borrows one writes into it only after the
+    // GPU finishes the earlier frame's reads (automatic hazard tracking on the shared queue), so it is never
+    // aliased while still in use even though the live path no longer waits on the GPU.
     private var effectTexturePool: [Int: [MTLTexture]] = [:]
     private var effectTexturesInUse: [MTLTexture] = []
     // The render size the pooled textures match. The pool is keyed by width/height, so after a display resize
@@ -834,14 +846,17 @@ public final class SceneRenderer {
             // Steady-state live count ≈ spawn rate × longest lifetime, capped to the system's maxcount.
             let count = SceneRenderer.particleInstanceCount(rate: system.rate, lifetimeUpper: system.lifetime.upperBound,
                                                             maxCount: system.maxCount)
-            // One instance buffer per system, allocated once and refilled each frame, instead of a fresh
-            // allocation every frame for the life of the wallpaper.
-            guard let instanceBuffer = device.makeBuffer(length: MemoryLayout<ParticleInstance>.stride * count,
-                                                         options: .storageModeShared) else { continue }
+            // One instance buffer per in-flight slot, allocated once and refilled each frame (never reallocated).
+            // The async present path can have `maxFramesInFlight` frames running at once, so the CPU refills the
+            // current slot while the GPU may still read an earlier frame's slot — they must not be the same buffer.
+            let instanceBuffers = (0 ..< SceneRenderer.maxFramesInFlight).compactMap { _ in
+                device.makeBuffer(length: MemoryLayout<ParticleInstance>.stride * count, options: .storageModeShared)
+            }
+            guard instanceBuffers.count == SceneRenderer.maxFramesInFlight else { continue }
             preparedParticles.append(PreparedParticles(system: system, texture: sprite.texture,
                                                        normalTexture: sprite.normal, count: count,
                                                        isAdditive: sprite.isAdditive, isRefractive: sprite.isRefractive,
-                                                       uvScale: sprite.uvScale, instanceBuffer: instanceBuffer))
+                                                       uvScale: sprite.uvScale, instanceBuffers: instanceBuffers))
         }
         return PreparedScene(layers: prepared, clearColor: document.clearColor,
                              particles: preparedParticles, orthoWidth: orthoW, orthoHeight: orthoH,
@@ -983,8 +998,9 @@ public final class SceneRenderer {
         return texture
     }
 
-    /// Return every target borrowed this frame to the pool. Call once the frame is fully composited and read
-    /// back (rendering is synchronous, so the GPU is done with them).
+    /// Return every target borrowed this frame to the pool. A recycled texture can be borrowed by the next
+    /// frame before this one's GPU work finishes; that's safe because the targets are Metal-tracked, so the
+    /// next frame's write into a reused texture is automatically ordered after this frame's last read of it.
     private func recycleEffectTextures() {
         for texture in effectTexturesInUse {
             let key = (texture.width &* 73_856_093) ^ (texture.height &* 19_349_663) ^ (Int(texture.pixelFormat.rawValue) &* 83_492_791)
@@ -1225,7 +1241,7 @@ public final class SceneRenderer {
         // Write straight into the system's reused (shared-storage) instance buffer, which is sized for
         // `count`, and return how many live sprites were written — no per-frame staging array is allocated
         // or copied. `n` never exceeds `count` (one write per slot at most), so the buffer can't overflow.
-        let dst = prepared.instanceBuffer.contents().assumingMemoryBound(to: ParticleInstance.self)
+        let dst = prepared.instanceBuffers[currentParticleSlot].contents().assumingMemoryBound(to: ParticleInstance.self)
         var n = 0
         for i in 0 ..< prepared.count {
             let slot = UInt32(truncatingIfNeeded: i)
@@ -1510,7 +1526,7 @@ public final class SceneRenderer {
                     let n = simulateParticles(prepared, time: time, orthoW: scene.orthoWidth, orthoH: scene.orthoHeight)
                     guard n > 0, let normal = prepared.normalTexture else { continue }
                     encoder.setRenderPipelineState(particleRefract)
-                    encoder.setVertexBuffer(prepared.instanceBuffer, offset: 0, index: 0)
+                    encoder.setVertexBuffer(prepared.instanceBuffers[currentParticleSlot], offset: 0, index: 0)
                     encoder.setVertexBytes(&pAspect, length: MemoryLayout<SIMD2<Float>>.stride, index: 1)
                     var pUVScale = prepared.uvScale
                     encoder.setVertexBytes(&pUVScale, length: MemoryLayout<SIMD2<Float>>.stride, index: 2)
@@ -1644,13 +1660,13 @@ public final class SceneRenderer {
 
         // Particles draw on top of the composited layers, additively, as instanced sprite quads.
         for prepared in scene.particles where !prepared.isRefractive {
-            // simulateParticles writes the live sprites directly into prepared.instanceBuffer and
+            // simulateParticles writes the live sprites directly into this frame's instance buffer slot and
             // returns how many — no staging array, no per-frame copy.
             let n = simulateParticles(prepared, time: time,
                                       orthoW: scene.orthoWidth, orthoH: scene.orthoHeight)
             guard n > 0 else { continue }
             encoder.setRenderPipelineState(prepared.isAdditive ? particleAdditive : particleAlpha)
-            encoder.setVertexBuffer(prepared.instanceBuffer, offset: 0, index: 0)
+            encoder.setVertexBuffer(prepared.instanceBuffers[currentParticleSlot], offset: 0, index: 0)
             var pAspect = aspectScale
             encoder.setVertexBytes(&pAspect, length: MemoryLayout<SIMD2<Float>>.stride, index: 1)
             var pUVScale = prepared.uvScale
@@ -1868,6 +1884,14 @@ public final class SceneRenderer {
         }
     }
 
+    /// Block until every frame the live present path still has in flight has finished on the GPU. Acquiring all
+    /// the semaphore's permits means every outstanding completion handler has run; releasing them leaves the
+    /// pipeline empty and ready. Used to flush before reading a presented target back (tests) or at teardown.
+    public func waitForInFlight() {
+        for _ in 0 ..< Self.maxFramesInFlight { inFlightSemaphore.wait() }
+        for _ in 0 ..< Self.maxFramesInFlight { inFlightSemaphore.signal() }
+    }
+
     /// Encode a clear-then-`draw` render pass into `target` on `commandBuffer` — no commit, wait, or readback.
     /// Shared by the readback path (withRenderPass) and the direct-to-drawable present path (composite).
     private func encodeComposite(into target: MTLTexture, clearColor: SceneVec3,
@@ -1885,21 +1909,43 @@ public final class SceneRenderer {
     }
 
     /// Run the final composite either into the reusable readback target (returns a RenderedFrame — the
-    /// offscreen / Checks path) or straight into an external `target` (a CAMetalLayer drawable) that `present`
-    /// then schedules, with NO CPU readback. Both paths stay synchronous (waitUntilCompleted), so the per-frame
-    /// effect-texture pool is safe to recycle right after either one.
+    /// offscreen / Checks path, synchronous) or straight into an external `target` (a CAMetalLayer drawable)
+    /// that `present` then schedules, with NO CPU readback and NO wait — the live path pipelines the GPU behind
+    /// the CPU and a completion handler frees the in-flight slot.
     private func compositeFrame(into target: MTLTexture?, present: ((MTLCommandBuffer) -> Void)?,
                                 clearColor: SceneVec3, width: Int, height: Int,
                                 draw: (MTLRenderCommandEncoder) -> Void) -> RenderedFrame? {
         guard let target else {
             return withRenderPass(clearColor: clearColor, width: width, height: height, draw: draw)
         }
-        guard width > 0, height > 0, let commandBuffer = queue.makeCommandBuffer(),
+        guard width > 0, height > 0 else { return nil }
+        guard let present else {
+            // An external target but no drawable to present: the caller reads `target` back on the CPU right
+            // after this returns (the byte-identity oracle, previews), so finish the frame synchronously.
+            currentParticleSlot = 0
+            guard let commandBuffer = queue.makeCommandBuffer(),
+                  encodeComposite(into: target, clearColor: clearColor, commandBuffer: commandBuffer, draw: draw)
+            else { return nil }
+            commandBuffer.commit()
+            commandBuffer.waitUntilCompleted()
+            return nil
+        }
+        // Live drawable present. Hold the CPU to at most `maxFramesInFlight` frames ahead of the GPU. Pick this
+        // frame's particle-buffer slot before encoding (the draw closure refills it); the slot only comes round
+        // again after `maxFramesInFlight` frames, by when the semaphore guarantees that older frame has finished.
+        inFlightSemaphore.wait()
+        currentParticleSlot = frameSlotCounter
+        frameSlotCounter = (frameSlotCounter + 1) % Self.maxFramesInFlight
+        guard let commandBuffer = queue.makeCommandBuffer(),
               encodeComposite(into: target, clearColor: clearColor, commandBuffer: commandBuffer, draw: draw)
-        else { return nil }
-        present?(commandBuffer)              // e.g. commandBuffer.present(drawable) — scheduled, not read back
+        else { inFlightSemaphore.signal(); return nil }
+        present(commandBuffer)               // commandBuffer.present(drawable) — scheduled, not read back
+        // Free the slot when the GPU finishes this frame rather than blocking the CPU on it now. The composite
+        // is the frame's only barrier (it reads every earlier pass), so its completion means the whole frame —
+        // and its particle slot — is done; a later frame reusing a tracked target is ordered after it by Metal.
+        let semaphore = inFlightSemaphore
+        commandBuffer.addCompletedHandler { _ in semaphore.signal() }
         commandBuffer.commit()
-        commandBuffer.waitUntilCompleted()   // keep the synchronous model so the effect pool stays safe
         return nil
     }
 
@@ -1909,6 +1955,8 @@ public final class SceneRenderer {
         // Metal aborts the process if a texture descriptor has a zero dimension; the public render entries that
         // reach here (render(texture:)/render(decoded:)) take an untrusted size, so guard it here too.
         guard width > 0, height > 0 else { return nil }
+        // The readback path is synchronous (one frame at a time), so a single particle-buffer slot is enough.
+        currentParticleSlot = 0
         // Reuse the frame target across renders of the same size: the animation loop renders the same
         // dimensions every frame and each render is synchronous (waitUntilCompleted), so the previous
         // frame is fully read back before the next reuses the texture — no per-frame 33 MB allocation.
