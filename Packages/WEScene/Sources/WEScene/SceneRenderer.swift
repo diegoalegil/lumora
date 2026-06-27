@@ -161,6 +161,9 @@ private struct PreparedLayer {
     var dependencyIndices: [Int] = []
     // This layer is consumed by a composition layer (it feeds that layer's input), so it is NOT drawn directly.
     var consumed: Bool = false
+    // A composition layer with no dependencies whose (allowlisted) effects run as a final post-process over the
+    // whole composited scene — a procedural vignette. Applied after compositing rather than over named deps.
+    var isFramebufferPostProcess: Bool = false
 }
 
 /// A layer whose bound SceneScript clones it into N elements (an audio visualiser's spectrum bars). The
@@ -219,7 +222,13 @@ public final class PreparedScene {
         self.bloomStrength = bloomStrength
         self.bloomThreshold = bloomThreshold
         self.usesAudio = layers.contains { $0.scriptGroup != nil || !$0.effects.isEmpty }
+        self.framebufferPostProcessIndices = layers.enumerated().filter { $0.element.isFramebufferPostProcess }.map { $0.offset }
     }
+
+    /// Indices (painter order) of composition layers that post-process the whole composited scene (a vignette).
+    /// Their effects run after the scene is composited; empty for almost every scene.
+    fileprivate let framebufferPostProcessIndices: [Int]
+    fileprivate var hasFramebufferPostProcess: Bool { !framebufferPostProcessIndices.isEmpty }
 
     /// How many layers will be drawn (0 means nothing resolved — the caller should show a fallback).
     public var layerCount: Int { layers.count }
@@ -689,6 +698,7 @@ public final class SceneRenderer {
         let consumedIDs = Set(document.layers.filter { $0.isCompositionLayer }.flatMap { $0.dependencyIDs })
         var objectIDToPreparedIndex: [Int: Int] = [:]
         var compositionDeps: [Int: [Int]] = [:]   // prepared comp-layer index → the object ids it depends on
+        var representativeBase: MTLTexture?       // first content layer's texture — the probe base for a post-process
         for (layerIndex, layer) in document.layers.enumerated() where layer.visible {
             // A composition layer carries no texture; its effects run over an input built from the layers it
             // consumes (resolved after the loop). Prepare its effect chain (skipping the opaque-layer stability
@@ -696,15 +706,22 @@ public final class SceneRenderer {
             // fills from its dependencies. If it ends up with no usable effects it contributes nothing (the draw
             // pass skips a composition layer that produced no result), so it can never paint its placeholder quad.
             if layer.isCompositionLayer {
-                // Probe the composition effects against a representative dependency (already prepared, since a
-                // dependency precedes its composition layer) so the wash guard can catch an effect that blows the
-                // scene to white. A composition layer with no resolved dependency reads the whole framebuffer —
-                // a path not built yet — so it gets no effects and is skipped at render (a safe no-op, as before).
+                // Probe the composition effects against a representative base — a dependency for a projection (it
+                // precedes its composition layer), or the first content layer for a whole-composite post-process —
+                // so the wash guard can catch an effect that blows the scene to white. A composition layer with NO
+                // dependencies post-processes the whole composite, but only effects on a verified, aux-free
+                // allowlist (a procedural vignette) run there: a colour grade / lens flare needs WE aux LUT
+                // textures Lumora can't ship (license firewall) and would grey/haze the scene, so it stays off.
                 let depBaseIndex = layer.dependencyIDs.lazy.compactMap { objectIDToPreparedIndex[$0] }.first
-                let compEffects = depBaseIndex.map {
-                    prepareEffects(layer.effects, package: package, base: prepared[$0].texture,
+                let isPostProcess = depBaseIndex == nil
+                let sourceEffects = isPostProcess
+                    ? layer.effects.filter { isAllowlistedPostProcess($0, package: package) }
+                    : layer.effects
+                let probeBase = depBaseIndex.map { prepared[$0].texture } ?? representativeBase
+                let compEffects = (sourceEffects.isEmpty ? nil : probeBase).map {
+                    prepareEffects(sourceEffects, package: package, base: $0,
                                    center: SIMD2(0, 0), halfExtent: SIMD2(1, 1), uvScale: SIMD2(1, 1),
-                                   tint: SIMD3(1, 1, 1), compositionProbe: true)
+                                   tint: SIMD3(1, 1, 1), compositionProbe: !isPostProcess)
                 } ?? []
                 if let oid = layer.objectID { objectIDToPreparedIndex[oid] = prepared.count }
                 if !layer.dependencyIDs.isEmpty { compositionDeps[prepared.count] = layer.dependencyIDs }
@@ -717,6 +734,9 @@ public final class SceneRenderer {
                     rotA: SIMD2(1, 0), rotB: SIMD2(0, 1), effects: compEffects,
                     videoTrack: nil, puppet: nil, text: nil, scriptGroup: nil)
                 comp.isComposition = true
+                // No dependencies but surviving allowlisted effects → a whole-composite post-process applied after
+                // the scene is composited. With dependencies it's the projection path handled in Pass 1.
+                comp.isFramebufferPostProcess = isPostProcess && !compEffects.isEmpty
                 prepared.append(comp)
                 continue
             }
@@ -771,6 +791,8 @@ public final class SceneRenderer {
             }
             guard let texture else { continue }   // unresolved non-solid, or a foreground fill: skip
             if !isSolidFill { drewTexturedLayer = true }
+            // The first real content layer is the probe base for any whole-composite post-process layer.
+            if representativeBase == nil { representativeBase = texture }
 
             let sizeW = (layer.size?.x ?? 0) > 0 ? layer.size!.x : (textureW > 0 ? textureW : orthoW)
             let sizeH = (layer.size?.y ?? 0) > 0 ? layer.size!.y : (textureH > 0 ? textureH : orthoH)
@@ -1117,6 +1139,18 @@ public final class SceneRenderer {
     /// offsets link and run), falling back to a fixed full-screen vertex for fragment-only passes; an effect
     /// whose graph can't be fully built is dropped. Then the chain is dry-run at low resolution and any
     /// effect that blanks the layer is skipped, so it degrades gracefully instead of going transparent.
+    /// Effect shaders verified to reproduce a wallpaper as a whole-composite post-process WITHOUT needing a WE
+    /// aux LUT/gradient texture (which the license firewall keeps Lumora from shipping). Default-DENY: only a
+    /// substring match here lets an implicit composition layer's effect run, mirroring the conservative
+    /// colorBlendMode-31-only mapping. A colour grade / lens flare that maps colours through a missing LUT would
+    /// grey or haze the scene, so it stays off until proven (extend this list only after a per-scene preview check).
+    private static let postProcessAllowlist = ["cutout_vignette"]
+    private func isAllowlistedPostProcess(_ effect: LayerEffect, package: ScenePackage) -> Bool {
+        effect.passes.contains { pass in
+            Self.postProcessAllowlist.contains { pass.fragmentShaderPath.contains($0) }
+        }
+    }
+
     private func prepareEffects(_ effects: [LayerEffect], package: ScenePackage, base: MTLTexture,
                                 center: SIMD2<Float>, halfExtent: SIMD2<Float>, uvScale: SIMD2<Float>,
                                 tint: SIMD3<Float>, compositionProbe: Bool = false) -> [PreparedEffect] {
@@ -1618,6 +1652,40 @@ public final class SceneRenderer {
                     encoder.setFragmentBytes(&viewport, length: MemoryLayout<SIMD2<Float>>.stride, index: 0)
                     encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4, instanceCount: n)
                 }
+            }
+        } else if scene.hasFramebufferPostProcess,
+                  var composite = renderBackground(scene, time: time, aspectScale: aspectScale,
+                                                   swayX: swayX, swayY: swayY, effectResult: effectResult,
+                                                   width: width, height: height) {
+            // An allowlisted whole-composite post-process (a procedural vignette): the scene is composited to a
+            // texture, then each such layer's effects run over it in order, mirroring WE's composelayer/post-process
+            // layers. Scene-level bloom, if any, is the same final present pass.
+            for idx in scene.framebufferPostProcessIndices {
+                for effect in scene.layers[idx].effects {
+                    guard let out = applyEffect(effect, to: composite, time: Float(time), width: width, height: height,
+                        allocTarget: { w, h, fmt in self.borrowEffectTarget(width: w, height: h, pixelFormat: fmt) }) else { break }
+                    composite = out
+                }
+            }
+            let postComposite = composite
+            let useBloom = scene.bloomStrength > 0.1
+            var params = SIMD2<Float>(scene.bloomThreshold, scene.bloomStrength)
+            frame = compositeFrame(into: target, present: present, clearColor: scene.clearColor, width: width, height: height) { encoder in
+                var quad = QuadUniform(center: SIMD2(0, 0), halfExtent: SIMD2(1, 1), uvScale: SIMD2(1, 1))
+                encoder.setVertexBytes(&quad, length: MemoryLayout<QuadUniform>.stride, index: 0)
+                encoder.setFragmentTexture(postComposite, index: 0)
+                encoder.setFragmentSamplerState(sampler, index: 0)
+                if useBloom {
+                    encoder.setRenderPipelineState(pipelineBloom)
+                    encoder.setFragmentBytes(&params, length: MemoryLayout<SIMD2<Float>>.stride, index: 0)
+                } else {
+                    var bgAlpha: Float = 1
+                    var bgTint = SIMD3<Float>(1, 1, 1)
+                    encoder.setRenderPipelineState(pipelineOver)
+                    encoder.setFragmentBytes(&bgAlpha, length: MemoryLayout<Float>.size, index: 0)
+                    encoder.setFragmentBytes(&bgTint, length: MemoryLayout<SIMD3<Float>>.stride, index: 1)
+                }
+                encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
             }
         } else if scene.bloomStrength > 0.1,
                   let composite = renderBackground(scene, time: time, aspectScale: aspectScale,
