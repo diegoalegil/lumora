@@ -238,6 +238,42 @@ final class CountingSpectrum: AudioSpectrumProvider, @unchecked Sendable {
     exit(flagged == 0 ? 0 : 2)
 }
 
+/// Perf dashboard: time the async present path for every `<dir>/*/scene.pkg` at the given size (default native
+/// Retina), printing ms/frame and fps slowest-first and how many fall under 60. The render-throughput proxy
+/// for the live framerate — windowed/ProMotion fps is owner-visual, but a scene's relative cost shows here.
+@MainActor func benchAll(_ dir: String, width: Int, height: Int, renderer: SceneRenderer) {
+    let fm = FileManager.default
+    let frames = 30
+    let desc = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: renderer.compositePixelFormat,
+                                                        width: width, height: height, mipmapped: false)
+    desc.usage = [.renderTarget, .shaderRead]; desc.storageMode = .shared
+    guard let target = renderer.device.makeTexture(descriptor: desc) else { print("benchall: no target"); return }
+    var results: [(String, Double)] = []
+    for name in ((try? fm.contentsOfDirectory(atPath: dir)) ?? []).sorted() {
+        let pkgPath = dir + "/" + name + "/scene.pkg"
+        guard fm.fileExists(atPath: pkgPath),
+              let data = try? Data(contentsOf: URL(fileURLWithPath: pkgPath)),
+              let package = try? ScenePackage.read(data),
+              let document = try? SceneGraph.load(from: package) else { continue }
+        let prepared = renderer.prepare(document, package: package)
+        _ = renderer.render(prepared, width: width, height: height, time: 0, into: target)   // warm up
+        let start = DispatchTime.now().uptimeNanoseconds
+        for i in 0 ..< frames {
+            _ = renderer.render(prepared, width: width, height: height, time: Double(i) / 60.0, into: target, present: { _ in })
+        }
+        renderer.waitForInFlight()
+        results.append((name, Double(DispatchTime.now().uptimeNanoseconds - start) / 1_000_000 / Double(frames)))
+    }
+    print("perf @ \(width)x\(height) async, slowest first:")
+    var sub60 = 0
+    for (name, ms) in results.sorted(by: { $0.1 > $1.1 }) {
+        let fps = 1000.0 / ms
+        if fps < 60 { sub60 += 1 }
+        print(String(format: "  %@  %6.2f ms  %4.0f fps%@", name, ms, fps, fps < 60 ? "  <60" : ""))
+    }
+    print("benchall: \(results.count) scenes, \(sub60) sub-60fps")
+}
+
 // Optional dev mode: a scene.pkg path renders one wallpaper; a directory batch-renders a contact sheet.
 if CommandLine.arguments.count > 1 {
     let arg = CommandLine.arguments[1]
@@ -247,6 +283,11 @@ if CommandLine.arguments.count > 1 {
     if isDir.boolValue {
         if CommandLine.arguments.count > 3, CommandLine.arguments[2] == "regress" {
             regressGate(arg, baselinePath: CommandLine.arguments[3], renderer: renderer); exit(0)
+        }
+        if CommandLine.arguments.count > 2, CommandLine.arguments[2] == "benchall" {
+            let w = CommandLine.arguments.count > 3 ? (Int(CommandLine.arguments[3]) ?? 3456) : 3456
+            let h = CommandLine.arguments.count > 4 ? (Int(CommandLine.arguments[4]) ?? 2234) : 2234
+            benchAll(arg, width: w, height: h, renderer: renderer); exit(0)
         }
         batchRender(arg, renderer: renderer); exit(0)
     }
