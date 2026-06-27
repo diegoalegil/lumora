@@ -182,6 +182,12 @@ public struct SceneLayer: Sendable, Equatable {
     public let parallaxDepth: SceneVec3
     public let visible: Bool
     public let blending: String?
+    /// Wallpaper Engine's per-object `colorBlendMode` (a Photoshop-style blend enum) as its raw value, 0 when
+    /// absent. 0 = Normal (fall through to the material's own blend); 31 = Additive (also surfaced via
+    /// `blending == "additive"` for the fast path). Other values (2 = Multiply, 6 = Lighten, 7 = Screen,
+    /// 11 = Overlay, 12 = SoftLight, 21 = Reflect, 22 = Glow, 23 = Phoenix, 30 = Tint, …) select a per-channel
+    /// composite the renderer applies against the destination, overriding the material blend.
+    public let colorBlendMode: Int
     public let shader: String?
     /// Post-process effects applied to the layer, in order.
     public let effects: [LayerEffect]
@@ -218,7 +224,7 @@ public struct SceneLayer: Sendable, Equatable {
                 alphaAnimation: AlphaAnimation?, originAnimation: Vec3Animation?,
                 scaleAnimation: Vec3Animation? = nil, anglesAnimation: Vec3Animation? = nil,
                 colorAnimation: Vec3Animation? = nil, parallaxDepth: SceneVec3,
-                visible: Bool, blending: String?, shader: String?, effects: [LayerEffect], puppetPath: String? = nil,
+                visible: Bool, blending: String?, colorBlendMode: Int = 0, shader: String?, effects: [LayerEffect], puppetPath: String? = nil,
                 textValue: String? = nil, textScript: String? = nil, fontPath: String? = nil,
                 pointSize: Double = 32, horizontalAlign: String? = nil, verticalAlign: String? = nil,
                 driverScript: String? = nil, alignment: String? = nil,
@@ -240,6 +246,7 @@ public struct SceneLayer: Sendable, Equatable {
         self.parallaxDepth = parallaxDepth
         self.visible = visible
         self.blending = blending
+        self.colorBlendMode = colorBlendMode
         self.shader = shader
         self.effects = effects
         self.puppetPath = puppetPath
@@ -460,6 +467,7 @@ public enum SceneGraph {
                 parallaxDepth: vec(object["parallaxDepth"]),
                 visible: isVisible(object["visible"], overrides: overrides),
                 blending: blendOverride ?? material.blending,
+                colorBlendMode: Self.colorBlendModeValue(object["colorBlendMode"]),
                 shader: material.shader,
                 effects: effects(of: object, in: package, overrides: overrides),
                 puppetPath: puppetPath,
@@ -491,6 +499,12 @@ public enum SceneGraph {
     static func additiveColorBlendMode(_ raw: Any?) -> Bool {
         guard let mode = (raw as? NSNumber)?.intValue else { return false }
         return mode == 31
+    }
+
+    /// The raw `colorBlendMode` value (Wallpaper Engine's Photoshop-style blend enum), or 0 (Normal) when the
+    /// field is absent or unparseable. The renderer maps non-zero values to a per-channel composite.
+    static func colorBlendModeValue(_ raw: Any?) -> Int {
+        (raw as? NSNumber)?.intValue ?? 0
     }
 
     /// Whether an `image` path is a Wallpaper Engine built-in composition-layer model. These live under

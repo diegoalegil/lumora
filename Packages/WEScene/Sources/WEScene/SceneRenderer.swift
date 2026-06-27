@@ -145,6 +145,9 @@ private struct PreparedLayer {
     let alphaAnimation: AlphaAnimation?
     let tint: SIMD3<Float>
     let isAdditive: Bool
+    // WE's per-object colorBlendMode (raw enum). 0 = Normal (alpha-over) and 31 = Additive use the fixed-function
+    // fast paths; any other value composites through the framebuffer-fetch blend pipeline against the destination.
+    var colorBlendMode: Int = 0
     let parallaxDepth: SIMD2<Float>
     let originAnimation: Vec3Animation?
     let originScale: SIMD2<Float>   // scene units → NDC, for the position animation offset
@@ -273,6 +276,10 @@ public final class SceneRenderer {
     private let queue: MTLCommandQueue
     private let pipelineOver: MTLRenderPipelineState
     private let pipelineAdditive: MTLRenderPipelineState
+    // Per-channel colorBlendMode composite (multiply/screen/overlay/…). Reads the destination via framebuffer
+    // fetch, so it exists only on GPUs that support programmable blending (Apple silicon); nil elsewhere, where
+    // non-trivial blend modes fall back to alpha-over (today's behaviour).
+    private let pipelineBlend: MTLRenderPipelineState?
     private let pipelineBloom: MTLRenderPipelineState   // scene-level bloom combine (composite + bright glow)
     private let particleAdditive: MTLRenderPipelineState   // instanced sprite draw, additive (glow)
     private let particleAlpha: MTLRenderPipelineState      // instanced sprite draw, alpha (solid sprites)
@@ -349,6 +356,72 @@ public final class SceneRenderer {
                                           constant float3 &tint [[buffer(1)]]) {
         float4 c = tex.sample(samp, in.uv);
         return float4(c.rgb * tint, c.a * layerAlpha);
+    }
+    // Per-channel layer blend for Wallpaper Engine's colorBlendMode. The maths is the standard Photoshop / W3C
+    // compositing set (multiply, screen, overlay, soft-light, …) implemented clean-room from the public
+    // per-channel formulas — no GPL/WE shader source is transcribed. A = destination (the scene composited so
+    // far, read via framebuffer fetch), B = this layer's colour, op = the layer's opacity (texture alpha ×
+    // layerAlpha). MSL select(falseVal, trueVal, cond) chooses per channel.
+    inline float3 we_overlay(float3 a, float3 b) {
+        return select(1.0 - 2.0 * (1.0 - a) * (1.0 - b), 2.0 * a * b, a < 0.5);
+    }
+    inline float3 we_softlight(float3 a, float3 b) {
+        float3 d = select(((16.0 * a - 12.0) * a + 4.0) * a, sqrt(a), a > 0.25);
+        return select(a + (2.0 * b - 1.0) * (d - a), a - (1.0 - 2.0 * b) * a * (1.0 - a), b <= 0.5);
+    }
+    inline float3 we_colorburn(float3 a, float3 b) {
+        return select(max(1.0 - (1.0 - a) / b, 0.0), float3(0.0), b == 0.0);
+    }
+    inline float3 we_colordodge(float3 a, float3 b) {
+        return select(min(a / (1.0 - b), 1.0), float3(1.0), b == 1.0);
+    }
+    inline float3 we_reflect(float3 a, float3 b) {
+        return select(min(a * a / (1.0 - b), 1.0), float3(1.0), b == 1.0);
+    }
+    inline float3 we_apply_blend(int mode, float3 A, float3 B, float op) {
+        // The handful of modes WE evaluates without the opacity mix.
+        if (mode == 31) return A + B * op;          // Additive (weighted sum)
+        if (mode == 10) return max(A, B);           // max
+        if (mode == 5)  return min(A, B);           // min
+        float3 f;
+        switch (mode) {
+            case 1:  f = min(A, B); break;                       // Darken
+            case 2:  f = A * B; break;                           // Multiply
+            case 3:  f = we_colorburn(A, B); break;              // ColorBurn
+            case 4:  f = max(A + B - 1.0, 0.0); break;           // Subtract
+            case 6:  f = max(A, B); break;                       // Lighten
+            case 7:  f = 1.0 - (1.0 - A) * (1.0 - B); break;     // Screen
+            case 8:  f = we_colordodge(A, B); break;             // ColorDodge
+            case 9:  f = min(A + B, 1.0); break;                 // Add (clamped)
+            case 11: f = we_overlay(A, B); break;                // Overlay
+            case 12: f = we_softlight(A, B); break;              // SoftLight
+            case 13: f = we_overlay(B, A); break;                // HardLight
+            case 18: f = abs(A - B); break;                      // Difference
+            case 19: f = A + B - 2.0 * A * B; break;             // Exclusion
+            case 20: f = max(A + B - 1.0, 0.0); break;           // Subtract (alt index)
+            case 21: f = we_reflect(A, B); break;                // Reflect
+            case 22: f = we_reflect(B, A); break;                // Glow (Reflect, args swapped)
+            case 23: f = min(A, B) - max(A, B) + 1.0; break;     // Phoenix
+            case 24: f = (A + B) * 0.5; break;                   // Average
+            case 25: f = 1.0 - abs(1.0 - A - B); break;          // Negation
+            case 30: f = max(max(A.r, A.g), A.b) * B; break;     // Tint
+            case 32: f = A + A * B; break;                       // glow-mult
+            default: f = B; break;                               // Normal / unmapped → plain over
+        }
+        return mix(A, f, op);
+    }
+    fragment float4 lumora_scene_blend(VOut in [[stage_in]],
+                                       float4 dst [[color(0)]],
+                                       texture2d<float> tex [[texture(0)]],
+                                       sampler samp [[sampler(0)]],
+                                       constant float &layerAlpha [[buffer(0)]],
+                                       constant float3 &tint [[buffer(1)]],
+                                       constant int &mode [[buffer(2)]]) {
+        float4 c = tex.sample(samp, in.uv);
+        float3 B = c.rgb * tint;
+        float op = clamp(c.a * layerAlpha, 0.0, 1.0);
+        float3 outRGB = we_apply_blend(mode, dst.rgb, B, op);
+        return float4(outRGB, dst.a);   // keep the destination alpha (WE preserves the background's alpha)
     }
     // Scene-level bloom: box-blur the bright-pass (luma/colour above `params.x`) and add it back scaled by
     // strength `params.y`. The base image is preserved; only highlights above the threshold glow, so the
@@ -471,6 +544,14 @@ public final class SceneRenderer {
             self.particleRefract = particleRefractPipe
             self.pipelinePuppet = puppet
             self.pipelineBloom = bloom
+            // Optional: the framebuffer-fetch blend pipeline for per-object colorBlendMode. Built only on GPUs
+            // with programmable blending (Apple silicon); on others it stays nil and the non-trivial modes fall
+            // back to alpha-over. Not in the guard above, so its absence never fails renderer construction.
+            if device.supportsFamily(.apple1), let blendFragment = library.makeFunction(name: "lumora_scene_blend") {
+                self.pipelineBlend = Self.makeBlendPipeline(device: device, vertex: vertexFunction, fragment: blendFragment)
+            } else {
+                self.pipelineBlend = nil
+            }
         } catch {
             return nil
         }
@@ -584,6 +665,19 @@ public final class SceneRenderer {
         color.sourceAlphaBlendFactor = .one   // straight-alpha: don't square the source alpha
         color.destinationRGBBlendFactor = additive ? .one : .oneMinusSourceAlpha
         color.destinationAlphaBlendFactor = additive ? .one : .oneMinusSourceAlpha
+        return try? device.makeRenderPipelineState(descriptor: descriptor)
+    }
+
+    /// The per-channel colorBlendMode pipeline: the fragment reads the destination via framebuffer fetch and
+    /// returns the fully-composited colour, so hardware blending is DISABLED (the shader is the blend). Returns
+    /// nil on a GPU without programmable blending — the caller then leaves those layers on the alpha-over path.
+    private static func makeBlendPipeline(device: MTLDevice, vertex: MTLFunction, fragment: MTLFunction) -> MTLRenderPipelineState? {
+        let descriptor = MTLRenderPipelineDescriptor()
+        descriptor.vertexFunction = vertex
+        descriptor.fragmentFunction = fragment
+        let color = descriptor.colorAttachments[0]!
+        color.pixelFormat = .rgba8Unorm
+        color.isBlendingEnabled = false
         return try? device.makeRenderPipelineState(descriptor: descriptor)
     }
 
@@ -896,6 +990,7 @@ public final class SceneRenderer {
                 alphaAnimation: layer.alphaAnimation,
                 tint: tint,
                 isAdditive: layer.blending == "additive" || layer.blending == "add",
+                colorBlendMode: layer.colorBlendMode,
                 parallaxDepth: SIMD2(Float(layer.parallaxDepth.x), Float(layer.parallaxDepth.y)),
                 originAnimation: layer.originAnimation,
                 originScale: SIMD2(Float(2 / orthoW), Float(2 / orthoH)),
@@ -1811,7 +1906,13 @@ public final class SceneRenderer {
                 encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
                 continue
             }
-            encoder.setRenderPipelineState(layer.isAdditive ? pipelineAdditive : pipelineOver)
+            // A non-trivial colorBlendMode (anything but Normal=0 and Additive=31, which have fixed-function
+            // fast paths) composites through the framebuffer-fetch blend pipeline, overriding the material blend
+            // exactly as WE's injected passthroughblend pass does. Falls back to alpha-over where that pipeline
+            // is unavailable (a GPU without programmable blending).
+            let blendMode = layer.colorBlendMode
+            let useShaderBlend = pipelineBlend != nil && blendMode != 0 && blendMode != 31
+            encoder.setRenderPipelineState(useShaderBlend ? pipelineBlend! : (layer.isAdditive ? pipelineAdditive : pipelineOver))
             var quad: QuadUniform
             var tint: SIMD3<Float>
             let texture: MTLTexture
@@ -1833,6 +1934,10 @@ public final class SceneRenderer {
             encoder.setFragmentSamplerState(sampler, index: 0)
             encoder.setFragmentBytes(&alpha, length: MemoryLayout<Float>.size, index: 0)
             encoder.setFragmentBytes(&tint, length: MemoryLayout<SIMD3<Float>>.stride, index: 1)
+            if useShaderBlend {
+                var mode = Int32(blendMode)
+                encoder.setFragmentBytes(&mode, length: MemoryLayout<Int32>.size, index: 2)
+            }
             encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
         }
 
