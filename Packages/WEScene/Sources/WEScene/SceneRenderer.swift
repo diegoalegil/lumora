@@ -1575,8 +1575,12 @@ public final class SceneRenderer {
         // Reconstruct this frame's script delta ONCE here (not per scripted group), so every scripted layer in a
         // multi-visualiser scene gets the same real per-frame dt for engine.frametime / getFrameTime().
         currentScriptFrameDelta = scriptFrameDelta(time)
-        let swayX = Float(0.012 * sin(time * 0.6))
-        let swayY = Float(0.009 * sin(time * 0.45))
+        // WE relaxes its parallax to zero when the cursor sits centred (the state the WE reference frames were
+        // captured in — default props, no audio, cursor centred). lumora's synthetic sway invented a perpetual
+        // drift on every layer with parallaxDepth, which desynchronises the planes from WE. Hold the sway at
+        // zero so the centred-cursor composite matches WE; keyframed originAnimation still plays.
+        let swayX = Float(0)
+        let swayY = Float(0)
 
         // Fill the target without distortion: cover its aspect and crop the overflow rather than stretching
         // a 16:9-authored scene onto a differently-shaped display.
