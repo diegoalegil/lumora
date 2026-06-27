@@ -248,6 +248,43 @@ if CommandLine.arguments.count > 1 {
                      w, h, frames, mean, 1000.0 / mean, median, p95, sorted.first ?? 0, sorted.last ?? 0))
         exit(0)
     }
+    if CommandLine.arguments.count > 4, CommandLine.arguments[2] == "asyncbench" {   // dev: drive the ASYNC live present path (semaphore + ring-buffered particle slots) — the TSan + throughput target
+        let frames = Int(CommandLine.arguments[3]) ?? 120
+        let w = Int(CommandLine.arguments[4]) ?? 1920
+        let h = CommandLine.arguments.count > 5 ? (Int(CommandLine.arguments[5]) ?? 1200) : 1200
+        let prepared = renderer.prepare(document, package: package)
+        let desc = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: renderer.compositePixelFormat, width: w, height: h, mipmapped: false)
+        desc.usage = [.renderTarget, .shaderRead]
+        desc.storageMode = .shared
+        guard let target = renderer.device.makeTexture(descriptor: desc) else { print("asyncbench: no target"); exit(1) }
+        _ = renderer.render(prepared, width: w, height: h, time: 0, into: target)   // warm up (sync, present nil)
+        var times: [Double] = []; times.reserveCapacity(frames)
+        let loopStart = DispatchTime.now().uptimeNanoseconds
+        for i in 0 ..< frames {   // present closure non-nil → exercises the async path (no per-frame CPU wait)
+            let t0 = DispatchTime.now().uptimeNanoseconds
+            _ = renderer.render(prepared, width: w, height: h, time: Double(i) / 60.0, into: target, present: { _ in })
+            times.append(Double(DispatchTime.now().uptimeNanoseconds - t0) / 1_000_000)
+        }
+        renderer.waitForInFlight()
+        let throughput = Double(DispatchTime.now().uptimeNanoseconds - loopStart) / 1_000_000 / Double(frames)
+        let mean = times.reduce(0, +) / Double(times.count)
+        // Correctness: a frame through the async present path must match the synchronous readback for the same
+        // scene + time. Render the final time async, drain, read the target back, and diff it against readback.
+        let tLast = Double(frames - 1) / 60.0
+        _ = renderer.render(prepared, width: w, height: h, time: tLast, into: target, present: { _ in })
+        renderer.waitForInFlight()
+        var asyncBytes = Data(count: w * h * 4)
+        asyncBytes.withUnsafeMutableBytes { raw in if let b = raw.baseAddress { target.getBytes(b, bytesPerRow: w * 4, from: MTLRegionMake2D(0, 0, w, h), mipmapLevel: 0) } }
+        var match = "no readback ref"
+        if let ref = renderer.render(prepared, width: w, height: h, time: tLast) {
+            var d = 0; let n = min(asyncBytes.count, ref.rgba.count)
+            for k in 0 ..< n where asyncBytes[k] != ref.rgba[k] { d += 1 }
+            match = d == 0 ? "byte-identical" : "\(d) bytes differ"
+        }
+        print(String(format: "asyncbench %dx%d %d frames: throughput %.2f ms/frame (%.0f fps), per-call mean %.2f ms; async vs sync final frame: %@",
+                     w, h, frames, throughput, 1000.0 / throughput, mean, match))
+        exit(0)
+    }
     let time = CommandLine.arguments.count > 2 ? (Double(CommandLine.arguments[2]) ?? 0) : 0
     // Optional width/height override (args 3 and 4) so a scene can be rendered at an arbitrary target —
     // e.g. a display's real pixel size/aspect — to reproduce size-dependent artifacts the scene's own
