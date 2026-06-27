@@ -155,6 +155,12 @@ private struct PreparedLayer {
     let puppet: PreparedPuppet?     // skeletal mesh to draw instead of the quad (nil = ordinary layer)
     let text: PreparedTextLayer?    // a text/clock layer drawn from rendered glyphs (nil = ordinary layer)
     let scriptGroup: PreparedScriptGroup?  // an audio visualiser that clones this layer into bars (nil = ordinary)
+    // A WE composition layer: it has no quad of its own. Its `effects` run over an input built from its
+    // `dependencyIndices` (the prepared layers it consumes), and the result composites full-screen at its place.
+    var isComposition: Bool = false
+    var dependencyIndices: [Int] = []
+    // This layer is consumed by a composition layer (it feeds that layer's input), so it is NOT drawn directly.
+    var consumed: Bool = false
 }
 
 /// A layer whose bound SceneScript clones it into N elements (an audio visualiser's spectrum bars). The
@@ -228,6 +234,10 @@ public final class PreparedScene {
     /// True if any particle system refracts the background (rain-on-glass) — the renderer takes a two-pass
     /// path for these, composing the scene to a texture the droplets then sample with displacement.
     fileprivate var hasRefractiveParticles: Bool { particles.contains { $0.isRefractive } }
+
+    /// True if the scene has a WE composition layer (projectlayer/composelayer/…) that consumes other layers.
+    /// Gates the composition path so a scene WITHOUT one renders exactly as before (byte-identical).
+    fileprivate var hasCompositionLayers: Bool { layers.contains { $0.isComposition } }
 
     /// True if any layer animates (parallax, alpha/position keyframes, effects) or the scene emits
     /// particles — i.e. it moves over time and is worth driving with a render loop.
@@ -672,7 +682,44 @@ public final class SceneRenderer {
                 for m in members { textStackOffset[m.idx] = cumulative; cumulative += m.height }
             }
         }
+        // A WE composition layer (projectlayer/composelayer/…) consumes the layers named in its `dependencies`:
+        // those are rendered into the composition layer's input instead of being drawn directly. Collect the
+        // consumed object ids, and map every object id to its prepared-layer index so the dependencies (and the
+        // consumed flags) resolve after the prepare loop, regardless of layer order.
+        let consumedIDs = Set(document.layers.filter { $0.isCompositionLayer }.flatMap { $0.dependencyIDs })
+        var objectIDToPreparedIndex: [Int: Int] = [:]
+        var compositionDeps: [Int: [Int]] = [:]   // prepared comp-layer index → the object ids it depends on
         for (layerIndex, layer) in document.layers.enumerated() where layer.visible {
+            // A composition layer carries no texture; its effects run over an input built from the layers it
+            // consumes (resolved after the loop). Prepare its effect chain (skipping the opaque-layer stability
+            // probe, which would drop a legitimate projection/grade) and emit a placeholder layer the render pass
+            // fills from its dependencies. If it ends up with no usable effects it contributes nothing (the draw
+            // pass skips a composition layer that produced no result), so it can never paint its placeholder quad.
+            if layer.isCompositionLayer {
+                // Probe the composition effects against a representative dependency (already prepared, since a
+                // dependency precedes its composition layer) so the wash guard can catch an effect that blows the
+                // scene to white. A composition layer with no resolved dependency reads the whole framebuffer —
+                // a path not built yet — so it gets no effects and is skipped at render (a safe no-op, as before).
+                let depBaseIndex = layer.dependencyIDs.lazy.compactMap { objectIDToPreparedIndex[$0] }.first
+                let compEffects = depBaseIndex.map {
+                    prepareEffects(layer.effects, package: package, base: prepared[$0].texture,
+                                   center: SIMD2(0, 0), halfExtent: SIMD2(1, 1), uvScale: SIMD2(1, 1),
+                                   tint: SIMD3(1, 1, 1), compositionProbe: true)
+                } ?? []
+                if let oid = layer.objectID { objectIDToPreparedIndex[oid] = prepared.count }
+                if !layer.dependencyIDs.isEmpty { compositionDeps[prepared.count] = layer.dependencyIDs }
+                var comp = PreparedLayer(
+                    texture: whiteTexture, center: SIMD2(0, 0), halfExtent: SIMD2(1, 1), uvScale: SIMD2(1, 1),
+                    alpha: Float(layer.alpha), alphaAnimation: layer.alphaAnimation, tint: SIMD3(1, 1, 1),
+                    isAdditive: layer.blending == "additive" || layer.blending == "add",
+                    parallaxDepth: SIMD2(0, 0), originAnimation: nil,
+                    originScale: SIMD2(Float(2 / orthoW), Float(2 / orthoH)),
+                    rotA: SIMD2(1, 0), rotB: SIMD2(0, 1), effects: compEffects,
+                    videoTrack: nil, puppet: nil, text: nil, scriptGroup: nil)
+                comp.isComposition = true
+                prepared.append(comp)
+                continue
+            }
             // A text layer (clock, label) draws rendered glyphs: build its font + (optional) script runtime;
             // the quad's size is derived at render time from the rasterised string. No packed texture.
             if layer.isTextLayer {
@@ -838,6 +885,16 @@ public final class SceneRenderer {
                 puppet: puppet,
                 text: nil,
                 scriptGroup: scriptGroup))
+            if let oid = layer.objectID { objectIDToPreparedIndex[oid] = prepared.count - 1 }
+        }
+        // Resolve each composition layer's dependencies to prepared-layer indices, and flag the consumed layers
+        // (those feed a composition layer's input, so the draw pass must not draw them directly). Done after the
+        // loop so a dependency declared later in the object list still resolves.
+        for (compIdx, depIDs) in compositionDeps {
+            prepared[compIdx].dependencyIndices = depIDs.compactMap { objectIDToPreparedIndex[$0] }
+        }
+        for (oid, idx) in objectIDToPreparedIndex where consumedIDs.contains(oid) {
+            prepared[idx].consumed = true
         }
 
         var preparedParticles: [PreparedParticles] = []
@@ -1062,7 +1119,7 @@ public final class SceneRenderer {
     /// effect that blanks the layer is skipped, so it degrades gracefully instead of going transparent.
     private func prepareEffects(_ effects: [LayerEffect], package: ScenePackage, base: MTLTexture,
                                 center: SIMD2<Float>, halfExtent: SIMD2<Float>, uvScale: SIMD2<Float>,
-                                tint: SIMD3<Float>) -> [PreparedEffect] {
+                                tint: SIMD3<Float>, compositionProbe: Bool = false) -> [PreparedEffect] {
         guard let effectRenderer, !effects.isEmpty else { return [] }
         var compiled: [PreparedEffect] = []
         for effect in effects {
@@ -1185,7 +1242,13 @@ public final class SceneRenderer {
                 // Drop a pass that erases the layer's coverage, flattens it to near-uniform colour, OR washes
                 // it toward white (a screen blend against the missing aux placeholder) — all three otherwise
                 // pass a coverage-only check while looking nothing like the wallpaper does in WE.
-                guard coverage(rgba) >= probeCoverage / 2, detail(rgba) >= probeDetail / 5,
+                // A composition layer's effect may legitimately thin coverage/detail (a perspective projection
+                // spreads a small tile across the sky), so relax those two checks for it — but KEEP the wash
+                // guard, which is exactly what stops a screen-blend-against-missing-aux effect from painting the
+                // whole scene white (the failure that blanked the Zenitsu scene 3319713168).
+                let minCoverage = compositionProbe ? probeCoverage * 0 : probeCoverage / 2
+                let minDetail = compositionProbe ? probeDetail * 0 : probeDetail / 5
+                guard coverage(rgba) >= minCoverage, detail(rgba) >= minDetail,
                       lumaStats(rgba).mean - baseLuma <= washThreshold else { stable = false; break }
                 if time == 0 { stableOutput = output; stableRGBA = rgba }
             }
@@ -1480,22 +1543,34 @@ public final class SceneRenderer {
         var effectResult: [Int: MTLTexture] = [:]
         if effectRenderer != nil, ProcessInfo.processInfo.environment["LUMORA_NO_EFFECTS"] == nil {
             for (index, layer) in scene.layers.enumerated() where !layer.effects.isEmpty {
-                let center = animatedCenter(layer, time: time, swayX: swayX, swayY: swayY)
-                // The effect-input quad is a full-size transient target consumed entirely within this layer's
-                // synchronous effect chain (the chain's output replaces it and lands in effectResult). Borrow
-                // it from the per-frame pool instead of allocating a fresh ~33 MB texture every frame; it's
-                // returned by recycleEffectTextures() once the frame is composited.
-                // A single-layer scene has nothing behind this layer but the scene's clear colour, so clear the
-                // effect input to it (opaque) — the effect then blends its edge into that colour instead of a
-                // transparent void, killing the stray seam. A multi-layer scene keeps the transparent clear so
-                // the effect result composites correctly over the layers underneath.
-                let backdrop: SIMD3<Float>? = scene.layers.count == 1
-                    ? SIMD3(Float(scene.clearColor.x), Float(scene.clearColor.y), Float(scene.clearColor.z)) : nil
-                guard var texture = renderQuadToTexture(currentTexture(layer, time: time), center: center,
-                                                        halfExtent: layer.halfExtent, uvScale: layer.uvScale,
-                                                        tint: layer.tint, width: width, height: height,
-                                                        rotA: layer.rotA, rotB: layer.rotB, backdrop: backdrop,
-                                                        allocTarget: { w, h, fmt in self.borrowEffectTarget(width: w, height: h, pixelFormat: fmt) }) else { continue }
+                // A composition layer's effect input is its dependency layers composited into one transient
+                // (built below), not a quad of its own; everything else renders its own quad exactly as before.
+                let effectInput: MTLTexture
+                if layer.isComposition {
+                    guard let depInput = renderCompositionInput(layer, scene: scene, effectResult: effectResult,
+                                                                time: time, swayX: swayX, swayY: swayY,
+                                                                aspectScale: aspectScale, width: width, height: height) else { continue }
+                    effectInput = depInput
+                } else {
+                    let center = animatedCenter(layer, time: time, swayX: swayX, swayY: swayY)
+                    // The effect-input quad is a full-size transient target consumed entirely within this layer's
+                    // synchronous effect chain (the chain's output replaces it and lands in effectResult). Borrow
+                    // it from the per-frame pool instead of allocating a fresh ~33 MB texture every frame; it's
+                    // returned by recycleEffectTextures() once the frame is composited.
+                    // A single-layer scene has nothing behind this layer but the scene's clear colour, so clear the
+                    // effect input to it (opaque) — the effect then blends its edge into that colour instead of a
+                    // transparent void, killing the stray seam. A multi-layer scene keeps the transparent clear so
+                    // the effect result composites correctly over the layers underneath.
+                    let backdrop: SIMD3<Float>? = scene.layers.count == 1
+                        ? SIMD3(Float(scene.clearColor.x), Float(scene.clearColor.y), Float(scene.clearColor.z)) : nil
+                    guard let quadTexture = renderQuadToTexture(currentTexture(layer, time: time), center: center,
+                                                               halfExtent: layer.halfExtent, uvScale: layer.uvScale,
+                                                               tint: layer.tint, width: width, height: height,
+                                                               rotA: layer.rotA, rotB: layer.rotB, backdrop: backdrop,
+                                                               allocTarget: { w, h, fmt in self.borrowEffectTarget(width: w, height: h, pixelFormat: fmt) }) else { continue }
+                    effectInput = quadTexture
+                }
+                var texture = effectInput
                 for effect in layer.effects {
                     guard let output = applyEffect(effect, to: texture, time: Float(time), width: width, height: height,
                         allocTarget: { w, h, fmt in self.borrowEffectTarget(width: w, height: h, pixelFormat: fmt) }) else { break }
@@ -1580,6 +1655,11 @@ public final class SceneRenderer {
                                   aspectScale: SIMD2<Float>, swayX: Float, swayY: Float,
                                   effectResult: [Int: MTLTexture]) {
         for (index, layer) in scene.layers.enumerated() {
+            // A consumed dependency feeds a composition layer's input — it is never drawn directly to the screen.
+            if layer.consumed { continue }
+            // A composition layer contributes only through its full-screen effect result; if it produced none
+            // (no usable effects), skip it so it never paints its placeholder quad over the scene.
+            if layer.isComposition && effectResult[index] == nil { continue }
             var alpha = layer.alphaAnimation.map { Float($0.value(at: time)) } ?? layer.alpha
 
             // An audio-visualiser layer drives its own scene graph: feed this frame's spectrum to the script,
@@ -1822,6 +1902,58 @@ public final class SceneRenderer {
     /// single-layer scene) clears it OPAQUE instead, so an effect that samples across the layer's edge blends
     /// into that colour rather than leaving a semi-transparent fringe — the stray seam against a flat
     /// background the owner flagged on the single-image scene 2636878454.
+    /// Build a composition layer's effect input: draw each of its dependency layers into one full-screen
+    /// transient (cleared transparent), in dependency order. A dependency that already ran its own effect chain
+    /// (Pass 1 reached it first, since it precedes the composition layer) is drawn full-screen from its result;
+    /// one without effects is drawn at its own placement. The composition layer's effects then project/grade
+    /// this. Returns nil if it has no resolved dependencies (the caller then skips the layer).
+    private func renderCompositionInput(_ comp: PreparedLayer, scene: PreparedScene,
+                                        effectResult: [Int: MTLTexture], time: Double, swayX: Float, swayY: Float,
+                                        aspectScale: SIMD2<Float>, width: Int, height: Int) -> MTLTexture? {
+        let deps = comp.dependencyIndices.filter { $0 >= 0 && $0 < scene.layers.count }
+        guard !deps.isEmpty,
+              let target = borrowEffectTarget(width: width, height: height, pixelFormat: .rgba8Unorm),
+              let commandBuffer = queue.makeCommandBuffer() else { return nil }
+        let pass = MTLRenderPassDescriptor()
+        pass.colorAttachments[0].texture = target
+        pass.colorAttachments[0].loadAction = .clear
+        pass.colorAttachments[0].storeAction = .store
+        pass.colorAttachments[0].clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 0)
+        guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: pass) else { return nil }
+        for depIndex in deps {
+            let dep = scene.layers[depIndex]
+            // A dependency that is itself a composition layer contributes only through its effect result; if it
+            // produced none, skip it rather than drawing its white placeholder quad (which would wash the input).
+            if dep.isComposition && effectResult[depIndex] == nil { continue }
+            var quad: QuadUniform
+            let texture: MTLTexture
+            var tint: SIMD3<Float>
+            if let effected = effectResult[depIndex] {
+                // The dependency's effect result is already full-screen (placement baked in), like an effect layer.
+                quad = QuadUniform(center: SIMD2(0, 0), halfExtent: SIMD2(1, 1), uvScale: SIMD2(1, 1), aspectScale: aspectScale)
+                texture = effected
+                tint = SIMD3(1, 1, 1)
+            } else {
+                quad = QuadUniform(center: animatedCenter(dep, time: time, swayX: swayX, swayY: swayY),
+                                   halfExtent: dep.halfExtent, uvScale: dep.uvScale, aspectScale: aspectScale,
+                                   rotA: dep.rotA, rotB: dep.rotB)
+                texture = currentTexture(dep, time: time)
+                tint = dep.tint
+            }
+            var alpha = dep.alphaAnimation.map { Float($0.value(at: time)) } ?? dep.alpha
+            encoder.setRenderPipelineState(dep.isAdditive ? pipelineAdditive : pipelineOver)
+            encoder.setVertexBytes(&quad, length: MemoryLayout<QuadUniform>.stride, index: 0)
+            encoder.setFragmentTexture(texture, index: 0)
+            encoder.setFragmentSamplerState(sampler, index: 0)
+            encoder.setFragmentBytes(&alpha, length: MemoryLayout<Float>.size, index: 0)
+            encoder.setFragmentBytes(&tint, length: MemoryLayout<SIMD3<Float>>.stride, index: 1)
+            encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
+        }
+        encoder.endEncoding()
+        commandBuffer.commit()
+        return target
+    }
+
     private func renderQuadToTexture(_ source: MTLTexture, center: SIMD2<Float>, halfExtent: SIMD2<Float>,
                                      uvScale: SIMD2<Float>, tint: SIMD3<Float>, width: Int, height: Int,
                                      rotA: SIMD2<Float> = SIMD2(1, 0), rotB: SIMD2<Float> = SIMD2(0, 1),
