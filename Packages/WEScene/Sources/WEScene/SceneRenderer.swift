@@ -1108,6 +1108,14 @@ public final class SceneRenderer {
             if blob.contains(where: { name.contains($0) }), tokens.isDisjoint(with: skip) {
                 return (haloTexture, SIMD2(1, 1))   // procedural glow fills its texture: no crop
             }
+            // Nature petals/leaves (rosepetals, sakura, leaves): WE ships a soft alpha sprite per family that we
+            // don't have. Unlike fire/debris (which recolour unpredictably per emitter), a falling-petal field is
+            // a small soft shape tinted by the particle's own colour — a colour-tinted soft sprite at the right
+            // place/colour is closer to WE than dropping the emitter and leaving the scene bare.
+            let nature: Set = ["rosepetals", "petal", "petals", "leaf", "leaves", "blossom", "sakura"]
+            if name.contains("/nature/") || !tokens.isDisjoint(with: nature) {
+                return (haloTexture, SIMD2(1, 1))
+            }
         }
         // Diagnostic (off by default): surface which sprites are being skipped so the silent drops that leave a
         // scene missing its snow/rain/petals/etc. become visible data instead of an invisible gap.
