@@ -1494,7 +1494,10 @@ public final class SceneRenderer {
                 velX += (rand(seed, 31) * 2 - 1 + s.turbVelOffset) * s.turbVelScale * spd
                 velY += (rand(seed, 32) * 2 - 1 + s.turbVelOffset) * s.turbVelScale * spd
             }
-            let baseSize = lerp(s.size.lowerBound, s.size.upperBound, rand(seed, 5))
+            // WE's `size` is a particle DIAMETER, halved into the radius the sprite quad extends from its centre
+            // (the quad spans ±halfExtent = the full diameter). Without the halving every sprite drew at twice WE's
+            // size, over-filling dense fields; the /2 matches WE and lifts ~20 particle scenes against the oracle.
+            let baseSize = lerp(s.size.lowerBound, s.size.upperBound, rand(seed, 5)) * 0.5
             let alpha0 = lerp(s.alpha.lowerBound, s.alpha.upperBound, rand(seed, 6))
             var color = SIMD3<Float>(Float(lerp(s.color.min.x, s.color.max.x, rand(seed, 7)) / 255),
                                      Float(lerp(s.color.min.y, s.color.max.y, rand(seed, 8)) / 255),
