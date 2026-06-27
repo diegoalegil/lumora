@@ -162,13 +162,94 @@ final class CountingSpectrum: AudioSpectrumProvider, @unchecked Sendable {
     print("batch: \(ok) non-blank, \(blank) blank, \(failed) failed of \(cells.count) -> /tmp/lumora_contact_sheet.png")
 }
 
+/// A coarse 16×16 luma average-hash (256 bits, packed into 4 UInt64). A cell's bit is set when its mean
+/// luminance beats the frame's overall mean. Deliberately low-resolution so a clock/date widget ticking over
+/// between runs only flips a handful of bits, while a real regression (a gamma shift, a blanked layer, a
+/// vanished effect) flips dozens — letting the gate ignore the former and catch the latter by Hamming distance.
+@MainActor func perceptualHash(_ frame: RenderedFrame, width: Int, height: Int) -> [UInt64] {
+    let grid = 16
+    var sum = [Double](repeating: 0, count: grid * grid)
+    var cnt = [Double](repeating: 0, count: grid * grid)
+    frame.rgba.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
+        let p = raw.bindMemory(to: UInt8.self)
+        for y in 0 ..< height {
+            let gy = min(grid - 1, y * grid / height)
+            for x in 0 ..< width {
+                let i = (y * width + x) * 4
+                guard i + 2 < p.count else { continue }
+                let lum = 0.299 * Double(p[i]) + 0.587 * Double(p[i + 1]) + 0.114 * Double(p[i + 2])
+                let c = gy * grid + min(grid - 1, x * grid / width)
+                sum[c] += lum; cnt[c] += 1
+            }
+        }
+    }
+    for k in 0 ..< sum.count { sum[k] /= max(1, cnt[k]) }
+    let mean = sum.reduce(0, +) / Double(sum.count)
+    var bits = [UInt64](repeating: 0, count: 4)
+    for k in 0 ..< 256 where sum[k] > mean { bits[k / 64] |= (UInt64(1) << UInt64(k % 64)) }
+    return bits
+}
+
+/// Per-scene visual regression gate. Renders every `<dir>/*/scene.pkg`, hashes it, and either captures a
+/// baseline (when the file is absent) or compares against it: a scene whose hash drifts more than `tolerance`
+/// bits is flagged as an unexpected change. Run after any engine change to confirm the corpus didn't move.
+@MainActor func regressGate(_ dir: String, baselinePath: String, renderer: SceneRenderer) {
+    let fm = FileManager.default
+    let tolerance = 12   // bits out of 256; clock/date drift stays well under, a real regression well over
+    let W = 480, H = 300
+    var current: [(name: String, bits: [UInt64])] = []
+    for name in ((try? fm.contentsOfDirectory(atPath: dir)) ?? []).sorted() {
+        let pkgPath = dir + "/" + name + "/scene.pkg"
+        guard fm.fileExists(atPath: pkgPath),
+              let data = try? Data(contentsOf: URL(fileURLWithPath: pkgPath)),
+              let package = try? ScenePackage.read(data),
+              let document = try? SceneGraph.load(from: package),
+              let frame = renderer.render(document, package: package, width: W, height: H) else { continue }
+        current.append((name, perceptualHash(frame, width: W, height: H)))
+    }
+    func hex(_ bits: [UInt64]) -> String { bits.map { String(format: "%016llx", $0) }.joined() }
+    func parse(_ s: String) -> [UInt64] {
+        var out: [UInt64] = []
+        for i in stride(from: 0, to: min(64, s.count), by: 16) {
+            let a = s.index(s.startIndex, offsetBy: i), b = s.index(a, offsetBy: 16)
+            out.append(UInt64(s[a ..< b], radix: 16) ?? 0)
+        }
+        return out.count == 4 ? out : [0, 0, 0, 0]
+    }
+    guard let text = try? String(contentsOfFile: baselinePath, encoding: .utf8) else {
+        let body = current.map { "\($0.name) \(hex($0.bits))" }.joined(separator: "\n") + "\n"
+        try? body.write(toFile: baselinePath, atomically: true, encoding: .utf8)
+        print("regress: captured baseline of \(current.count) scenes -> \(baselinePath)")
+        return
+    }
+    var baseline: [String: [UInt64]] = [:]
+    for line in text.split(separator: "\n") {
+        let parts = line.split(separator: " ")
+        if parts.count == 2 { baseline[String(parts[0])] = parse(String(parts[1])) }
+    }
+    var flagged = 0, checked = 0
+    for (name, bits) in current {
+        guard let base = baseline[name] else { print("  NEW scene (not in baseline): \(name)"); continue }
+        checked += 1
+        let dist = zip(bits, base).reduce(0) { $0 + (($1.0 ^ $1.1).nonzeroBitCount) }
+        if dist > tolerance { print(String(format: "  CHANGED %@  (hamming %d / 256)", name, dist)); flagged += 1 }
+    }
+    print("regress: \(checked) scenes checked, \(flagged) changed beyond \(tolerance) bits")
+    exit(flagged == 0 ? 0 : 2)
+}
+
 // Optional dev mode: a scene.pkg path renders one wallpaper; a directory batch-renders a contact sheet.
 if CommandLine.arguments.count > 1 {
     let arg = CommandLine.arguments[1]
     guard let renderer = SceneRenderer() else { print("no Metal device"); exit(0) }
     var isDir: ObjCBool = false
     _ = FileManager.default.fileExists(atPath: arg, isDirectory: &isDir)
-    if isDir.boolValue { batchRender(arg, renderer: renderer); exit(0) }
+    if isDir.boolValue {
+        if CommandLine.arguments.count > 3, CommandLine.arguments[2] == "regress" {
+            regressGate(arg, baselinePath: CommandLine.arguments[3], renderer: renderer); exit(0)
+        }
+        batchRender(arg, renderer: renderer); exit(0)
+    }
     guard let data = try? Data(contentsOf: URL(fileURLWithPath: arg)),
           let package = try? ScenePackage.read(data),
           let document = try? SceneGraph.load(from: package) else { print("failed to load \(arg)"); exit(1) }
