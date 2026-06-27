@@ -349,38 +349,46 @@ func meanSSIM(_ a: [UInt8], _ b: [UInt8], width: Int, height: Int) -> Double {
 /// (structure) + MAE (colour/tone), worst-first. A scene with no reference is skipped, so the gate works
 /// incrementally as captures arrive. Exits 2 if any compared scene falls below the SSIM floor; a no-op (exit 0)
 /// until at least one reference exists, so it is safe to wire into check_all before the corpus is populated.
-@MainActor func parityGate(_ dir: String, referenceDir: String, renderer: SceneRenderer, time: Double = 0) {
+///
+/// The WE captures are a single moment ~16s after a wallpaper is applied, so an animated scene (scroll, particle
+/// drift, colour cycle) is at a phase Lumora's t=0 render can't match — a phase mismatch reads as a fidelity gap.
+/// To de-confound, each scene is rendered at SEVERAL elapsed times and scored by its BEST-matching phase: a still
+/// scene's best is t=0 (unaffected), while an animated scene is judged on whether Lumora can reproduce the look at
+/// all, not on a moment mismatch. Pass an explicit `time` to score that single phase instead (a spot-check).
+@MainActor func parityGate(_ dir: String, referenceDir: String, renderer: SceneRenderer, time: Double? = nil) {
     let fm = FileManager.default
     let ssimFloor = 0.80   // structure must broadly match WE; tighten once a real reference corpus is measured
+    let phases: [Double] = time.map { [$0] } ?? [0, 2, 5, 8, 12, 16]
     func referencePath(_ id: String) -> String? {
         ["\(referenceDir)/\(id).png", "\(referenceDir)/\(id)/static.png", "\(referenceDir)/\(id)/\(id).png"]
             .first { fm.fileExists(atPath: $0) }
     }
-    var rows: [(id: String, ssim: Double, mae: Double)] = []
+    var rows: [(id: String, ssim: Double, mae: Double, at: Double)] = []
     var skipped = 0
     for name in ((try? fm.contentsOfDirectory(atPath: dir)) ?? []).sorted() {
         let pkgPath = dir + "/" + name + "/scene.pkg"
         guard fm.fileExists(atPath: pkgPath) else { continue }
         guard let refPath = referencePath(name), let ref = loadReferenceRGBA(refPath) else { skipped += 1; continue }
-        // The WE captures are taken ~16s after the wallpaper is applied; rendering at a matching elapsed time
-        // (not t=0) phase-aligns animated scenes — scroll, particle drift, colour cycles — so their SSIM reflects
-        // fidelity rather than a moment mismatch. A still scene is unaffected.
         guard let data = try? Data(contentsOf: URL(fileURLWithPath: pkgPath)),
               let package = try? ScenePackage.read(data),
               let document = try? SceneGraph.load(from: package) else { print("  LOAD-FAILED \(name)"); continue }
-        guard let frame = renderer.render(renderer.prepare(document, package: package),
-                                          width: ref.width, height: ref.height, time: time) else {
-            print("  RENDER-FAILED \(name)"); continue
+        let prepared = renderer.prepare(document, package: package)
+        var best: (ssim: Double, mae: Double, at: Double)?
+        for t in phases {
+            guard let frame = renderer.render(prepared, width: ref.width, height: ref.height, time: t) else { continue }
+            let rgba = [UInt8](frame.rgba)
+            let s = meanSSIM(rgba, ref.rgba, width: ref.width, height: ref.height)
+            if best == nil || s > best!.ssim { best = (s, meanAbsErrorRGB(rgba, ref.rgba), t) }
         }
-        let rgba = [UInt8](frame.rgba)
-        rows.append((name, meanSSIM(rgba, ref.rgba, width: ref.width, height: ref.height),
-                     meanAbsErrorRGB(rgba, ref.rgba)))
+        guard let b = best else { print("  RENDER-FAILED \(name)"); continue }
+        rows.append((name, b.ssim, b.mae, b.at))
     }
-    print("parity vs \(referenceDir) @ t=\(time): \(rows.count) compared, \(skipped) without a reference (skipped)")
+    let mode = time.map { "@ t=\($0)" } ?? "best-of-phases \(phases.map { Int($0) })"
+    print("parity vs \(referenceDir) \(mode): \(rows.count) compared, \(skipped) without a reference (skipped)")
     var failed = 0
     for r in rows.sorted(by: { $0.ssim < $1.ssim }) {
         if r.ssim < ssimFloor { failed += 1 }
-        print(String(format: "  %@  SSIM %.4f  MAE %6.2f%@", r.id, r.ssim, r.mae, r.ssim < ssimFloor ? "  FAIL" : ""))
+        print(String(format: "  %@  SSIM %.4f  MAE %6.2f  @t=%g%@", r.id, r.ssim, r.mae, r.at, r.ssim < ssimFloor ? "  FAIL" : ""))
     }
     print("parity: \(rows.count - failed)/\(rows.count) at or above SSIM \(ssimFloor)")
     if !rows.isEmpty { exit(failed == 0 ? 0 : 2) }
@@ -397,7 +405,7 @@ if CommandLine.arguments.count > 1 {
             regressGate(arg, baselinePath: CommandLine.arguments[3], renderer: renderer); exit(0)
         }
         if CommandLine.arguments.count > 3, CommandLine.arguments[2] == "parity" {
-            let t = CommandLine.arguments.count > 4 ? (Double(CommandLine.arguments[4]) ?? 0) : 0
+            let t = CommandLine.arguments.count > 4 ? Double(CommandLine.arguments[4]) : nil   // nil -> best-of-phases
             parityGate(arg, referenceDir: CommandLine.arguments[3], renderer: renderer, time: t); exit(0)
         }
         if CommandLine.arguments.count > 2, CommandLine.arguments[2] == "benchall" {
