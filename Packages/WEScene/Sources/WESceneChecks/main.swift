@@ -495,6 +495,17 @@ Check.that("a non-advancing time falls back to 1/60 (not a zero delta)",
 Check.that("a backward time (reload reset to 0) falls back to 1/60 (not negative)",
            SceneRenderer.scriptFrameDelta(time: 0.5, lastTime: 1.0) == 0.0166667)
 
+// The live effect uniforms: a blur reads g_TexelSize for its tap offset and a fluid/advection pass scales by
+// g_Frametime; left unbound they default to zero and the effect silently no-ops. effectOverrides must supply
+// them with the WE shapes (g_Frametime float, g_Screen/g_TexelSize vec2 = size and 1/size).
+let liveOverrides = SceneRenderer.effectOverrides(time: 3, frameDelta: 0.02, width: 1280, height: 800, resolutions: [:])
+Check.that("g_Frametime is supplied as a 1-float frame delta",
+           liveOverrides["g_Frametime"] == [0.02])
+Check.that("g_Screen is the render size in pixels (vec2)",
+           liveOverrides["g_Screen"] == [1280, 800])
+Check.that("g_TexelSize is 1/size (vec2), the basis a blur tap needs",
+           liveOverrides["g_TexelSize"].map { abs($0[0] - 1.0/1280) < 1e-9 && abs($0[1] - 1.0/800) < 1e-9 } == true)
+
 // Regression (audit-found): a particle's per-cycle hash seed came from Int(time / lifetime), which traps when
 // that quotient exceeds Int.max (a huge or non-finite render time) — the kind of degenerate time a buggy clock or
 // a very long-lived session could produce. The particle render must complete at any time, not abort. A normal

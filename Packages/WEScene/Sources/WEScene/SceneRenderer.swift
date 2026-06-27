@@ -1024,9 +1024,20 @@ public final class SceneRenderer {
     /// resolution as (storageW, storageH, contentW, contentH). `.xy` is the texel-size basis a downsample/
     /// blur needs; `.zw` is the content sub-rect a padded aux mask/normal remaps UVs into (`.zw / .xy`). For
     /// exact-size render targets the two are equal, so the ratio stays 1; for a POT-padded aux it's < 1.
-    private static func effectOverrides(time: Float, resolutions: [Int: (storage: SIMD2<Int>, content: SIMD2<Int>)]) -> [String: [Float]] {
+    /// Pure, so the supplied built-in set (and the new live g_Frametime/g_Screen/g_TexelSize) is unit-testable.
+    public static func effectOverrides(time: Float, frameDelta: Float, width: Int, height: Int,
+                                       resolutions: [Int: (storage: SIMD2<Int>, content: SIMD2<Int>)]) -> [String: [Float]] {
         var overrides: [String: [Float]] = [
             "g_Time": [time],
+            // Seconds since the previous frame (g_Frametime), the render size in pixels (g_Screen) and its
+            // reciprocal (g_TexelSize = 1/size). A blur/downsample reads g_TexelSize for its per-pixel tap
+            // offset and a fluid/advection pass scales motion by g_Frametime; left unbound they default to zero,
+            // collapsing the taps to a zero offset (an identity no-op) so the effect silently does nothing.
+            // Deterministic per frame, so the offscreen byte-identity oracle stays reproducible. A pass that
+            // samples a downsampled FBO gets its own texel basis from g_Texture<n>Resolution (.xy) below.
+            "g_Frametime": [frameDelta],
+            "g_Screen": [Float(width), Float(height)],
+            "g_TexelSize": [1.0 / Float(max(1, width)), 1.0 / Float(max(1, height))],
             "g_ModelViewProjectionMatrix": [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1],
             // The pointer rests at the screen centre: a cursor-reactive effect (e.g. iris-follow-cursor) reads
             // these to nudge a region toward the mouse, and on a desktop wallpaper there's no live pointer to
@@ -1115,7 +1126,8 @@ public final class SceneRenderer {
                 inputs.append((index: sampler.slot, texture: texture))
                 resolutions[sampler.number] = (SIMD2(texture.width, texture.height), content)
             }
-            let overrides = Self.effectOverrides(time: time, resolutions: resolutions)
+            let overrides = Self.effectOverrides(time: time, frameDelta: Float(currentScriptFrameDelta),
+                                                 width: width, height: height, resolutions: resolutions)
                 .merging(currentAudioOverrides) { _, audio in audio }
             let fragmentUniforms = UniformPacker.pack(pass.scalars, values: pass.constants, overrides: overrides)
             let vertexUniforms = pass.hasVertex ? UniformPacker.pack(pass.vertexScalars, values: pass.constants, overrides: overrides) : Data()
