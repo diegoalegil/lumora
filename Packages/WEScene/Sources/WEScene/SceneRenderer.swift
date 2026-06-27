@@ -466,11 +466,13 @@ public final class SceneRenderer {
         float2 uvs[4]    = { float2(0, 1),  float2(1, 1),  float2(0, 0),  float2(1, 0) };
         PInst p = insts[iid];
         POut out;
-        // Rotate the unit corner by the sprite's rotor (cos, sin) before scaling: halfExtent maps the unit
-        // square to equal pixels on both axes, so this spins the sprite in the screen plane.
-        float2 c = corner[vid];
+        // Scale the unit corner by halfExtent (local axes), THEN rotate by the sprite's rotor (cos, sin). For a
+        // round sprite (halfExtent isotropic) this is identical to rotating first; for a velocity-aligned trail
+        // (anisotropic halfExtent: length on local x, width on local y) it produces a ribbon oriented along the
+        // rotor instead of an axis-aligned box that was merely spun.
+        float2 c = corner[vid] * p.halfExtent;
         float2 r = float2(c.x * p.rotor.x - c.y * p.rotor.y, c.x * p.rotor.y + c.y * p.rotor.x);
-        out.position = float4((p.center + r * p.halfExtent) * aspectScale, 0, 1);
+        out.position = float4((p.center + r) * aspectScale, 0, 1);
         out.uv = uvs[vid] * uvScale;   // sample only the content region of a padded (POT) sprite
         out.color = p.color;
         return out;
@@ -1650,11 +1652,26 @@ public final class SceneRenderer {
             let spin = max(-12, min(12, lerp(s.angularVelocity.lowerBound, s.angularVelocity.upperBound, rand(seed, 14))))
             // angularmovement adds a constant angular acceleration: θ = θ₀ + ω·age + ½·force·age².
             let angle = Float(angle0 + spin * age + 0.5 * s.angularForce * age * age)
+            // Default round sprite: isotropic half-extent, oriented by the spin angle.
+            var halfExtent = SIMD2(Float(size / orthoW), Float(size / orthoH))
+            var rotor = SIMD2(cos(angle), sin(angle))
+            // A spritetrail stretches the sprite into a ribbon along its velocity: local-x carries the streak
+            // length (clamped speed·trailLength), local-y the sprite width, and the rotor aligns local-x to the
+            // velocity direction. Slow particles fall back to the round sprite (atan2 is undefined at zero speed).
+            if s.renderMode == .spriteTrail {
+                let speed = (velX * velX + velY * velY).squareRoot()
+                if speed > 1e-4 {
+                    let len = max(s.trailMinLength, min(s.trailMaxLength, speed * s.trailLength))
+                    let phi = Float(atan2(velY, velX))
+                    halfExtent = SIMD2(Float(len * 0.5 / orthoW), Float(size / orthoH))
+                    rotor = SIMD2(cos(phi), sin(phi))
+                }
+            }
             dst[n] = ParticleInstance(
                 center: SIMD2(Float(posX / orthoW * 2 - 1), Float(posY / orthoH * 2 - 1)),
-                halfExtent: SIMD2(Float(size / orthoW), Float(size / orthoH)),
+                halfExtent: halfExtent,
                 color: SIMD4(color, Float(alpha0) * fade),
-                rotor: SIMD2(cos(angle), sin(angle)))
+                rotor: rotor)
             n += 1
         }
         return n

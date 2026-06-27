@@ -79,6 +79,14 @@ public struct ParticleSystem: Sendable, Equatable {
     // plane (uniform by area), not a square box. `radiusMin` (distancemin) hollows the centre into a ring.
     public var isSphere: Bool = false
     public var radiusMin: Double = 0
+    // How the system's particles are drawn (the `renderer` block). `.sprite` is the default round quad;
+    // `.spriteTrail` stretches each sprite into a ribbon aligned to its velocity (comets, shooting stars, rain
+    // streaks); `.rope` is reserved (a connected strip — not yet a distinct draw path).
+    public enum RenderMode: Sendable { case sprite, spriteTrail, rope }
+    public var renderMode: RenderMode = .sprite
+    public var trailLength: Double = 1       // streak length = clamp(speed * trailLength, min, max)
+    public var trailMaxLength: Double = 100
+    public var trailMinLength: Double = 1
     public var materialPath: String?    // material → sprite texture
 
     public var lifetime: ClosedRange<Double>
@@ -298,6 +306,22 @@ public struct ParticleSystem: Sendable, Equatable {
                 // value from a bad .pkg would otherwise drive the tint interpolation into NaN.
                 system.colorChangeStartTime = clampFinite((op["starttime"] as? NSNumber)?.doubleValue ?? 0, 0, 1, 0)
                 system.colorChangeEndTime = clampFinite((op["endtime"] as? NSNumber)?.doubleValue ?? 1, 0, 1, 1)
+            default: break
+            }
+        }
+        // The `renderer` block selects how particles are drawn. WE draws a `spritetrail` as a ribbon stretched
+        // along the particle's velocity (length = clamp(speed·length, min, max)); without it comets / shooting
+        // stars / rain streaks render as round dots. `rope`/`ropetrail` connect particles into a strip (reserved;
+        // still drawn as sprites until a strip draw path exists). Plain `sprite`/absent keeps the round quad.
+        for r in (json["renderer"] as? [[String: Any]]) ?? [] {
+            switch (r["name"] as? String) ?? "" {
+            case "spritetrail":
+                system.renderMode = .spriteTrail
+                system.trailLength = clampFinite((r["length"] as? NSNumber)?.doubleValue ?? 1, 0, 1000, 1)
+                system.trailMaxLength = clampFinite((r["maxlength"] as? NSNumber)?.doubleValue ?? 100, 0, 100_000, 100)
+                system.trailMinLength = clampFinite((r["minlength"] as? NSNumber)?.doubleValue ?? 1, 0, 100_000, 1)
+            case "rope", "ropetrail":
+                system.renderMode = .rope
             default: break
             }
         }
