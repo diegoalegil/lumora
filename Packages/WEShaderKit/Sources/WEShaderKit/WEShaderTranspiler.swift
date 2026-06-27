@@ -364,6 +364,19 @@ public enum WEShaderTranspiler {
     private static func operandDim(_ token: String, _ dims: [String: Int]) -> Int? {
         let t = token.trimmingCharacters(in: .whitespaces)
         if t.range(of: #"^[-+]?[0-9.]+$"#, options: .regularExpression) != nil { return 1 }   // numeric literal
+        // A fully-parenthesised operand: type it from its interior so a width flows up through a nested chain
+        // (WE writes `(uv * 2 - center) / ratio` where the inner group decides this operand's width). A leading
+        // `(` that closes before the end isn't a single group (`(a).x`, `(a) * (b)`) — those fall through.
+        if t.hasPrefix("("), t.hasSuffix(")") {
+            var depth = 0, single = true
+            for (i, ch) in t.enumerated() {
+                if ch == "(" { depth += 1 } else if ch == ")" { depth -= 1; if depth == 0 && i != t.count - 1 { single = false; break } }
+            }
+            if single {
+                let inner = String(t.dropFirst().dropLast())
+                return operandDim(inner, dims) ?? expressionDim(inner, dims)
+            }
+        }
         if let m = t.range(of: #"^(vec([234])|float([234])?)\s*\("#, options: .regularExpression) {
             let head = t[t.startIndex..<m.upperBound]
             if head.contains("4") { return 4 }; if head.contains("3") { return 3 }; if head.contains("2") { return 2 }
