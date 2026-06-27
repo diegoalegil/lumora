@@ -75,6 +75,10 @@ public struct ParticleSystem: Sendable, Equatable {
     public var rate: Double             // particles spawned per second
     public var origin: SceneVec3        // emitter centre (scene units)
     public var boxSize: SceneVec3       // half-extents a particle may spawn within (boxrandom)
+    // A sphere/disc emitter (sphererandom): particles spawn across a DISC of radius `boxSize` in the screen
+    // plane (uniform by area), not a square box. `radiusMin` (distancemin) hollows the centre into a ring.
+    public var isSphere: Bool = false
+    public var radiusMin: Double = 0
     public var materialPath: String?    // material → sprite texture
 
     public var lifetime: ClosedRange<Double>
@@ -154,6 +158,10 @@ public struct ParticleSystem: Sendable, Equatable {
         if kind.hasPrefix("sphere"), boxSize.y == 0, boxSize.z == 0 {
             boxSize = SceneVec3(x: boxSize.x, y: boxSize.x, z: 0)
         }
+        let isSphere = kind.hasPrefix("sphere")
+        // distancemin is the sphere emitter's inner (hollow) radius: a burst that should ring a point instead of
+        // filling through it. Scalar for a sphere; clamped finite like every other untrusted particle scalar.
+        let radiusMin = clampFinite((emitter["distancemin"] as? NSNumber)?.doubleValue ?? 0, 0, 100_000, 0)
         // A boxrandom emitter that ships NO distancemax (the key is absent, not "0 0 0") should spread across the
         // scene, not collapse to a point — WE renders these as a fine field over the whole wallpaper, while a zero
         // box piles every sprite at the emitter origin (the dense magenta-square "orbs" bug). Only apply when the
@@ -182,6 +190,8 @@ public struct ParticleSystem: Sendable, Equatable {
             hasColorChange: false, colorChangeStart: SceneVec3(x: 1, y: 1, z: 1),
             colorChangeEnd: SceneVec3(x: 1, y: 1, z: 1), colorChangeStartTime: 0, colorChangeEndTime: 1,
             turbulence: nil, attractors: [], vortex: nil)
+        system.isSphere = isSphere
+        system.radiusMin = radiusMin
 
         for initializer in (json["initializer"] as? [[String: Any]]) ?? [] {
             let name = (initializer["name"] as? String) ?? ""

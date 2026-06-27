@@ -1473,8 +1473,20 @@ public final class SceneRenderer {
             let cycleSeed = cycle.isFinite ? UInt32(truncatingIfNeeded: Int(cycle.truncatingRemainder(dividingBy: 4_294_967_296))) : 0
             let seed = hash(slot, cycleSeed)
 
-            let spawnX = s.origin.x + s.boxSize.x * (rand(seed, 1) * 2 - 1)
-            let spawnY = s.origin.y + s.boxSize.y * (rand(seed, 2) * 2 - 1)
+            // A sphere/disc emitter fills a disc (uniform by area: radius ∝ √rand) instead of a square box, with
+            // distancemin hollowing the centre into a ring. WE's sphererandom is the common burst emitter, so the
+            // square box mis-shaped most particle fields. A box emitter keeps the uniform per-axis spread.
+            let spawnX: Double, spawnY: Double
+            if s.isSphere {
+                let ang = rand(seed, 1) * 2 * .pi
+                let rmin = min(s.radiusMin, s.boxSize.x)
+                let rr = (rmin * rmin + (s.boxSize.x * s.boxSize.x - rmin * rmin) * rand(seed, 2)).squareRoot()
+                spawnX = s.origin.x + rr * cos(ang)
+                spawnY = s.origin.y + rr * sin(ang) * (s.boxSize.x > 0 ? s.boxSize.y / s.boxSize.x : 1)
+            } else {
+                spawnX = s.origin.x + s.boxSize.x * (rand(seed, 1) * 2 - 1)
+                spawnY = s.origin.y + s.boxSize.y * (rand(seed, 2) * 2 - 1)
+            }
             // velocity = the velocityrandom range plus a sphere emitter's speed along a masked direction
             var velX = lerp(s.velocity.min.x, s.velocity.max.x, rand(seed, 3))
             var velY = lerp(s.velocity.min.y, s.velocity.max.y, rand(seed, 4))
