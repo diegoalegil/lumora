@@ -676,6 +676,27 @@ if let pkg = try? ScenePackage.read(cbm2Pkg), let doc = try? SceneGraph.load(fro
                doc.layers.first?.blending == "translucent")
 }
 
+// A WE composition layer (models/util/{project,compose,fullscreen,effect}layer.json) carries no texture of its
+// own; it reprojects/post-processes the scene through its effects, consuming the layers named in its
+// `dependencies`. The importer must flag it and record the object id + dependency ids so the renderer drives it
+// (rendering its dependencies → effects → recomposite) instead of skipping it as an unresolved image layer — the
+// dropped "sky layers" bug (3435120596: the CloudSeamless tile feeds a projectlayer that projects it over the sky).
+let compSceneJSON = Data(#"{"general":{"orthogonalprojection":{"width":1920,"height":1080},"clearcolor":"0 0 0"},"objects":[{"id":159,"name":"CloudSeamless","image":"models/m.json","origin":"960 540 0","visible":true},{"id":43,"name":"Composition","image":"models/util/projectlayer.json","origin":"960 540 0","dependencies":[159],"visible":true}]}"#.utf8)
+let compPkg = buildPKG(version: "PKGV0009", files: [
+    ("scene.json", compSceneJSON), ("models/m.json", modelJSON),
+    ("materials/mat.json", materialJSON), ("materials/mytex.tex", Data("x".utf8)),
+])
+if let pkg = try? ScenePackage.read(compPkg), let doc = try? SceneGraph.load(from: pkg) {
+    let comp = doc.layers.first(where: { $0.name == "Composition" })
+    let cloud = doc.layers.first(where: { $0.name == "CloudSeamless" })
+    Check.that("a util/projectlayer object is flagged as a composition layer", comp?.isCompositionLayer == true)
+    Check.that("the composition layer records its dependency ids", comp?.dependencyIDs == [159])
+    Check.that("the composition layer resolves to no base texture", comp?.texturePath == nil)
+    Check.that("the dependency layer's object id is captured", cloud?.objectID == 159)
+    Check.that("a plain image layer is not flagged as a composition layer", cloud?.isCompositionLayer == false)
+    Check.that("a plain image layer has no dependencies", cloud?.dependencyIDs == [])
+}
+
 // A layer's scale / colour / angles keyframe animations are now parsed into the IR (they were dropped to the
 // base value before). Interpolation is linear — WE's per-keyframe Bezier handles aren't read yet — so this is
 // the linear approximation the renderer will consume once the per-property animation path lands.

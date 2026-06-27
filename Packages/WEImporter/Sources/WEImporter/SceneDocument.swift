@@ -202,6 +202,16 @@ public struct SceneLayer: Sendable, Equatable {
     /// scene graph rather than returning a value — an audio visualiser clones this layer into N bars and drives
     /// each bar's height from the spectrum. The renderer runs it per frame and draws the layers it produces.
     public let driverScript: String?
+    /// The Wallpaper Engine object id, when known. Composition layers reference other layers by this id through
+    /// their `dependencies`, so the renderer needs it to find which layers a composition layer consumes.
+    public let objectID: Int?
+    /// True when this object is a WE built-in composition layer (`models/util/{project,compose,fullscreen,effect}layer.json`):
+    /// it has no image of its own and instead processes the scene composited so far (or its `dependencies`) through
+    /// its effect chain and recomposites the result. Drawn specially by the renderer, never as a plain quad.
+    public let isCompositionLayer: Bool
+    /// For a composition layer, the object ids it consumes as input (its `dependencies`). Those layers feed this
+    /// layer's effect chain instead of being drawn directly. Empty when the layer reads the whole scene composite.
+    public let dependencyIDs: [Int]
 
     public init(name: String, texturePath: String?, isSolidLayer: Bool, origin: SceneVec3, scale: SceneVec3,
                 size: SceneVec3?, angles: SceneVec3, alpha: Double, color: SceneVec3,
@@ -211,7 +221,8 @@ public struct SceneLayer: Sendable, Equatable {
                 visible: Bool, blending: String?, shader: String?, effects: [LayerEffect], puppetPath: String? = nil,
                 textValue: String? = nil, textScript: String? = nil, fontPath: String? = nil,
                 pointSize: Double = 32, horizontalAlign: String? = nil, verticalAlign: String? = nil,
-                driverScript: String? = nil, alignment: String? = nil) {
+                driverScript: String? = nil, alignment: String? = nil,
+                objectID: Int? = nil, isCompositionLayer: Bool = false, dependencyIDs: [Int] = []) {
         self.name = name
         self.texturePath = texturePath
         self.isSolidLayer = isSolidLayer
@@ -240,6 +251,9 @@ public struct SceneLayer: Sendable, Equatable {
         self.verticalAlign = verticalAlign
         self.driverScript = driverScript
         self.alignment = alignment
+        self.objectID = objectID
+        self.isCompositionLayer = isCompositionLayer
+        self.dependencyIDs = dependencyIDs
     }
 }
 
@@ -424,6 +438,10 @@ public enum SceneGraph {
             // (lens flare, light outline) composited as plain alpha-over paints its dark backing field over
             // the scene instead of glowing through it, which on a full-screen layer blacks the frame out.
             let blendOverride = Self.additiveColorBlendMode(object["colorBlendMode"]) ? "additive" : nil
+            // A WE composition layer (models/util/{project,compose,fullscreen,effect}layer.json) has no texture of
+            // its own; it reprojects/post-processes the scene through its effects. Capture the object id and the
+            // `dependencies` (the ids of the layers it consumes as input) so the renderer can drive it.
+            let isComp = Self.isCompositionImage(imagePath)
             layers.append(SceneLayer(
                 name: object["name"] as? String ?? "",
                 texturePath: material.texture,
@@ -446,7 +464,10 @@ public enum SceneGraph {
                 effects: effects(of: object, in: package, overrides: overrides),
                 puppetPath: puppetPath,
                 driverScript: boundScript(of: object, in: package),
-                alignment: object["alignment"] as? String
+                alignment: object["alignment"] as? String,
+                objectID: (object["id"] as? NSNumber)?.intValue,
+                isCompositionLayer: isComp,
+                dependencyIDs: isComp ? Self.parseDependencyIDs(object["dependencies"]) : []
             ))
         }
         return RenderableScene(
@@ -470,6 +491,28 @@ public enum SceneGraph {
     static func additiveColorBlendMode(_ raw: Any?) -> Bool {
         guard let mode = (raw as? NSNumber)?.intValue else { return false }
         return mode == 31
+    }
+
+    /// Whether an `image` path is a Wallpaper Engine built-in composition-layer model. These live under
+    /// `models/util/` and carry no packed texture; the object instead reprojects or post-processes the scene
+    /// (or the layers named in its `dependencies`) through its effect chain. WE ships projectlayer (re-projection
+    /// / parallax of its dependency composite), composelayer and fullscreenlayer (post-process over the composite),
+    /// and effectlayer. The renderer draws these specially rather than skipping them as unresolved image layers.
+    static func isCompositionImage(_ imagePath: String) -> Bool {
+        guard imagePath.hasPrefix("models/util/") else { return false }
+        return imagePath.contains("projectlayer") || imagePath.contains("composelayer")
+            || imagePath.contains("fullscreenlayer") || imagePath.contains("effectlayer")
+    }
+
+    /// Parse a composition layer's `dependencies` — the WE object ids of the layers it consumes as its input.
+    /// A bare list of numbers in practice; tolerate `{ "id": N }` shapes and ignore anything non-numeric.
+    static func parseDependencyIDs(_ raw: Any?) -> [Int] {
+        guard let arr = raw as? [Any] else { return [] }
+        return arr.compactMap { element in
+            if let n = (element as? NSNumber)?.intValue { return n }
+            if let dict = element as? [String: Any], let n = (dict["id"] as? NSNumber)?.intValue { return n }
+            return nil
+        }
     }
 
     /// A SceneScript bound to one of an image object's transform/visibility properties drives the scene graph
