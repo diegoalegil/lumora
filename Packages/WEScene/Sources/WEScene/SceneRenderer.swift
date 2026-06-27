@@ -1038,7 +1038,15 @@ public final class SceneRenderer {
             "g_Frametime": [frameDelta],
             "g_Screen": [Float(width), Float(height)],
             "g_TexelSize": [1.0 / Float(max(1, width)), 1.0 / Float(max(1, height))],
+            // Half a texel (g_TexelSizeHalf) is what WE's separable-blur/downsample taps offset by; unbound it
+            // defaults to zero and the bilinear taps land on the same texel (a passthrough). Same basis as
+            // g_TexelSize, halved.
+            "g_TexelSizeHalf": [0.5 / Float(max(1, width)), 0.5 / Float(max(1, height))],
             "g_ModelViewProjectionMatrix": [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1],
+            // The inverse MVP defaults to a ZERO matrix when unbound, and an effect that unprojects through it
+            // divides by a zero w → a NaN UV that blanks the layer. The effect quad is full-screen with an
+            // identity MVP, so its inverse is identity too.
+            "g_ModelViewProjectionMatrixInverse": [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1],
             // The pointer rests at the screen centre: a cursor-reactive effect (e.g. iris-follow-cursor) reads
             // these to nudge a region toward the mouse, and on a desktop wallpaper there's no live pointer to
             // track. Centre + an identity projection make the displacement evaluate to zero, so the effect is a
