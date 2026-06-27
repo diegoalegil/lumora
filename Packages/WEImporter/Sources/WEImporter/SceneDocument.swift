@@ -589,6 +589,11 @@ public enum SceneGraph {
                      "permanently turned off", "user settings bar", "可永久关闭", "用户设置栏",
                      "夜莺night", "动态制作", "动效制作", "weibo"]
         if promo.contains(where: { lower.contains($0.lowercased()) }) { return true }
+        // Template configuration captions baked as on-screen text — a clock/effect template's own setting
+        // labels ("dynamic effect: simple", "time gradient mode") that the author never removed. They read as
+        // a settings menu over the art; no real wallpaper title contains them.
+        let configLabels = ["动效：", "时间模式", "变化模式", "渐变模式"]
+        if configLabels.contains(where: { trimmed.contains($0) }) { return true }
         return false
     }
 
