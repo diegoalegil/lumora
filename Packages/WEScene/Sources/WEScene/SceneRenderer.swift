@@ -1358,6 +1358,11 @@ public final class SceneRenderer {
         }
         guard !compiled.isEmpty else { return [] }
 
+        // Diagnostic (off by default): keep every compiled pass, bypassing the dry-run drop gate, to measure the
+        // ceiling of "all effects on" against the oracle. The gate below otherwise drops passes this renderer
+        // can't yet do faithfully (they wash/erase the layer).
+        if ProcessInfo.processInfo.environment["LUMORA_NO_DROP_GATE"] != nil { return compiled }
+
         // Dry-run the chain on a small copy of the layer and keep only passes that preserve the layer's
         // coverage at every sampled time. An effect this renderer can't yet do (multi-pass blur, mesh
         // displacement past the grid) punches the layer out to the clear colour — sometimes only at certain
