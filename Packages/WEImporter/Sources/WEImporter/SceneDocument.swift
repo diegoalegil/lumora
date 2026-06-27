@@ -382,6 +382,12 @@ public enum SceneGraph {
             // nothing playing. Skip the whole layer. This generalises the visibility-script case (handled in
             // isVisible) to widgets whose visibility is ungated but whose graphic only means anything with music.
             if isMediaPlayerWidget(object) { continue }
+            // An author promo / "prompt box" overlay baked as an IMAGE layer (名: 提示框 = "tip box"): a self-promo
+            // / "this notice closes in N seconds" box some Workshop authors embed. WE auto-hides it after a few
+            // seconds via a script Lumora doesn't run, so Lumora would show it forever. The owner wants these gone
+            // by default. (The `promptbox`-BOUND visibility variant is already forced hidden in isVisible; this
+            // catches the unbound ones, detected by the unambiguous 提示框 marker in the object name or image path.)
+            if isAuthorPromoBox(object) { continue }
             // A particle object spawns sprites instead of drawing an image; collect it (and any child
             // sub-emitters — an ember's glow, a shooting-star's trail, a magic charge's rays — which WE
             // spawns alongside the parent) and move on.
@@ -572,6 +578,17 @@ public enum SceneGraph {
         guard mediaEvents.contains(where: { scripts.contains($0) }) else { return false }
         if scripts.contains("registerAudioBuffers") || scripts.contains("AUDIO_RESOLUTION") { return false }
         return true
+    }
+
+    /// An author promo / "prompt box" overlay (提示框 = "tip/prompt box") baked as an image layer — a self-promo
+    /// or "this notice closes in N seconds / disable it in settings" box embedded by some Workshop authors. WE
+    /// auto-hides it after a few seconds via a script; Lumora doesn't run it, so it would persist. Hidden by
+    /// default per the owner. The `promptbox`-BOUND visibility variant is already handled in isVisible; this
+    /// catches the unbound ones by the unambiguous 提示框 marker in the object name or image/model path.
+    static func isAuthorPromoBox(_ object: [String: Any]) -> Bool {
+        let name = (object["name"] as? String) ?? ""
+        let image = (object["image"] as? String) ?? ""
+        return name.contains("提示框") || image.contains("提示框")
     }
 
     /// Concatenate only the SCRIPT source bound anywhere in an object's JSON — the value of every `"script"`
