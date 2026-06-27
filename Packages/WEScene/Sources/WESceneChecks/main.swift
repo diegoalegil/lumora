@@ -349,7 +349,7 @@ func meanSSIM(_ a: [UInt8], _ b: [UInt8], width: Int, height: Int) -> Double {
 /// (structure) + MAE (colour/tone), worst-first. A scene with no reference is skipped, so the gate works
 /// incrementally as captures arrive. Exits 2 if any compared scene falls below the SSIM floor; a no-op (exit 0)
 /// until at least one reference exists, so it is safe to wire into check_all before the corpus is populated.
-@MainActor func parityGate(_ dir: String, referenceDir: String, renderer: SceneRenderer) {
+@MainActor func parityGate(_ dir: String, referenceDir: String, renderer: SceneRenderer, time: Double = 0) {
     let fm = FileManager.default
     let ssimFloor = 0.80   // structure must broadly match WE; tighten once a real reference corpus is measured
     func referencePath(_ id: String) -> String? {
@@ -362,17 +362,21 @@ func meanSSIM(_ a: [UInt8], _ b: [UInt8], width: Int, height: Int) -> Double {
         let pkgPath = dir + "/" + name + "/scene.pkg"
         guard fm.fileExists(atPath: pkgPath) else { continue }
         guard let refPath = referencePath(name), let ref = loadReferenceRGBA(refPath) else { skipped += 1; continue }
+        // The WE captures are taken ~16s after the wallpaper is applied; rendering at a matching elapsed time
+        // (not t=0) phase-aligns animated scenes — scroll, particle drift, colour cycles — so their SSIM reflects
+        // fidelity rather than a moment mismatch. A still scene is unaffected.
         guard let data = try? Data(contentsOf: URL(fileURLWithPath: pkgPath)),
               let package = try? ScenePackage.read(data),
-              let document = try? SceneGraph.load(from: package),
-              let frame = renderer.render(document, package: package, width: ref.width, height: ref.height) else {
+              let document = try? SceneGraph.load(from: package) else { print("  LOAD-FAILED \(name)"); continue }
+        guard let frame = renderer.render(renderer.prepare(document, package: package),
+                                          width: ref.width, height: ref.height, time: time) else {
             print("  RENDER-FAILED \(name)"); continue
         }
         let rgba = [UInt8](frame.rgba)
         rows.append((name, meanSSIM(rgba, ref.rgba, width: ref.width, height: ref.height),
                      meanAbsErrorRGB(rgba, ref.rgba)))
     }
-    print("parity vs \(referenceDir): \(rows.count) compared, \(skipped) without a reference (skipped)")
+    print("parity vs \(referenceDir) @ t=\(time): \(rows.count) compared, \(skipped) without a reference (skipped)")
     var failed = 0
     for r in rows.sorted(by: { $0.ssim < $1.ssim }) {
         if r.ssim < ssimFloor { failed += 1 }
@@ -393,7 +397,8 @@ if CommandLine.arguments.count > 1 {
             regressGate(arg, baselinePath: CommandLine.arguments[3], renderer: renderer); exit(0)
         }
         if CommandLine.arguments.count > 3, CommandLine.arguments[2] == "parity" {
-            parityGate(arg, referenceDir: CommandLine.arguments[3], renderer: renderer); exit(0)
+            let t = CommandLine.arguments.count > 4 ? (Double(CommandLine.arguments[4]) ?? 0) : 0
+            parityGate(arg, referenceDir: CommandLine.arguments[3], renderer: renderer, time: t); exit(0)
         }
         if CommandLine.arguments.count > 2, CommandLine.arguments[2] == "benchall" {
             let w = CommandLine.arguments.count > 3 ? (Int(CommandLine.arguments[3]) ?? 3456) : 3456
