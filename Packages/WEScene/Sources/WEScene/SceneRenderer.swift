@@ -1225,6 +1225,11 @@ public final class SceneRenderer {
             buffers[fbo.name] = target
         }
         var result = input
+        // `previous` ping-pongs: it starts at the effect input, then tracks the output of each full-size pass
+        // (target == nil). WE swaps FBOs between such passes, so a chained blur→tint or separable blur reads the
+        // PRIOR pass's result, not the original input. Reading `input` every time (the old behaviour) lost every
+        // intermediate pass — the second full-size pass re-processed the raw layer instead of the first's output.
+        var previousOutput = input
         for pass in effect.passes {
             var inputs: [(index: Int, texture: MTLTexture)] = []
             var resolutions: [Int: (storage: SIMD2<Int>, content: SIMD2<Int>)] = [:]
@@ -1233,7 +1238,7 @@ public final class SceneRenderer {
                 let content: SIMD2<Int>
                 switch sampler.input {
                 // Render targets (the effect input and intermediate FBOs) are exact-size: content == storage.
-                case .previous: texture = input; content = SIMD2(input.width, input.height)
+                case .previous: texture = previousOutput; content = SIMD2(previousOutput.width, previousOutput.height)
                 case .buffer(let name): texture = buffers[name] ?? whiteTexture; content = SIMD2(texture.width, texture.height)
                 case .aux(let aux, let auxContent): texture = aux; content = auxContent
                 }
@@ -1255,7 +1260,7 @@ public final class SceneRenderer {
                                             vertexUniforms: vertexUniforms.isEmpty ? nil : vertexUniforms,
                                             fragmentUniforms: fragmentUniforms.isEmpty ? nil : fragmentUniforms,
                                             into: output) else { return nil }
-            if pass.target == nil { result = output }   // a full-size output pass advances the effect result
+            if pass.target == nil { result = output; previousOutput = output }   // a full-size output pass advances the effect result + the ping-pong cursor
         }
         return result
     }
