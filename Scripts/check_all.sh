@@ -18,6 +18,14 @@ run "WESceneDynamics checks" bash -c 'cd Packages/WESceneDynamics && swift run -
 run "WEPlayers checks" bash -c 'cd Packages/WEPlayers && swift run -q WEPlayersChecks'
 run "WEScene checks" bash -c 'cd Packages/WEScene && swift run -q WESceneChecks'
 run "WEShaderKit checks" bash -c 'cd Packages/WEShaderKit && swift run -q WEShaderKitChecks'
+
+# Pixel-parity gate against the Windows WE reference frames (gap parity-008). Skipped unless LUMORA_WE_REFERENCE
+# points at a populated capture dir, so CI stays green until the captures land; then it gates SSIM/MAE per scene.
+PARITY_LIB="${LUMORA_LIBRARY_DIR:-$ROOT/431960}"
+if [ -n "${LUMORA_WE_REFERENCE:-}" ] && [ -d "$LUMORA_WE_REFERENCE" ]; then
+  run "WE parity gate" bash -c "cd Packages/WEScene && swift run -q WESceneChecks '$PARITY_LIB' parity '$LUMORA_WE_REFERENCE'"
+fi
+
 run "LumoraApp build" bash -c 'cd Packages/LumoraApp && swift build'
 
 echo

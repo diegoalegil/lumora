@@ -1,6 +1,10 @@
-# ⚠️ ASPIRATIONAL / NOT YET IMPLEMENTED. These are the PLANNED parity gates. There is currently no runner
-# that measures SSIM/MAE against a reference corpus — the manifest holds placeholder entries, and nothing in
-# check_all.sh consumes this file. It documents the intended definition of done; it does not gate anything yet.
+# ⚠️ PARTIALLY IMPLEMENTED. The SSIM/MAE runner now EXISTS in Swift, not Python:
+#   cd Packages/WEScene && swift run -q WESceneChecks <library-dir> parity <we-reference-dir>
+# It renders each scene at its reference frame's resolution and reports mean SSIM + MAE per scene, gating on an
+# SSIM floor. check_all.sh runs it when LUMORA_WE_REFERENCE points at a populated capture dir (skipped otherwise).
+# STILL PENDING: the actual reference frames (captured on Windows per docs/parity/WINDOWS_CAPTURE_SOP.md) — the
+# manifest below still holds placeholder entries — and the per-tier thresholds here are not yet consumed by the
+# runner (it uses a single SSIM floor). Until the captures land, the gate is a no-op (0 scenes compared).
 #
 # Pixel-parity gates — the honest, tiered "definition of done" per subsystem.
 # Bit-exact equality across D3D11/HLSL (Windows) vs Metal/MSL (macOS) is physically impossible
