@@ -1,53 +1,56 @@
 # Windows reference-capture SOP (pixel-parity harness)
 
-> ⚠️ **Aspirational / not yet implemented.** This documents the *planned* capture procedure for a pixel-parity
-> harness that does not exist yet — there is no SSIM/MAE runner, the corpus manifest holds only placeholders,
-> and nothing in `check_all.sh` measures parity. It is a future-work plan, not a current process.
-
-The authoritative parity target is **Wallpaper Engine running on Windows** (you own it). This SOP
-makes captures reproducible so macOS output can be diffed against them deterministically. The
+The authoritative parity target is **Wallpaper Engine running on Windows** (you own it). This SOP makes
+captures reproducible so macOS output can be diffed against them deterministically. The
 `linux-wallpaperengine` binary is only a *secondary* black-box cross-check (it has its own bugs and
 "Partial" scene/web support) — never the primary target, and we never read its source.
 
-> We commit only `parity/corpus/manifest.json` + reference-frame **SHA-256 hashes**. We never commit
-> the captured pixels or the wallpaper assets (copyright). `.gitignore` enforces this.
+> Commit only `parity/corpus/manifest.json` (and, if you want, reference-frame **SHA-256 hashes**). Never
+> commit the captured pixels or the wallpaper assets (copyright). `.gitignore` keeps `parity/captures/` and
+> any `we-reference/` dir out of the tree.
+
+## The runner exists (Swift, no Python)
+The SSIM/MAE comparator is built into `WESceneChecks`:
+```sh
+cd Packages/WEScene && swift run -q WESceneChecks <library-dir> parity <we-reference-dir>
+```
+It renders each `<library-dir>/<id>/scene.pkg` at **its reference frame's resolution**, computes mean SSIM
+(structure) and MAE (colour/tone) against the reference, prints them worst-first, and fails if any scene
+falls below the SSIM floor. A scene with no reference frame is skipped, so it runs incrementally as captures
+arrive. `check_all.sh` runs it automatically when `LUMORA_WE_REFERENCE` points at the capture dir.
 
 ## Prerequisites
-- Wallpaper Engine on Windows, with the wallpapers in the corpus subscribed/installed.
-- A fixed capture resolution: **1920×1080** (the harness renders macOS output at the same size).
-- Disable the mouse cursor in captures; disable Windows scaling artifacts (capture the raw output).
+- Wallpaper Engine on Windows, with the corpus wallpapers subscribed/installed.
+- Capture resolution **1920×1080** (any consistent size works — the macOS side renders at the reference's
+  own resolution — but 1920×1080 is the standard).
+- **No mouse cursor** in the capture, and **no audio** playing. Both are out of scope on the macOS side
+  (a desktop wallpaper has no live cursor, and Lumora plays no wallpaper audio), so a capture with cursor
+  parallax or audio reactivity would diff against a deliberately static render. Disable Windows display
+  scaling artifacts (capture the raw framebuffer).
 
 ## Per-wallpaper procedure
-For each entry in `manifest.json`, capture the listed `reference_frames`. Each frame is a still PNG.
-
-1. **Apply the wallpaper** in WE at 1920×1080, default properties (note any non-default in `notes`).
-2. **Static sub-case** (`static`): for scene/web, freeze interaction — center the cursor, no audio
-   playing — and capture one frame after it settles. This is the composition/parity baseline.
-3. **Timeline sub-case** (`t=2.0s`, `t=5.0s`): for animated scenes, capture at known elapsed times
-   from wallpaper start (use a stopwatch / OBS frame marker). These map to the macOS
-   `ParityRenderer`'s injected `RenderClock` times.
-4. **Mouse sub-case** (`mouse=0.25,0.5` etc.): move the cursor to the listed normalized position and
-   capture, to validate parallax. Matches the injected `MouseProvider`.
-5. **Audio sub-case** (`audio=tone440`): play the standard reference tone (`docs/parity/tone440.wav`,
-   a 440 Hz sine) and capture, to validate audio reactivity. Matches the injected
-   `AudioSpectrumProvider` synthetic spectrum.
+1. **Apply the wallpaper** in WE at 1920×1080 with **default properties** (note any non-default in `notes`).
+2. Let it settle, cursor parked off-frame, no audio. Capture **one lossless PNG** — the composition/parity
+   baseline. This single still is what the gate compares.
+3. **Animated scenes** (particles, scripted motion): the still above is enough for the structural gate.
+   Optionally also grab a short clip/burst so motion can be eyeballed separately — the SSIM gate itself
+   compares stills, not motion.
 
 ## Naming & placement
-Save captures under `parity/captures/<workshop_id>/<frame_name>.png` (git-ignored), e.g.:
+The gate looks for a reference, in order: `<we-reference-dir>/<id>.png`, then `<id>/static.png`, then
+`<id>/<id>.png`. The simplest layout is one PNG per scene named by its workshop id:
 ```
-parity/captures/861750235/static.png
-parity/captures/1108769435/t=2.0s.png
+we-reference/3669680904.png
+we-reference/2111201226.png
 ```
-Then register their hashes:
+(`<id>/static.png` also works if you prefer a folder per scene.) Then point the gate at that dir:
 ```sh
-python3 parity/tools/register_frames.py 861750235   # (added in Phase 3) hashes + updates manifest.json
+LUMORA_WE_REFERENCE=/path/to/we-reference bash Scripts/check_all.sh
+# or directly:
+cd Packages/WEScene && swift run -q WESceneChecks "$PWD/../../431960" parity /path/to/we-reference
 ```
 
-## How the harness uses these
-The macOS `ParityRenderer` (in WEScene, Phase 3+) renders each wallpaper headlessly to a PNG at the
-same resolution, with the same injected time/mouse/audio. `parity/tools/run.py` (Phase 3) computes
-SSIM + per-pixel MAE + CIELAB ΔE against the Windows reference, applies the per-feature thresholds in
-`gates.yaml`, and writes `win | mac | diff-heatmap` contact sheets. A phase ships only when its gate
-is green; PRs fail on regression vs `baseline.json`.
-
-Prerequisites for the diff tools (build-time only, not shipped): `numpy`, `scikit-image` (BSD).
+## Still pending
+- The reference frames themselves (this capture pass).
+- Per-tier thresholds in `gates.yaml` are not yet consumed — the runner uses a single SSIM floor; tighten it
+  once a real corpus is measured.

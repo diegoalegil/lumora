@@ -32,6 +32,9 @@ parity/corpus/**
 !parity/corpus/**/*.md
 parity/captures/
 parity/out/
+# WE reference frames the parity gate reads (copyrighted Windows captures) — never commit the pixels.
+we-reference/
+**/we-reference/
 
 # Built .app bundle (run Scripts/build_app.sh)
 build/
