@@ -38,6 +38,75 @@ let fm = FileManager.default
     return false
 }
 
+// MARK: - Parser fuzzer (on demand: `WEImporterChecks fuzz [seedDir] [iterations]`)
+
+/// A tiny deterministic PRNG so a crash at iteration N reproduces exactly (no system randomness).
+struct FuzzRNG {
+    var state: UInt64
+    mutating func next() -> UInt64 { state = state &* 6364136223846793005 &+ 1442695040888963407; return state }
+    mutating func below(_ n: Int) -> Int { n <= 0 ? 0 : Int(truncatingIfNeeded: next() >> 11) % n }
+}
+
+/// One of five mutations of a seed buffer, chosen by the PRNG: truncate, byte-flips, an overwritten run,
+/// a giant length field (to exercise the size guards), or appended garbage.
+func fuzzMutate(_ seed: Data, _ rng: inout FuzzRNG) -> Data {
+    var d = [UInt8](seed)
+    switch rng.below(5) {
+    case 0: d = Array(d.prefix(rng.below(d.count + 1)))
+    case 1: for _ in 0 ... rng.below(16) where !d.isEmpty { let i = rng.below(d.count); d[i] ^= UInt8(1 + rng.below(255)) }
+    case 2: if !d.isEmpty { let i = rng.below(d.count); let v: UInt8 = rng.below(2) == 0 ? 0 : 0xFF; for k in i ..< min(d.count, i + 1 + rng.below(64)) { d[k] = v } }
+    case 3: if d.count >= 4 { let i = rng.below(d.count - 3); let big: UInt32 = 0xF000_0000 | UInt32(truncatingIfNeeded: rng.next()); for b in 0 ..< 4 { d[i + b] = UInt8(truncatingIfNeeded: big >> (8 * b)) } }
+    default: for _ in 0 ... rng.below(64) { d.append(UInt8(rng.below(256))) }
+    }
+    return Data(d)
+}
+
+/// Mutate corpus seeds and drive each untrusted parser — the .pkg reader (and SceneGraph.load on success),
+/// the texture decoder, and the scene.json interpreter — looking for a trap (force-unwrap, out-of-bounds,
+/// overflow) that a thrown error wouldn't catch. A clean run is evidence the parsers stay within their guards.
+func runFuzz() {
+    let args = CommandLine.arguments
+    let fi = args.firstIndex(of: "fuzz") ?? 0
+    let seedDir = args.count > fi + 1 ? args[fi + 1] : "431960"
+    let iters = args.count > fi + 2 ? (Int(args[fi + 2]) ?? 200_000) : 200_000
+    var pkgSeeds: [Data] = []
+    var texSeeds: [Data] = []
+    var jsonSeeds: [(entries: [ScenePackageEntry], idx: Int)] = []
+    if let en = FileManager.default.enumerator(at: URL(fileURLWithPath: seedDir), includingPropertiesForKeys: nil) {
+        for case let url as URL in en where url.lastPathComponent == "scene.pkg" {
+            guard let d = try? Data(contentsOf: url) else { continue }
+            pkgSeeds.append(d)
+            guard let pkg = try? ScenePackage.read(d) else { continue }
+            for e in pkg.entries where e.path.hasSuffix(".tex") && texSeeds.count < 80 { texSeeds.append(e.data) }
+            if jsonSeeds.count < 30, let idx = pkg.entries.firstIndex(where: { $0.path.hasSuffix("scene.json") }) {
+                jsonSeeds.append((pkg.entries, idx))
+            }
+        }
+    }
+    guard !pkgSeeds.isEmpty else { print("fuzz: no scene.pkg under \(seedDir)"); exit(1) }
+    FileHandle.standardError.write(Data("fuzz: \(pkgSeeds.count) pkg / \(texSeeds.count) tex / \(jsonSeeds.count) json seeds, \(iters) iters\n".utf8))
+    for i in 0 ..< iters {
+        var rng = FuzzRNG(state: UInt64(bitPattern: Int64(i)) &* 2654435761 &+ 0x9E37_79B9_7F4A_7C15)
+        switch i % 3 {
+        case 0:
+            if let pkg = try? ScenePackage.read(fuzzMutate(pkgSeeds[rng.below(pkgSeeds.count)], &rng)) { _ = try? SceneGraph.load(from: pkg) }
+        case 1 where !texSeeds.isEmpty:
+            _ = try? SceneTexture.decodeFirstMip(fuzzMutate(texSeeds[rng.below(texSeeds.count)], &rng), expandBlocks: true)
+        case 2 where !jsonSeeds.isEmpty:
+            let seed = jsonSeeds[rng.below(jsonSeeds.count)]
+            var entries = seed.entries
+            entries[seed.idx] = ScenePackageEntry(path: entries[seed.idx].path, data: fuzzMutate(entries[seed.idx].data, &rng))
+            _ = try? SceneGraph.load(from: ScenePackage(version: "PKGV0001", entries: entries))
+        default:
+            _ = try? ScenePackage.read(fuzzMutate(pkgSeeds[rng.below(pkgSeeds.count)], &rng))
+        }
+        if i % 25_000 == 0 { FileHandle.standardError.write(Data("  fuzz \(i)\n".utf8)) }
+    }
+    print("fuzz: completed \(iters) iterations, 0 crashes/hangs")
+}
+
+if CommandLine.arguments.dropFirst().first == "fuzz" { runFuzz(); exit(0) }
+
 // MARK: - Build a synthetic two-library Steam tree
 
 let tmpRoot = fm.temporaryDirectory.appendingPathComponent("WEImporterChecks-\(UUID().uuidString)", isDirectory: true)
