@@ -208,6 +208,7 @@ public final class PreparedScene {
     public let puppetReady: Bool
     fileprivate let bloomStrength: Float    // scene-level bloom; 0 = none (the extra pass is skipped entirely)
     fileprivate let bloomThreshold: Float
+    fileprivate let zoom: Float             // general.zoom: scales the whole composite about its centre (1 = none)
     /// True only if some layer can READ the audio spectrum — an audio-visualiser script group, or an effected
     /// layer (an effect may declare g_AudioSpectrum*). When false the renderer skips building the six per-frame
     /// audio-override arrays, since nothing would consume them. Computed once so it costs nothing per frame.
@@ -215,7 +216,7 @@ public final class PreparedScene {
 
     fileprivate init(layers: [PreparedLayer], clearColor: SceneVec3, particles: [PreparedParticles],
                      orthoWidth: Double, orthoHeight: Double, puppetReady: Bool,
-                     bloomStrength: Float, bloomThreshold: Float) {
+                     bloomStrength: Float, bloomThreshold: Float, zoom: Float = 1) {
         self.layers = layers
         self.clearColor = clearColor
         self.particles = particles
@@ -224,6 +225,7 @@ public final class PreparedScene {
         self.puppetReady = puppetReady
         self.bloomStrength = bloomStrength
         self.bloomThreshold = bloomThreshold
+        self.zoom = zoom
         self.usesAudio = layers.contains { $0.scriptGroup != nil || !$0.effects.isEmpty }
         self.framebufferPostProcessIndices = layers.enumerated().filter { $0.element.isFramebufferPostProcess }.map { $0.offset }
     }
@@ -1035,7 +1037,8 @@ public final class SceneRenderer {
         return PreparedScene(layers: prepared, clearColor: document.clearColor,
                              particles: preparedParticles, orthoWidth: orthoW, orthoHeight: orthoH,
                              puppetReady: puppetLayerCount > 0 && puppetReadyCount == puppetLayerCount,
-                             bloomStrength: Float(document.bloomStrength), bloomThreshold: Float(document.bloomThreshold))
+                             bloomStrength: Float(document.bloomStrength), bloomThreshold: Float(document.bloomThreshold),
+                             zoom: Float(document.zoom))
     }
 
     /// The sprite a particle system draws — its material's first bound texture and blend mode
@@ -1707,8 +1710,11 @@ public final class SceneRenderer {
 
         // Fill the target without distortion: cover its aspect and crop the overflow rather than stretching
         // a 16:9-authored scene onto a differently-shaped display.
+        // Cover the target aspect, then apply the scene's camera zoom (general.zoom; 1 = none): WE scales the
+        // whole composite about its centre, cropping the overflow. A zoomed scene (e.g. 1.1) renders ~10% tighter
+        // on its subject — without it the frame reads as zoomed out versus WE.
         let aspectScale = Self.coverScale(sceneAspect: scene.orthoWidth / scene.orthoHeight,
-                                          targetAspect: Double(width) / Double(height))
+                                          targetAspect: Double(width) / Double(height)) * Float(scene.zoom)
 
         // Pass 1: a layer with effects is rendered to its own texture and run through its effect chain.
         // The result is keyed by layer index; layers without effects are drawn directly in the main pass.

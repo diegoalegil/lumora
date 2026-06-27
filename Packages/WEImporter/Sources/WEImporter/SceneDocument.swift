@@ -280,10 +280,13 @@ public struct RenderableScene: Sendable, Equatable {
     /// extra pass entirely, so those scenes are unaffected.
     public let bloomStrength: Double
     public let bloomThreshold: Double
+    /// The scene's camera zoom (`general.zoom`; 1 = none). WE scales the whole composite about its centre by
+    /// this factor, cropping the overflow — a 1.1 reads ~10% tighter on the subject.
+    public let zoom: Double
 
     public init(orthoWidth: Int, orthoHeight: Int, clearColor: SceneVec3,
                 layers: [SceneLayer], particleSystems: [ParticleSystem] = [], usesPuppet: Bool = false,
-                bloomStrength: Double = 0, bloomThreshold: Double = 0.8) {
+                bloomStrength: Double = 0, bloomThreshold: Double = 0.8, zoom: Double = 1) {
         self.orthoWidth = orthoWidth
         self.orthoHeight = orthoHeight
         self.clearColor = clearColor
@@ -292,6 +295,7 @@ public struct RenderableScene: Sendable, Equatable {
         self.usesPuppet = usesPuppet
         self.bloomStrength = bloomStrength
         self.bloomThreshold = bloomThreshold
+        self.zoom = zoom
     }
 }
 
@@ -332,6 +336,9 @@ public enum SceneGraph {
         let bloomOn = (general["bloom"] as? Bool) == true || (general["bloom"] as? NSNumber)?.boolValue == true
         let bloomStrength = bloomOn ? min(8, max(0, (general["bloomstrength"] as? NSNumber)?.doubleValue ?? 0)) : 0
         let bloomThreshold = min(1, max(0, (general["bloomthreshold"] as? NSNumber)?.doubleValue ?? 0.8))
+        // Camera zoom (general.zoom). A scalar scales the whole composite; a script-driven zoom (a dict) is left
+        // at 1 (the renderer doesn't run the camera script). Clamp to a sane range against malformed values.
+        let zoom = min(8, max(0.1, (general["zoom"] as? NSNumber)?.doubleValue ?? 1))
 
         var layers: [SceneLayer] = []
         var particleSystems: [ParticleSystem] = []
@@ -486,7 +493,8 @@ public enum SceneGraph {
             particleSystems: particleSystems,
             usesPuppet: usesPuppet,
             bloomStrength: bloomStrength,
-            bloomThreshold: bloomThreshold
+            bloomThreshold: bloomThreshold,
+            zoom: zoom
         )
     }
 
