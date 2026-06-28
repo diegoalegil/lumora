@@ -299,7 +299,8 @@ public final class SceneRenderer {
     private let sampler: MTLSamplerState
     private let whiteTexture: MTLTexture
     private let blackTexture: MTLTexture           // util/black aux default
-    private let noiseTexture: MTLTexture           // util/noise aux default (procedural)
+    private let noiseTexture: MTLTexture           // util/noise aux default (procedural, flat uniform)
+    private let noiseCenteredTexture: MTLTexture   // util/noise for grain effects (filmgrain): centred on mid-grey
     private let haloTexture: MTLTexture            // soft radial glow for unshipped built-in sprites
     private let effectRenderer: EffectRenderer?   // compiles + runs per-layer post-process effects
     private var auxCache: [String: (texture: MTLTexture, content: SIMD2<Int>)] = [:]   // resolved aux, by name
@@ -597,9 +598,11 @@ public final class SceneRenderer {
 
         guard let black = Self.makeDataTexture([0, 0, 0, 255], width: 1, height: 1, device: device),
               let noise = Self.makeDataTexture(Self.noisePixels(side: 256), width: 256, height: 256, device: device),
+              let noiseCentered = Self.makeDataTexture(Self.noisePixels(side: 256, centered: true), width: 256, height: 256, device: device),
               let halo = Self.makeDataTexture(Self.haloPixels(side: 64), width: 64, height: 64, device: device) else { return nil }
         self.blackTexture = black
         self.noiseTexture = noise
+        self.noiseCenteredTexture = noiseCentered
         self.haloTexture = halo
 
         // Share the compositor's command queue so effect passes and the final composite sit on one queue —
@@ -637,7 +640,7 @@ public final class SceneRenderer {
     }
 
     /// A deterministic grayscale value-noise tile for WE's `util/noise` aux default (grain/shimmer).
-    private static func noisePixels(side: Int) -> [UInt8] {
+    private static func noisePixels(side: Int, centered: Bool = false) -> [UInt8] {
         var pixels = [UInt8](repeating: 255, count: side * side * 4)
         var state: UInt32 = 0x9E3779B9
         func nextByte() -> Int {
@@ -645,12 +648,11 @@ public final class SceneRenderer {
             return Int(state & 0xFF)
         }
         for i in 0 ..< side * side {
-            // Triangular (average of two uniforms) noise centred on 128: a film-grain/value-noise texture is
-            // a subtle deviation around mid-grey, not full-contrast static. A flat uniform [0,255] noise, fed
-            // through filmgrain's noise*noise + HardLight blend, skews dark and dims the whole layer; centring
-            // it keeps the grain subtle (HardLight(x, ~0.5) ≈ identity) while still giving procedural effects
-            // a varied field.
-            let v = UInt8((nextByte() + nextByte()) / 2)
+            // `centered`: triangular (average of two uniforms) around mid-grey, for grain effects (filmgrain)
+            // whose HardLight blend would otherwise skew a flat uniform field dark and dim the layer. The default
+            // is the flat uniform [0,255] field that phase/displacement consumers need unchanged (foliagesway uses
+            // noise.g * 2pi as a per-region sway phase; pulse and procedural patterns likewise want full range).
+            let v = centered ? UInt8((nextByte() + nextByte()) / 2) : UInt8(nextByte())
             pixels[i * 4] = v; pixels[i * 4 + 1] = v; pixels[i * 4 + 2] = v
         }
         return pixels
@@ -658,14 +660,14 @@ public final class SceneRenderer {
 
     /// Resolve a sampler's texture name to a texture: WE built-ins procedurally, packaged textures from
     /// the scene, anything unknown to white (so a missing aux never blanks the pass).
-    private func resolveAuxTexture(_ name: String?, package: ScenePackage) -> (texture: MTLTexture, content: SIMD2<Int>) {
+    private func resolveAuxTexture(_ name: String?, package: ScenePackage, centeredNoise: Bool = false) -> (texture: MTLTexture, content: SIMD2<Int>) {
         // A procedural/full-content texture's content fills its whole buffer, so content == storage (ratio 1).
         func full(_ t: MTLTexture) -> (texture: MTLTexture, content: SIMD2<Int>) { (t, SIMD2(t.width, t.height)) }
         guard let name, !name.isEmpty else { return full(whiteTexture) }
         switch name {
         case "util/white": return full(whiteTexture)
         case "util/black": return full(blackTexture)
-        case let n where n.hasPrefix("util/noise") || n.hasSuffix("noise"): return full(noiseTexture)
+        case let n where n.hasPrefix("util/noise") || n.hasSuffix("noise"): return full(centeredNoise ? noiseCenteredTexture : noiseTexture)
         default:
             if let cached = auxCache[name] { return cached }
             if let entry = package.entry(named: "materials/\(name).tex"),
@@ -1440,7 +1442,10 @@ public final class SceneRenderer {
                             // copybackground: this sampler reads the scene composited so far, bound per-frame.
                             resolvedInput = .background
                         } else {
-                            let aux = resolveAuxTexture(bound ?? sampler.defaultValue, package: package)
+                            // A grain effect (filmgrain) needs the centred noise so its HardLight blend stays a
+                            // subtle grain; phase/displacement consumers keep the flat uniform field.
+                            let aux = resolveAuxTexture(bound ?? sampler.defaultValue, package: package,
+                                                        centeredNoise: pass.fragmentShaderPath.lowercased().contains("filmgrain"))
                             resolvedInput = .aux(aux.texture, content: aux.content)
                         }
                     }
