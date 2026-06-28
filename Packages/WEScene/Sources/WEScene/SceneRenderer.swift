@@ -1369,9 +1369,12 @@ public final class SceneRenderer {
                 continue
             }
             // Permanently drop effects Lumora renders worse than skipping (oracle-measured net-positive, see list).
-            if effect.passes.contains(where: { pass in
-                Self.faithfulnessDropEffects.contains { pass.fragmentShaderPath.lowercased().contains($0) }
-            }) { continue }
+            // Match the effect name OR any pass's shader path (same as the diagnostic above), since a WE effect's
+            // display name can be empty while the drop signature lives in the shader path (or vice versa).
+            if Self.faithfulnessDropEffects.contains(where: { effect.name.lowercased().contains($0) })
+                || effect.passes.contains(where: { pass in
+                    Self.faithfulnessDropEffects.contains { pass.fragmentShaderPath.lowercased().contains($0) }
+                }) { continue }
             var preparedPasses: [PreparedPass] = []
             var graphOK = true
             for pass in effect.passes {
