@@ -1151,6 +1151,19 @@ public final class SceneRenderer {
                 : SIMD2<Float>(1, 1)
             return (made, uvScale)
         }
+        // Shared-assets VFS fallback (GAP 4): a sprite WE resolves from its shared library (general.assets) that
+        // the author didn't re-pack per scene — fire/ember, god-ray shafts, rose petals, leaves, debris, lightning.
+        // WE does a single ordered-mount lookup `materials/<name>.tex`; mirror that by trying sharedAssetsDir
+        // BEFORE the procedural stand-ins/skip below, so a real sprite (when the shared dir is configured) wins
+        // over a halo blob or a drop. No-op when sharedAssetsDir is unset or the .tex isn't there.
+        if let dir = sharedAssetsDir, !name.contains(".."), !name.hasPrefix("/"),
+           let shared = loadSharedAux(name, dir: dir) {
+            let uvScale = shared.texture.width > 0 && shared.texture.height > 0
+                ? SIMD2(Float(min(1.0, Double(shared.content.x) / Double(shared.texture.width))),
+                        Float(min(1.0, Double(shared.content.y) / Double(shared.texture.height))))
+                : SIMD2<Float>(1, 1)
+            return (shared.texture, uvScale)
+        }
         // WE's unshipped built-in sprites: blob-like glows (halo, fog, dot, flare, …) approximate well as a
         // soft radial glow tinted by the particle's colour. Two families we DON'T approximate, because a
         // wrong stand-in is worse than the effect's absence: elongated shapes (shafts, beams, lightning,
