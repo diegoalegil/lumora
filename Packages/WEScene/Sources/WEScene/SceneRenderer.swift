@@ -640,9 +640,17 @@ public final class SceneRenderer {
     private static func noisePixels(side: Int) -> [UInt8] {
         var pixels = [UInt8](repeating: 255, count: side * side * 4)
         var state: UInt32 = 0x9E3779B9
-        for i in 0 ..< side * side {
+        func nextByte() -> Int {
             state ^= state << 13; state ^= state >> 17; state ^= state << 5   // xorshift32
-            let v = UInt8(state & 0xFF)
+            return Int(state & 0xFF)
+        }
+        for i in 0 ..< side * side {
+            // Triangular (average of two uniforms) noise centred on 128: a film-grain/value-noise texture is
+            // a subtle deviation around mid-grey, not full-contrast static. A flat uniform [0,255] noise, fed
+            // through filmgrain's noise*noise + HardLight blend, skews dark and dims the whole layer; centring
+            // it keeps the grain subtle (HardLight(x, ~0.5) ≈ identity) while still giving procedural effects
+            // a varied field.
+            let v = UInt8((nextByte() + nextByte()) / 2)
             pixels[i * 4] = v; pixels[i * 4 + 1] = v; pixels[i * 4 + 2] = v
         }
         return pixels
