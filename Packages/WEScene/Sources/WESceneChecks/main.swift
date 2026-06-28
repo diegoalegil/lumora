@@ -359,10 +359,12 @@ func meanSSIM(_ a: [UInt8], _ b: [UInt8], width: Int, height: Int) -> Double {
     let fm = FileManager.default
     let ssimFloor = 0.80   // structure must broadly match WE; tighten once a real reference corpus is measured
     let phases: [Double] = time.map { [$0] } ?? [0, 2, 5, 8, 12, 16]
-    // Diagnostic (default 0 = no effect): score only the top (height - N) rows, excluding the bottom N px from
-    // BOTH the render and the reference. Some owner desktop captures bake the Windows taskbar into the bottom
-    // strip, which lumora (correctly) doesn't draw; this quantifies how much that artifact deflates the SSIM.
-    let cropBottom = max(0, Int(ProcessInfo.processInfo.environment["LUMORA_PARITY_CROP_BOTTOM"] ?? "") ?? 0)
+    // Score only the top (height - N) rows, excluding the bottom N px from BOTH the render and the reference.
+    // ~32 of the owner's reference captures bake the Windows taskbar into the bottom ~48px, which lumora
+    // (correctly) doesn't draw — so that strip always mismatched and deflated the SSIM of a third of the corpus.
+    // Cropping it by default makes the gate score the wallpaper, not the desktop chrome. Override with the env
+    // var (e.g. =0 for a full-frame measurement). 48px = the Windows 1080p taskbar height.
+    let cropBottom = max(0, Int(ProcessInfo.processInfo.environment["LUMORA_PARITY_CROP_BOTTOM"] ?? "") ?? 48)
     func topRows(_ rgba: [UInt8], width: Int, height: Int) -> ([UInt8], Int) {
         guard cropBottom > 0, cropBottom < height else { return (rgba, height) }
         let h = height - cropBottom

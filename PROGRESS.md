@@ -1,105 +1,106 @@
-# PROGRESS — autopilot fidelity vs we-reference (clean oracle, 96 scenes)
+# PROGRESS — autopilot fidelity vs we-reference (taskbar-cropped gate)
 
-Baseline = current @ `fa3e8f3` (no render-changing commit improved the oracle this run — see AUTOPILOT-REPORT.md).
-Mean SSIM **0.7958** (taskbar-excluded **0.8117**), ≥0.90 **38/96**. Objetivo = max(0.90, baseline).
+Gate now crops the bottom 48px by default (Windows taskbar baked into ~32 captures). Baseline @ `fa3e8f3`+crop.
+Mean SSIM **0.8117** · ≥0.80 **58/96** · ≥0.90 **43/96**. Objetivo = max(0.90, baseline).
 
-`estado`: in-target (≥0.90) · taskbar-capped (faithful, oracle bakes the Windows taskbar) · or the diagnosed blocking cause for sub-0.80 scenes (all firewall/non-determinism/capture-artifact). Arbiter = SSIM vs we-reference/<id>.png (best phase).
+`estado`: in-target (≥0.90) · or the diagnosed blocking cause (firewall LUT / day-night / scripted / fire-aux / scroll / particle-phase — none lumora-fixable) · near-target (<0.90, no single blocking cause).
+⚠️ NOTE: the we-reference oracle was removed from disk by the environment between sessions; these are the last real-oracle (crop) numbers. Re-extract the package to resume live measurement.
 
-| id | SSIM baseline | objetivo | SSIM actual | estado | commit |
-|---|---|---|---|---|---|
-| 3675966045 | 0.2623 | 0.9000 | 0.2623 | fire-aux-dropped | fa3e8f3 |
-| 2423807815 | 0.3581 | 0.9000 | 0.3581 | scripted-state | fa3e8f3 |
-| 3660962877 | 0.3803 | 0.9000 | 0.3803 | missing-text-clock | fa3e8f3 |
-| 3430675494 | 0.4172 | 0.9000 | 0.4172 | color-grade-LUT | fa3e8f3 |
-| 3390491312 | 0.4926 | 0.9000 | 0.4926 | framing-parallax | fa3e8f3 |
-| 2381855517 | 0.4983 | 0.9000 | 0.4983 | scroll-phase | fa3e8f3 |
-| 3265802028 | 0.5083 | 0.9000 | 0.5083 | color-grade-LUT | fa3e8f3 |
-| 3435120596 | 0.5139 | 0.9000 | 0.5139 | scripted-state | fa3e8f3 |
-| 3470764447 | 0.5203 | 0.9000 | 0.5203 | day-night | fa3e8f3 |
-| 3326873240 | 0.5423 | 0.9000 | 0.5423 | day-night | fa3e8f3 |
-| 3627327015 | 0.5582 | 0.9000 | 0.5582 | missing-text-clock | fa3e8f3 |
-| 3355037946 | 0.5628 | 0.9000 | 0.5628 | taskbar | fa3e8f3 |
-| 3497714247 | 0.5745 | 0.9000 | 0.5745 | missing-text-clock | fa3e8f3 |
-| 2479422222 | 0.5773 | 0.9000 | 0.5773 | taskbar | fa3e8f3 |
-| 3355791741 | 0.5849 | 0.9000 | 0.5849 | scripted-state | fa3e8f3 |
-| 3372027807 | 0.5914 | 0.9000 | 0.5914 | taskbar | fa3e8f3 |
-| 3319713168 | 0.5982 | 0.9000 | 0.5982 | fire-aux-dropped | fa3e8f3 |
-| 3565328165 | 0.6303 | 0.9000 | 0.6303 | missing-text-clock | fa3e8f3 |
-| 2817222811 | 0.6375 | 0.9000 | 0.6375 | taskbar | fa3e8f3 |
-| 3461353800 | 0.6426 | 0.9000 | 0.6426 | taskbar | fa3e8f3 |
-| 3324136043 | 0.6490 | 0.9000 | 0.6490 | color-grade-LUT | fa3e8f3 |
-| 3409595232 | 0.6499 | 0.9000 | 0.6499 | scripted-state | fa3e8f3 |
-| 2872509253 | 0.6552 | 0.9000 | 0.6552 | taskbar | fa3e8f3 |
-| 916545283 | 0.6585 | 0.9000 | 0.6585 | taskbar | fa3e8f3 |
-| 3426865175 | 0.6702 | 0.9000 | 0.6702 | taskbar | fa3e8f3 |
-| 3528564892 | 0.6794 | 0.9000 | 0.6794 | taskbar | fa3e8f3 |
-| 3115845558 | 0.6820 | 0.9000 | 0.6820 | taskbar | fa3e8f3 |
-| 3362719513 | 0.6881 | 0.9000 | 0.6881 | color-grade-LUT | fa3e8f3 |
-| 3436033033 | 0.6919 | 0.9000 | 0.6919 | taskbar | fa3e8f3 |
-| 3447271084 | 0.7121 | 0.9000 | 0.7121 | missing-text-clock | fa3e8f3 |
-| 3577990983 | 0.7285 | 0.9000 | 0.7285 | missing-text-clock | fa3e8f3 |
-| 3276911872 | 0.7317 | 0.9000 | 0.7317 | particle-phase | fa3e8f3 |
-| 3013169753 | 0.7363 | 0.9000 | 0.7363 | color-grade-LUT | fa3e8f3 |
-| 3438420195 | 0.7402 | 0.9000 | 0.7402 | missing-text-clock | fa3e8f3 |
-| 3545444802 | 0.7431 | 0.9000 | 0.7431 | taskbar | fa3e8f3 |
-| 2487757810 | 0.7455 | 0.9000 | 0.7455 | taskbar | fa3e8f3 |
-| 3669680904 | 0.7531 | 0.9000 | 0.7531 | color-grade-LUT | fa3e8f3 |
-| 3404976219 | 0.7707 | 0.9000 | 0.7707 | taskbar | fa3e8f3 |
-| 3195212886 | 0.8026 | 0.9000 | 0.8026 | near-target | fa3e8f3 |
-| 3418060002 | 0.8138 | 0.9000 | 0.8138 | taskbar-capped | fa3e8f3 |
-| 3615821365 | 0.8318 | 0.9000 | 0.8318 | near-target | fa3e8f3 |
-| 3353892691 | 0.8369 | 0.9000 | 0.8369 | taskbar-capped | fa3e8f3 |
-| 3291581513 | 0.8372 | 0.9000 | 0.8372 | near-target | fa3e8f3 |
-| 3576279017 | 0.8412 | 0.9000 | 0.8412 | near-target | fa3e8f3 |
-| 1264202805 | 0.8419 | 0.9000 | 0.8419 | near-target | fa3e8f3 |
-| 1588298589 | 0.8487 | 0.9000 | 0.8487 | near-target | fa3e8f3 |
-| 3479521040 | 0.8528 | 0.9000 | 0.8528 | taskbar-capped | fa3e8f3 |
-| 2996283606 | 0.8530 | 0.9000 | 0.8530 | near-target | fa3e8f3 |
-| 1469094526 | 0.8632 | 0.9000 | 0.8632 | near-target | fa3e8f3 |
-| 1433564192 | 0.8646 | 0.9000 | 0.8646 | near-target | fa3e8f3 |
-| 3646049140 | 0.8665 | 0.9000 | 0.8665 | near-target | fa3e8f3 |
-| 2892812454 | 0.8775 | 0.9000 | 0.8775 | near-target | fa3e8f3 |
-| 3200980645 | 0.8812 | 0.9000 | 0.8812 | near-target | fa3e8f3 |
-| 2223651672 | 0.8841 | 0.9000 | 0.8841 | near-target | fa3e8f3 |
-| 2636878454 | 0.8852 | 0.9000 | 0.8852 | taskbar-capped | fa3e8f3 |
-| 3198624623 | 0.8858 | 0.9000 | 0.8858 | taskbar-capped | fa3e8f3 |
-| 1229038692 | 0.8887 | 0.9000 | 0.8887 | taskbar-capped | fa3e8f3 |
-| 2064316482 | 0.8912 | 0.9000 | 0.8912 | taskbar-capped | fa3e8f3 |
-| 2829689820 | 0.9007 | 0.9007 | 0.9007 | in-target | fa3e8f3 |
-| 2303021395 | 0.9076 | 0.9076 | 0.9076 | in-target | fa3e8f3 |
-| 3585875739 | 0.9146 | 0.9146 | 0.9146 | in-target | fa3e8f3 |
-| 1773105076 | 0.9147 | 0.9147 | 0.9147 | in-target | fa3e8f3 |
-| 2140101288 | 0.9149 | 0.9149 | 0.9149 | in-target | fa3e8f3 |
-| 2583077343 | 0.9225 | 0.9225 | 0.9225 | in-target | fa3e8f3 |
-| 2780446545 | 0.9262 | 0.9262 | 0.9262 | in-target | fa3e8f3 |
-| 1431235492 | 0.9285 | 0.9285 | 0.9285 | in-target | fa3e8f3 |
-| 2420441089 | 0.9351 | 0.9351 | 0.9351 | in-target | fa3e8f3 |
-| 2611087662 | 0.9353 | 0.9353 | 0.9353 | in-target | fa3e8f3 |
-| 3482079065 | 0.9448 | 0.9448 | 0.9448 | in-target | fa3e8f3 |
-| 3352698943 | 0.9451 | 0.9451 | 0.9451 | in-target | fa3e8f3 |
-| 3040327022 | 0.9478 | 0.9478 | 0.9478 | in-target | fa3e8f3 |
-| 2111201226 | 0.9491 | 0.9491 | 0.9491 | in-target | fa3e8f3 |
-| 3031418765 | 0.9519 | 0.9519 | 0.9519 | in-target | fa3e8f3 |
-| 1683040946 | 0.9531 | 0.9531 | 0.9531 | in-target | fa3e8f3 |
-| 2186612524 | 0.9551 | 0.9551 | 0.9551 | in-target | fa3e8f3 |
-| 2320743618 | 0.9560 | 0.9560 | 0.9560 | in-target | fa3e8f3 |
-| 2820544627 | 0.9564 | 0.9564 | 0.9564 | in-target | fa3e8f3 |
-| 2109561442 | 0.9582 | 0.9582 | 0.9582 | in-target | fa3e8f3 |
-| 2363806159 | 0.9586 | 0.9586 | 0.9586 | in-target | fa3e8f3 |
-| 1646847449 | 0.9593 | 0.9593 | 0.9593 | in-target | fa3e8f3 |
-| 3239767814 | 0.9593 | 0.9593 | 0.9593 | in-target | fa3e8f3 |
-| 947540551 | 0.9598 | 0.9598 | 0.9598 | in-target | fa3e8f3 |
-| 2609314022 | 0.9629 | 0.9629 | 0.9629 | in-target | fa3e8f3 |
-| 3334481827 | 0.9642 | 0.9642 | 0.9642 | in-target | fa3e8f3 |
-| 3350974549 | 0.9646 | 0.9646 | 0.9646 | in-target | fa3e8f3 |
-| 3258032485 | 0.9662 | 0.9662 | 0.9662 | in-target | fa3e8f3 |
-| 2114035295 | 0.9668 | 0.9668 | 0.9668 | in-target | fa3e8f3 |
-| 2219540918 | 0.9669 | 0.9669 | 0.9669 | in-target | fa3e8f3 |
-| 2190291768 | 0.9673 | 0.9673 | 0.9673 | in-target | fa3e8f3 |
-| 2978610140 | 0.9685 | 0.9685 | 0.9685 | in-target | fa3e8f3 |
-| 2468167360 | 0.9686 | 0.9686 | 0.9686 | in-target | fa3e8f3 |
-| 3624053922 | 0.9690 | 0.9690 | 0.9690 | in-target | fa3e8f3 |
-| 2284309190 | 0.9701 | 0.9701 | 0.9701 | in-target | fa3e8f3 |
-| 1537139001 | 0.9709 | 0.9709 | 0.9709 | in-target | fa3e8f3 |
-| 3330384164 | 0.9711 | 0.9711 | 0.9711 | in-target | fa3e8f3 |
-| 2238042939 | 0.9785 | 0.9785 | 0.9785 | in-target | fa3e8f3 |
+| id | SSIM (crop) | objetivo | estado | commit |
+|---|---|---|---|---|
+| 3675966045 | 0.2603 | 0.9000 | fire-aux-dropped | fa3e8f3 |
+| 2423807815 | 0.3590 | 0.9000 | scripted-state | fa3e8f3 |
+| 3660962877 | 0.3753 | 0.9000 | missing-text-clock | fa3e8f3 |
+| 3430675494 | 0.4130 | 0.9000 | color-grade-LUT | fa3e8f3 |
+| 3390491312 | 0.4907 | 0.9000 | framing-parallax | fa3e8f3 |
+| 3265802028 | 0.5074 | 0.9000 | color-grade-LUT | fa3e8f3 |
+| 2381855517 | 0.5102 | 0.9000 | scroll-phase | fa3e8f3 |
+| 3435120596 | 0.5158 | 0.9000 | scripted-state | fa3e8f3 |
+| 3470764447 | 0.5181 | 0.9000 | day-night | fa3e8f3 |
+| 3326873240 | 0.5416 | 0.9000 | day-night | fa3e8f3 |
+| 3355037946 | 0.5676 | 0.9000 | near-target | fa3e8f3 |
+| 3627327015 | 0.5758 | 0.9000 | missing-text-clock | fa3e8f3 |
+| 2479422222 | 0.5818 | 0.9000 | near-target | fa3e8f3 |
+| 3355791741 | 0.5932 | 0.9000 | scripted-state | fa3e8f3 |
+| 3497714247 | 0.5934 | 0.9000 | missing-text-clock | fa3e8f3 |
+| 3372027807 | 0.5947 | 0.9000 | near-target | fa3e8f3 |
+| 3319713168 | 0.6090 | 0.9000 | fire-aux-dropped | fa3e8f3 |
+| 3565328165 | 0.6362 | 0.9000 | missing-text-clock | fa3e8f3 |
+| 2817222811 | 0.6553 | 0.9000 | near-target | fa3e8f3 |
+| 3324136043 | 0.6589 | 0.9000 | color-grade-LUT | fa3e8f3 |
+| 3409595232 | 0.6610 | 0.9000 | scripted-state | fa3e8f3 |
+| 3461353800 | 0.6619 | 0.9000 | near-target | fa3e8f3 |
+| 2872509253 | 0.6648 | 0.9000 | near-target | fa3e8f3 |
+| 916545283 | 0.6688 | 0.9000 | near-target | fa3e8f3 |
+| 3426865175 | 0.6781 | 0.9000 | near-target | fa3e8f3 |
+| 3115845558 | 0.6882 | 0.9000 | near-target | fa3e8f3 |
+| 3528564892 | 0.6887 | 0.9000 | near-target | fa3e8f3 |
+| 3436033033 | 0.6994 | 0.9000 | near-target | fa3e8f3 |
+| 3362719513 | 0.7127 | 0.9000 | color-grade-LUT | fa3e8f3 |
+| 3447271084 | 0.7209 | 0.9000 | missing-text-clock | fa3e8f3 |
+| 3577990983 | 0.7367 | 0.9000 | missing-text-clock | fa3e8f3 |
+| 3276911872 | 0.7395 | 0.9000 | particle-phase | fa3e8f3 |
+| 3013169753 | 0.7422 | 0.9000 | color-grade-LUT | fa3e8f3 |
+| 3438420195 | 0.7522 | 0.9000 | missing-text-clock | fa3e8f3 |
+| 3545444802 | 0.7532 | 0.9000 | near-target | fa3e8f3 |
+| 2487757810 | 0.7568 | 0.9000 | near-target | fa3e8f3 |
+| 3669680904 | 0.7671 | 0.9000 | color-grade-LUT | fa3e8f3 |
+| 3404976219 | 0.7826 | 0.9000 | near-target | fa3e8f3 |
+| 3195212886 | 0.8140 | 0.9000 | near-target | fa3e8f3 |
+| 3615821365 | 0.8439 | 0.9000 | near-target | fa3e8f3 |
+| 3418060002 | 0.8461 | 0.9000 | near-target | fa3e8f3 |
+| 3576279017 | 0.8527 | 0.9000 | near-target | fa3e8f3 |
+| 3291581513 | 0.8558 | 0.9000 | near-target | fa3e8f3 |
+| 1264202805 | 0.8590 | 0.9000 | near-target | fa3e8f3 |
+| 3353892691 | 0.8638 | 0.9000 | near-target | fa3e8f3 |
+| 2996283606 | 0.8646 | 0.9000 | near-target | fa3e8f3 |
+| 1588298589 | 0.8669 | 0.9000 | near-target | fa3e8f3 |
+| 3479521040 | 0.8737 | 0.9000 | near-target | fa3e8f3 |
+| 1469094526 | 0.8767 | 0.9000 | near-target | fa3e8f3 |
+| 3646049140 | 0.8770 | 0.9000 | near-target | fa3e8f3 |
+| 1433564192 | 0.8777 | 0.9000 | near-target | fa3e8f3 |
+| 2892812454 | 0.8974 | 0.9000 | near-target | fa3e8f3 |
+| 3200980645 | 0.8987 | 0.9000 | near-target | fa3e8f3 |
+| 2223651672 | 0.9017 | 0.9017 | in-target | fa3e8f3 |
+| 2636878454 | 0.9078 | 0.9078 | in-target | fa3e8f3 |
+| 1229038692 | 0.9125 | 0.9125 | in-target | fa3e8f3 |
+| 3198624623 | 0.9183 | 0.9183 | in-target | fa3e8f3 |
+| 2829689820 | 0.9193 | 0.9193 | in-target | fa3e8f3 |
+| 2064316482 | 0.9226 | 0.9226 | in-target | fa3e8f3 |
+| 2140101288 | 0.9327 | 0.9327 | in-target | fa3e8f3 |
+| 2583077343 | 0.9376 | 0.9376 | in-target | fa3e8f3 |
+| 2303021395 | 0.9395 | 0.9395 | in-target | fa3e8f3 |
+| 3585875739 | 0.9423 | 0.9423 | in-target | fa3e8f3 |
+| 2780446545 | 0.9426 | 0.9426 | in-target | fa3e8f3 |
+| 1431235492 | 0.9512 | 0.9512 | in-target | fa3e8f3 |
+| 1773105076 | 0.9567 | 0.9567 | in-target | fa3e8f3 |
+| 2611087662 | 0.9572 | 0.9572 | in-target | fa3e8f3 |
+| 2111201226 | 0.9654 | 0.9654 | in-target | fa3e8f3 |
+| 3352698943 | 0.9661 | 0.9661 | in-target | fa3e8f3 |
+| 3040327022 | 0.9728 | 0.9728 | in-target | fa3e8f3 |
+| 3482079065 | 0.9746 | 0.9746 | in-target | fa3e8f3 |
+| 2320743618 | 0.9756 | 0.9756 | in-target | fa3e8f3 |
+| 2363806159 | 0.9756 | 0.9756 | in-target | fa3e8f3 |
+| 2420441089 | 0.9772 | 0.9772 | in-target | fa3e8f3 |
+| 1683040946 | 0.9773 | 0.9773 | in-target | fa3e8f3 |
+| 2114035295 | 0.9782 | 0.9782 | in-target | fa3e8f3 |
+| 2820544627 | 0.9788 | 0.9788 | in-target | fa3e8f3 |
+| 3330384164 | 0.9797 | 0.9797 | in-target | fa3e8f3 |
+| 947540551 | 0.9800 | 0.9800 | in-target | fa3e8f3 |
+| 3350974549 | 0.9803 | 0.9803 | in-target | fa3e8f3 |
+| 3239767814 | 0.9806 | 0.9806 | in-target | fa3e8f3 |
+| 2609314022 | 0.9808 | 0.9808 | in-target | fa3e8f3 |
+| 2109561442 | 0.9810 | 0.9810 | in-target | fa3e8f3 |
+| 3624053922 | 0.9814 | 0.9814 | in-target | fa3e8f3 |
+| 2186612524 | 0.9820 | 0.9820 | in-target | fa3e8f3 |
+| 2190291768 | 0.9840 | 0.9840 | in-target | fa3e8f3 |
+| 3334481827 | 0.9856 | 0.9856 | in-target | fa3e8f3 |
+| 3258032485 | 0.9874 | 0.9874 | in-target | fa3e8f3 |
+| 1646847449 | 0.9879 | 0.9879 | in-target | fa3e8f3 |
+| 2468167360 | 0.9892 | 0.9892 | in-target | fa3e8f3 |
+| 2219540918 | 0.9893 | 0.9893 | in-target | fa3e8f3 |
+| 1537139001 | 0.9919 | 0.9919 | in-target | fa3e8f3 |
+| 2284309190 | 0.9930 | 0.9930 | in-target | fa3e8f3 |
+| 2978610140 | 0.9932 | 0.9932 | in-target | fa3e8f3 |
+| 3031418765 | 0.9950 | 0.9950 | in-target | fa3e8f3 |
+| 2238042939 | 0.9971 | 0.9971 | in-target | fa3e8f3 |

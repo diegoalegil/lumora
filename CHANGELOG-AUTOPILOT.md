@@ -28,7 +28,22 @@ PROGRESS.md + CHANGELOG seeded. Mean 0.7958, ≥0.80 58/96, ≥0.90 38/96.
 ### `75bf4b3` — diagnostic: LUMORA_PARITY_CROP_BOTTOM (quantify oracle taskbar)
 Discovered 32/96 oracle captures bake the Windows taskbar into the bottom ~48px. Env-gated crop diagnostic (gate default unchanged). Measured: crop bottom 48px → mean **0.7958 → 0.8117**, ≥0.90 **38 → 43**. Lumora's true fidelity is ~0.81+; those 32 scenes are faithful, taskbar-capped. Fix is capture-side.
 
-### FASE 3/4 — assessed
+### ROUND 2 (feature autopilot) — PASO 1: taskbar crop made permanent in the gate
+`parityGate` now crops the bottom 48px by default (`LUMORA_PARITY_CROP_BOTTOM`, default 48; set 0 for
+full-frame). ~32 captures bake the Windows taskbar there. Re-baselined PROGRESS.md from the with-crop run:
+**mean 0.8117 · ≥0.90 43/96** (was 38/96 uncropped) — 5 scenes cross 0.90 purely by dropping the desktop
+chrome from the score. 66 WEScene checks + full check_all green.
+
+> ⚠️ **Blocker for PASO 2/3:** the `we-reference` oracle + the whole `sesion desktop` package were removed
+> from `~/Desktop` by the environment between sessions (not in Trash/home). The feature round's acceptance
+> rule (no SSIM regression with crop **and** a visual A/B vs `we-reference/<id>`) needs the oracle PNGs, which
+> are gone. Retained: the SSIM tables (incl. the crop run) and lumora renders — but not the oracle frames.
+> **To resume feature work, restore the package** (re-extract `lumora-sesion-desktop.zip` into the Desktop, or
+> re-send it). Landing render features blind would violate the round's own discipline (oracle decides
+> regressions; A/B enables flat-SSIM features) and risk the regressions it forbids — so PASO 2/3 are paused,
+> not skipped.
+
+### FASE 3/4 — assessed (round 1)
 - **T3.1 copybackground**: blocked — needs the transpiler to emit a `v_ScreenCoord` varying it never emits (compose shaders would reference an undefined varying); validation scenes already ≥0.93. **Deferred (XL/blocked).**
 - **T3.2 camerapath**: gated; static zoom would regress 3479521040 (already matches without it); only 3675966045 has real animation and it's dominated by fire/clock/grade. **Deferred.**
 - **T3.3 particle operators**: would require the reference engine's particle math (firewall-restricted) and the gaps are position-at-capture-instant (SSIM-unfixable). **Deferred.**
