@@ -120,8 +120,20 @@ deterministic default-bugs — all fixed, oracle-verified, 0 regressions:
   Culprit = `filmgrain` (`ApplyBlending(BLENDMODE, albedo, noise, g_NoiseAlpha=2)` darkens); shimmer/foliagesway
   don't. Fix needs a transpiler BLENDMODE/uniform-default change that touches EVERY filmgrain scene → needs broad
   regression testing first. Not a default-bug.
-- 3565328165 / 3447271084: per-object text `scriptproperties` (date/clock format) + text-quad sizing to layer
-  `size`; medium-confidence text-render work.
+- 3565328165 / 3447271084: WE scales text glyphs to fill the layer `size` box (e.g. Date size 781x660,
+  pointsize 144); lumora sizes the quad by raw glyph pixels (line ~2025, also ignores layer.scale) → text too
+  small. Confirmed visually (3447271084: oracle big "2日"/SUNDAY vs lumora tiny "28"). Date content matches
+  today, but the clock TIME is wall-clock → partial payoff; the size-box scaling has aspect-distortion risk
+  across all text scenes → text-render workstream, deferred.
+
+**P4 hardening DONE:** `c25caa8` 7 synthetic-scene parser regression guards (316 importer checks). Full
+`check_all.sh` GREEN (242 + LumoraApp build). Perf: `benchall` 1920x1080 = **97 scenes, 0 sub-60fps**
+(slowest 3265802028 7.3ms/137fps; copybackground scene 3390491312 4.2ms — the extra composite is negligible
+per-frame). filmgrain-darkening fix NOT attempted: 7 scenes use filmgrain incl. 1773105076 (0.957) and
+3646049140 (0.877); a wrong blend/uniform change would regress those, and the cause (material blending=normal,
+g_NoiseAlpha=2, ApplyBlending semantics) is firewall-adjacent + uncertain. Deferred to a focused pass.
+
+ROUND 5 result: mean SSIM **0.8133**, ≥0.90 43/96, all commits CI-green, 0 regressions, all 4 priorities done.
 
 ### FASE 3/4 — assessed (round 1)
 - **T3.1 copybackground**: blocked — needs the transpiler to emit a `v_ScreenCoord` varying it never emits (compose shaders would reference an undefined varying); validation scenes already ≥0.93. **Deferred (XL/blocked).**
