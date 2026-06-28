@@ -1576,12 +1576,20 @@ do {
     if let st = mk(#"{"general":{"bloom":true,"bloomstrength":{"value":3.0}},"objects":[]}"#)?.bloomStrength {
         Check.that("general.bloomstrength {value:3.0} dict resolves", abs(st - 3.0) < 1e-6)
     } else { Check.that("strength-dict scene loads", false) }
-    // solid-colour layer detected via the model's solidlayer flag, not just the image path.
-    let model = #"{"solidlayer":true,"material":"materials/util/solidlayer_x.json"}"#
+    // solid-colour layer detected via the model's solidlayer FLAG alone — material path has no "solidlayer"
+    // substring and neither does the image path, so only the flag branch can make this pass.
+    let model = #"{"solidlayer":true,"material":"materials/util/plain.json"}"#
     let scene = #"{"general":{},"objects":[{"id":1,"name":"bg","image":"models/solid_x.json","color":"1 0 0"}]}"#
     if let r = mk(scene, ["models/solid_x.json": model]) {
-        Check.that("solid layer detected via model solidlayer flag", r.layers.contains { $0.isSolidLayer })
-    } else { Check.that("solid-layer scene loads", false) }
+        Check.that("solid layer detected via model solidlayer flag (material has no 'solidlayer' substring)",
+                   r.layers.contains { $0.isSolidLayer })
+    } else { Check.that("solid-layer (flag) scene loads", false) }
+    // and via the material path alone — no flag, image path has no "solidlayer", only the material branch fires.
+    let matModel = #"{"material":"materials/util/solidlayer_instance.json"}"#
+    let matScene = #"{"general":{},"objects":[{"id":1,"name":"bg","image":"models/m_x.json","color":"1 0 0"}]}"#
+    if let r = mk(matScene, ["models/m_x.json": matModel]) {
+        Check.that("solid layer detected via solidlayer MATERIAL path (no flag)", r.layers.contains { $0.isSolidLayer })
+    } else { Check.that("solid-layer (material) scene loads", false) }
     // a normal image layer (no solidlayer flag) is NOT a solid fill.
     let plainModel = #"{"material":"materials/foo.json"}"#
     let plainScene = #"{"general":{},"objects":[{"id":1,"name":"img","image":"models/foo.json"}]}"#
