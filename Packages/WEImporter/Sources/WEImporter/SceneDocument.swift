@@ -414,8 +414,16 @@ public enum SceneGraph {
         let sceneBox = SceneVec3(x: Double(int(ortho["width"])) / 2, y: Double(int(ortho["height"])) / 2, z: 0)
         let clearColor = SceneVec3(parsing: general["clearcolor"] as? String ?? "0 0 0")
         // Scene-level bloom: only when the flag is on AND the strength is meaningful (many scenes ship
-        // `bloom:true` with strength 0). Clamp both against malformed values.
-        let bloomOn = (general["bloom"] as? Bool) == true || (general["bloom"] as? NSNumber)?.boolValue == true
+        // `bloom:true` with strength 0). Clamp both against malformed values. The flag may be a plain Bool/number
+        // OR a user-property binding `{ "user": <name>, "value": <default> }` (an author wired bloom to a toggle);
+        // honour the bound default (and any override) so a dict-form flag isn't silently read as off.
+        let bloomField = general["bloom"]
+        let bloomDictValue = (bloomField as? [String: Any]).map { dict -> Bool in
+            let v = Self.bound(dict, overrides: overrides)
+            return (v as? Bool) == true || (v as? NSNumber)?.boolValue == true
+        }
+        let bloomOn = (bloomField as? Bool) == true || (bloomField as? NSNumber)?.boolValue == true
+            || bloomDictValue == true
         let bloomStrength = bloomOn ? min(8, max(0, (general["bloomstrength"] as? NSNumber)?.doubleValue ?? 0)) : 0
         let bloomThreshold = min(1, max(0, (general["bloomthreshold"] as? NSNumber)?.doubleValue ?? 0.8))
         // Camera zoom (general.zoom). A scalar scales the whole composite; a script-driven zoom (a dict) is left
