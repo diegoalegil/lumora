@@ -59,6 +59,23 @@ no-regression by gating (only the target scenes change). SSIM-vs-we-reference is
   (trail_1 has distancemax=0) / are too faint to form a visible ribbon. Can't demonstrate improvement → reverted
   per the round's rule. (Reinstate if a future scene has a spread, visible rope.)
 
+### ROUND 2 cont. — remaining features scoped against the real code (oracle still gone)
+- **copybackground (T3.1) — SCOPED, deferred (needs oracle + render restructuring).** Root cause: `_rt_FullFrameBuffer`
+  resolves to `whiteTexture` (SceneRenderer.resolveAuxTexture default, ~line 659), so glass/water effects sample
+  white. Clean fix: a new `EffectInput.background` resolved per-frame to the scene composite, gated to effects that
+  reference `_rt_FullFrameBuffer`/`_rt_MipMappedFrameBuffer`. The transpiler already wires `gl_FragCoord`
+  (WEShaderTranspiler ~109-138), and `renderBackground` already composites the scene — BUT a glass layer's effect
+  runs in Pass 1 before that composite exists (chicken-and-egg) → needs multi-phase render restructuring, and it
+  touches 60+ scenes (grep of the library). Too risky to land blind; do it with the oracle to verify no regression.
+- **bloom (T2.4) — deferred (self-A/B-neutral here).** The glow gap on the bloom scenes (e.g. Rengoku 2479422222)
+  is the dropped fire/ember PARTICLES (firewall-blocked WE sprites), not the bloom kernel width; a bloom-shader
+  change doesn't close it. (2996283606, the other bloom scene, is taskbar-capped — bloom already matches.)
+- **particle operators (T3.3) — blocked.** Exact vortex/turbulence/controlpoint math needs the GPL CParticle
+  source (firewall).
+- **Conclusion:** camerapath (4984d23) was the last cleanly-demonstrable feature available without the oracle.
+  The rest need the oracle restored (to verify) or WE assets the firewall forbids. Loop stopped to avoid a risky
+  blind landing; resume on oracle restore.
+
 ### FASE 3/4 — assessed (round 1)
 - **T3.1 copybackground**: blocked — needs the transpiler to emit a `v_ScreenCoord` varying it never emits (compose shaders would reference an undefined varying); validation scenes already ≥0.93. **Deferred (XL/blocked).**
 - **T3.2 camerapath**: gated; static zoom would regress 3479521040 (already matches without it); only 3675966045 has real animation and it's dominated by fire/clock/grade. **Deferred.**
