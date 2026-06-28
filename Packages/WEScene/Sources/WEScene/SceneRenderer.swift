@@ -1342,8 +1342,16 @@ public final class SceneRenderer {
                                 center: SIMD2<Float>, halfExtent: SIMD2<Float>, uvScale: SIMD2<Float>,
                                 tint: SIMD3<Float>, compositionProbe: Bool = false) -> [PreparedEffect] {
         guard let effectRenderer, !effects.isEmpty else { return [] }
+        // Diagnostic (off by default): skip effects whose name/shader contains a substring, to empirically
+        // isolate which effect changes a scene (e.g. LUMORA_SKIP_EFFECT=filmgrain to test a darkening effect).
+        let skipEffect = ProcessInfo.processInfo.environment["LUMORA_SKIP_EFFECT"]
         var compiled: [PreparedEffect] = []
         for effect in effects {
+            if let skip = skipEffect, !skip.isEmpty,
+               effect.name.lowercased().contains(skip.lowercased())
+                || effect.passes.contains(where: { $0.fragmentShaderPath.lowercased().contains(skip.lowercased()) }) {
+                continue
+            }
             var preparedPasses: [PreparedPass] = []
             var graphOK = true
             for pass in effect.passes {
