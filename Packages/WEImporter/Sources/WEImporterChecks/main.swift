@@ -1532,6 +1532,29 @@ if let hard = ParticleSystem.parse(["emitter": [["name": "boxrandom", "rate": 20
     Check.that("fade in/out times clamp to [0,1]", hard.fadeInTime == 0 && hard.fadeOutTime == 1)
 }
 
+// MARK: - Camerapath bézier track
+do {
+    // Default handles — front (1/3,1/3), back (-1/3,-1/3) — put the cubic-bézier control points on the y=x
+    // diagonal, i.e. exactly linear, so a 0→100 track's midpoint is 50.
+    let lin = WEBezierTrack(keys: [WEBezierKey(frame: 0, value: 0), WEBezierKey(frame: 10, value: 100)],
+                            fps: 10, length: 0, isLooping: false)
+    Check.that("bézier default handles interpolate linearly (midpoint = 50)", abs(lin.value(at: 0.5) - 50) < 0.05)
+    Check.that("bézier holds the first keyframe before its frame", lin.value(at: -1) == 0)
+    Check.that("bézier holds the last keyframe after its frame", lin.value(at: 100) == 100)
+    Check.that("bézier is monotonic on a rising track", lin.value(at: 0.2) < lin.value(at: 0.8))
+    let one = WEBezierTrack(keys: [WEBezierKey(frame: 5, value: 7)], fps: 10, length: 0, isLooping: false)
+    Check.that("a single-key bézier track holds its value", one.value(at: 0) == 7 && one.value(at: 100) == 7)
+    // Mirrors 3675966045's zoom track: held at 2.13 before the first key, settling to 1.0 after the last.
+    let zoom = WEBezierTrack(keys: [WEBezierKey(frame: 18, value: 2.13), WEBezierKey(frame: 70, value: 1.0)],
+                             fps: 22.5, length: 90, isLooping: false)
+    Check.that("camera zoom holds 2.13 before the first key", abs(zoom.value(at: 0) - 2.13) < 1e-6)
+    Check.that("camera zoom settles to 1.0 after the last key", abs(zoom.value(at: 8) - 1.0) < 1e-6)
+    let staticCam = SceneCameraPath(baseX: 0, baseY: 0, relative: true, trackX: nil, trackY: nil, zoomTrack: nil)
+    Check.that("a track-less camera path is not animated", !staticCam.isAnimated)
+    Check.that("a track-less camera path is identity (no pan, unit zoom)",
+               staticCam.offset(at: 1).x == 0 && staticCam.zoom(at: 1) == 1)
+}
+
 // MARK: - Done
 
 try? fm.removeItem(at: tmpRoot)

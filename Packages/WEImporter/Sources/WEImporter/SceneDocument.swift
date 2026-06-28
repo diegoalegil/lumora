@@ -86,6 +86,83 @@ public struct Vec3Animation: Sendable, Equatable {
     }
 }
 
+/// One cubic-bézier keyframe: a value at a frame, with out- (`front`) and in- (`back`) handles. Handle
+/// components are fractions of the segment's Δframe (x) and Δvalue (y); `back.x` is negative. A missing or
+/// disabled handle defaults to the linear-equivalent (±1/3), so a track with no handles reproduces linear.
+public struct WEBezierKey: Sendable, Equatable {
+    public let frame: Double, value: Double
+    public let frontX: Double, frontY: Double, backX: Double, backY: Double
+    public init(frame: Double, value: Double, frontX: Double = 1.0/3, frontY: Double = 1.0/3,
+                backX: Double = -1.0/3, backY: Double = -1.0/3) {
+        self.frame = frame; self.value = value
+        self.frontX = frontX; self.frontY = frontY; self.backX = backX; self.backY = backY
+    }
+}
+
+/// A cubic-bézier scalar animation track (Wallpaper Engine camerapath component / AE-style handles). Evaluated
+/// like CSS cubic-bezier: solve Bx(t)=xTarget by Newton, then read By(t). `single` mode holds the end
+/// keyframes (no wrap); `loop` wraps the frame into [0,length). Pure math — no GPL/WE source involved.
+public struct WEBezierTrack: Sendable, Equatable {
+    public let keys: [WEBezierKey]   // sorted by frame
+    public let fps: Double, length: Double, isLooping: Bool
+    public init(keys: [WEBezierKey], fps: Double, length: Double, isLooping: Bool) {
+        self.keys = keys.sorted { $0.frame < $1.frame }; self.fps = fps; self.length = length; self.isLooping = isLooping
+    }
+    public func value(at time: Double) -> Double {
+        guard let first = keys.first, let last = keys.last else { return 0 }
+        guard fps > 0, fps.isFinite else { return first.value }
+        var frame = time * fps
+        if isLooping, length > 0 { frame = frame.truncatingRemainder(dividingBy: length); if frame < 0 { frame += length } }
+        if frame <= first.frame { return first.value }
+        if frame >= last.frame { return last.value }
+        var a = first, b = last
+        for i in 0 ..< keys.count - 1 where keys[i].frame <= frame && frame <= keys[i+1].frame { a = keys[i]; b = keys[i+1]; break }
+        let df = b.frame - a.frame
+        guard df > 1e-9 else { return a.value }
+        let dv = b.value - a.value
+        // Frame-normalised unit square: P0=(0,0), P3=(1,1); P1 = a's out-handle, P2 = 1 + b's in-handle.
+        let p1x = a.frontX, p1y = a.frontY, p2x = 1 + b.backX, p2y = 1 + b.backY
+        let xTarget = max(0, min(1, (frame - a.frame) / df))
+        func bez(_ p1: Double, _ p2: Double, _ t: Double) -> Double {
+            let u = 1 - t; return 3*u*u*t*p1 + 3*u*t*t*p2 + t*t*t
+        }
+        // Newton solve Bx(t)=xTarget, bisection fallback for robustness.
+        var t = xTarget, lo = 0.0, hi = 1.0
+        for _ in 0 ..< 24 {
+            let x = bez(p1x, p2x, t) - xTarget
+            if abs(x) < 1e-5 { break }
+            if x > 0 { hi = t } else { lo = t }
+            let dx = 3*(1-t)*(1-t)*p1x + 6*(1-t)*t*(p2x-p1x) + 3*t*t*(1-p2x)
+            if abs(dx) > 1e-6 { t -= x/dx }
+            if t <= lo || t >= hi || !t.isFinite { t = (lo+hi)/2 }
+        }
+        return a.value + dv * bez(p1y, p2y, t)
+    }
+}
+
+/// An animated scene camera (WE camerapath): a base origin plus optional bézier X/Y/zoom tracks. The 2-D
+/// compositor pans by the origin offset and scales by the zoom. Only present for scenes whose camera object
+/// carries an `origin.animation` (the gate that keeps every static-camera scene byte-identical).
+public struct SceneCameraPath: Sendable, Equatable {
+    public let baseX: Double, baseY: Double, relative: Bool
+    public let trackX: WEBezierTrack?, trackY: WEBezierTrack?, zoomTrack: WEBezierTrack?
+    public init(baseX: Double, baseY: Double, relative: Bool,
+                trackX: WEBezierTrack?, trackY: WEBezierTrack?, zoomTrack: WEBezierTrack?) {
+        self.baseX = baseX; self.baseY = baseY; self.relative = relative
+        self.trackX = trackX; self.trackY = trackY; self.zoomTrack = zoomTrack
+    }
+    public var isAnimated: Bool { trackX != nil || trackY != nil || zoomTrack != nil }
+    /// Camera origin offset (scene units) at `time`: relative tracks are already deltas; absolute tracks are
+    /// measured from the base origin.
+    public func offset(at time: Double) -> (x: Double, y: Double) {
+        let ox = trackX.map { relative ? $0.value(at: time) : $0.value(at: time) - baseX } ?? 0
+        let oy = trackY.map { relative ? $0.value(at: time) : $0.value(at: time) - baseY } ?? 0
+        return (ox, oy)
+    }
+    /// Camera zoom at `time` (1 = none); >1 zooms in.
+    public func zoom(at time: Double) -> Double { zoomTrack?.value(at: time) ?? 1 }
+}
+
 /// A post-process effect applied to a layer (pulse, blur, tint, water…): the shader to run and the
 /// constant uniform values to feed it, keyed by the shader's `ui_editor_properties_*` annotation.
 /// One render pass of a (possibly multi-pass) effect: a shader, its combos and aux sampler bindings, the
@@ -283,10 +360,14 @@ public struct RenderableScene: Sendable, Equatable {
     /// The scene's camera zoom (`general.zoom`; 1 = none). WE scales the whole composite about its centre by
     /// this factor, cropping the overflow — a 1.1 reads ~10% tighter on the subject.
     public let zoom: Double
+    /// The animated scene camera (WE camerapath), or nil for the common static-camera scene. Drives a per-frame
+    /// pan + zoom of the whole composite; nil leaves the existing static framing byte-identical.
+    public let cameraPath: SceneCameraPath?
 
     public init(orthoWidth: Int, orthoHeight: Int, clearColor: SceneVec3,
                 layers: [SceneLayer], particleSystems: [ParticleSystem] = [], usesPuppet: Bool = false,
-                bloomStrength: Double = 0, bloomThreshold: Double = 0.8, zoom: Double = 1) {
+                bloomStrength: Double = 0, bloomThreshold: Double = 0.8, zoom: Double = 1,
+                cameraPath: SceneCameraPath? = nil) {
         self.orthoWidth = orthoWidth
         self.orthoHeight = orthoHeight
         self.clearColor = clearColor
@@ -296,6 +377,7 @@ public struct RenderableScene: Sendable, Equatable {
         self.bloomStrength = bloomStrength
         self.bloomThreshold = bloomThreshold
         self.zoom = zoom
+        self.cameraPath = cameraPath
     }
 }
 
@@ -343,6 +425,7 @@ public enum SceneGraph {
         var layers: [SceneLayer] = []
         var particleSystems: [ParticleSystem] = []
         var usesPuppet = false
+        var cameraPath: SceneCameraPath? = nil
 
         // WE objects form a transform hierarchy: a child carries a `parent` (object id) and its origin/scale/
         // angle are relative to the parent's world transform. Flattening each object with its local transform
@@ -388,6 +471,13 @@ public enum SceneGraph {
             // by default. (The `promptbox`-BOUND visibility variant is already forced hidden in isVisible; this
             // catches the unbound ones, detected by the unambiguous 提示框 marker in the object name or image path.)
             if isAuthorPromoBox(object) { continue }
+            // The scene camera object (`camera:"default"`, no image) carries the camerapath: an animated origin
+            // (pan) and zoom. Capture it BEFORE the image guard drops it. Gated on an actual `origin.animation`
+            // so a static camera leaves the scene byte-identical; the first animated camera wins.
+            if object["camera"] != nil, object["image"] == nil {
+                if cameraPath == nil, let cp = Self.parseCameraPath(object) { cameraPath = cp }
+                continue
+            }
             // A particle object spawns sprites instead of drawing an image; collect it (and any child
             // sub-emitters — an ember's glow, a shooting-star's trail, a magic charge's rays — which WE
             // spawns alongside the parent) and move on.
@@ -500,8 +590,46 @@ public enum SceneGraph {
             usesPuppet: usesPuppet,
             bloomStrength: bloomStrength,
             bloomThreshold: bloomThreshold,
-            zoom: zoom
+            zoom: zoom,
+            cameraPath: cameraPath
         )
+    }
+
+    /// Parse the camera object's camerapath: the base origin, the animated origin X/Y tracks (`origin.animation`
+    /// c0/c1) and the zoom track (`zoom.animation` c0). Returns nil unless an `origin.animation` is present (the
+    /// gate that keeps static-camera scenes untouched). `relative` tracks are deltas from the base origin.
+    static func parseCameraPath(_ object: [String: Any]) -> SceneCameraPath? {
+        guard let origin = object["origin"] as? [String: Any],
+              let anim = origin["animation"] as? [String: Any] else { return nil }
+        let base = SceneVec3(parsing: origin["value"] as? String ?? "0 0 0")
+        let opts = anim["options"] as? [String: Any] ?? [:]
+        let fps = (opts["fps"] as? NSNumber)?.doubleValue ?? 30
+        let length = (opts["length"] as? NSNumber)?.doubleValue ?? 0
+        let looping = (opts["mode"] as? String) == "loop"
+        let relative = (anim["relative"] as? NSNumber)?.boolValue ?? (anim["relative"] as? Bool ?? false)
+        func track(_ raw: Any?) -> WEBezierTrack? {
+            guard let arr = raw as? [[String: Any]], !arr.isEmpty else { return nil }
+            let keys = arr.compactMap { kf -> WEBezierKey? in
+                guard let frame = (kf["frame"] as? NSNumber)?.doubleValue,
+                      let value = (kf["value"] as? NSNumber)?.doubleValue, frame.isFinite, value.isFinite else { return nil }
+                func handle(_ h: Any?, _ dx: Double, _ dy: Double) -> (Double, Double) {
+                    guard let d = h as? [String: Any], (d["enabled"] as? NSNumber)?.boolValue ?? (d["enabled"] as? Bool ?? true) else { return (dx, dy) }
+                    let x = (d["x"] as? NSNumber)?.doubleValue ?? dx, y = (d["y"] as? NSNumber)?.doubleValue ?? dy
+                    return (x.isFinite ? x : dx, y.isFinite ? y : dy)
+                }
+                let (fx, fy) = handle(kf["front"], 1.0/3, 1.0/3)
+                let (bx, by) = handle(kf["back"], -1.0/3, -1.0/3)
+                return WEBezierKey(frame: frame, value: value, frontX: fx, frontY: fy, backX: bx, backY: by)
+            }
+            return keys.count >= 2 ? WEBezierTrack(keys: keys, fps: fps, length: length, isLooping: looping) : nil
+        }
+        let tx = track(anim["c0"]), ty = track(anim["c1"])
+        var zt: WEBezierTrack? = nil
+        if let z = object["zoom"] as? [String: Any], let za = z["animation"] as? [String: Any] {
+            zt = track(za["c0"])
+        }
+        guard tx != nil || ty != nil || zt != nil else { return nil }
+        return SceneCameraPath(baseX: base.x, baseY: base.y, relative: relative, trackX: tx, trackY: ty, zoomTrack: zt)
     }
 
     /// Whether an object's `colorBlendMode` denotes an additive/glow composite (Wallpaper Engine's per-object

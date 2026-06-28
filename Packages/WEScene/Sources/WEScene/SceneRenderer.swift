@@ -209,6 +209,7 @@ public final class PreparedScene {
     fileprivate let bloomStrength: Float    // scene-level bloom; 0 = none (the extra pass is skipped entirely)
     fileprivate let bloomThreshold: Float
     fileprivate let zoom: Float             // general.zoom: scales the whole composite about its centre (1 = none)
+    fileprivate let cameraPath: SceneCameraPath?   // animated scene camera (pan+zoom); nil = static framing
     /// True only if some layer can READ the audio spectrum — an audio-visualiser script group, or an effected
     /// layer (an effect may declare g_AudioSpectrum*). When false the renderer skips building the six per-frame
     /// audio-override arrays, since nothing would consume them. Computed once so it costs nothing per frame.
@@ -216,7 +217,7 @@ public final class PreparedScene {
 
     fileprivate init(layers: [PreparedLayer], clearColor: SceneVec3, particles: [PreparedParticles],
                      orthoWidth: Double, orthoHeight: Double, puppetReady: Bool,
-                     bloomStrength: Float, bloomThreshold: Float, zoom: Float = 1) {
+                     bloomStrength: Float, bloomThreshold: Float, zoom: Float = 1, cameraPath: SceneCameraPath? = nil) {
         self.layers = layers
         self.clearColor = clearColor
         self.particles = particles
@@ -226,6 +227,7 @@ public final class PreparedScene {
         self.bloomStrength = bloomStrength
         self.bloomThreshold = bloomThreshold
         self.zoom = zoom
+        self.cameraPath = cameraPath
         self.usesAudio = layers.contains { $0.scriptGroup != nil || !$0.effects.isEmpty }
         self.framebufferPostProcessIndices = layers.enumerated().filter { $0.element.isFramebufferPostProcess }.map { $0.offset }
     }
@@ -256,7 +258,7 @@ public final class PreparedScene {
     /// True if any layer animates (parallax, alpha/position keyframes, effects) or the scene emits
     /// particles — i.e. it moves over time and is worth driving with a render loop.
     public var hasAnimation: Bool {
-        !particles.isEmpty || layers.contains {
+        cameraPath?.isAnimated == true || !particles.isEmpty || layers.contains {
             $0.parallaxDepth != SIMD2<Float>(0, 0) || $0.alphaAnimation != nil
                 || $0.originAnimation != nil || !$0.effects.isEmpty || $0.videoTrack != nil
                 || $0.scriptGroup != nil || ($0.text?.isDynamic == true)
@@ -332,6 +334,9 @@ public final class SceneRenderer {
     // shared by every scripted layer — so a scene with several visualiser/script groups feeds them all the
     // same real dt, instead of the 2nd..Nth group seeing `time == lastScriptTime` and falling back to 1/60.
     private var currentScriptFrameDelta: Double = 0.0166667
+    // This frame's camerapath pan offset in clip space (already divided out of the camera zoom so it isn't
+    // double-scaled by aspectScale). (0,0) for a static-camera scene, so animatedCenter is unchanged there.
+    private var currentCamOffset: SIMD2<Float> = .zero
 
     private static let shaderSource = """
     #include <metal_stdlib>
@@ -1040,7 +1045,7 @@ public final class SceneRenderer {
                              particles: preparedParticles, orthoWidth: orthoW, orthoHeight: orthoH,
                              puppetReady: puppetLayerCount > 0 && puppetReadyCount == puppetLayerCount,
                              bloomStrength: Float(document.bloomStrength), bloomThreshold: Float(document.bloomThreshold),
-                             zoom: Float(document.zoom))
+                             zoom: Float(document.zoom), cameraPath: document.cameraPath)
     }
 
     /// The sprite a particle system draws — its material's first bound texture and blend mode
@@ -1743,8 +1748,20 @@ public final class SceneRenderer {
         // Cover the target aspect, then apply the scene's camera zoom (general.zoom; 1 = none): WE scales the
         // whole composite about its centre, cropping the overflow. A zoomed scene (e.g. 1.1) renders ~10% tighter
         // on its subject — without it the frame reads as zoomed out versus WE.
-        let aspectScale = Self.coverScale(sceneAspect: scene.orthoWidth / scene.orthoHeight,
+        var aspectScale = Self.coverScale(sceneAspect: scene.orthoWidth / scene.orthoHeight,
                                           targetAspect: Double(width) / Double(height)) * Float(scene.zoom)
+        // Animated scene camera (camerapath): zoom multiplies the composite scale (in addition to general.zoom),
+        // and the origin offset pans every layer. Both gated on a present cameraPath, so a static-camera scene is
+        // byte-identical. The pan is pre-divided by the camera zoom so folding zoom into aspectScale doesn't
+        // double-scale the pan distance (aspectScale multiplies center+offset in the vertex shader).
+        currentCamOffset = .zero
+        if let cam = scene.cameraPath, cam.isAnimated {
+            let camZoom = Float(cam.zoom(at: time))
+            let off = cam.offset(at: time)
+            aspectScale *= camZoom
+            let z = camZoom != 0 ? camZoom : 1
+            currentCamOffset = SIMD2(Float(-2 * off.x / scene.orthoWidth) / z, Float(-2 * off.y / scene.orthoHeight) / z)
+        }
 
         // Pass 1: a layer with effects is rendered to its own texture and run through its effect chain.
         // The result is keyed by layer index; layers without effects are drawn directly in the main pass.
@@ -2144,6 +2161,8 @@ public final class SceneRenderer {
             center.x += Float(offset.x) * layer.originScale.x
             center.y += Float(offset.y) * layer.originScale.y
         }
+        // Camerapath pan: shift every layer by the camera offset (zero for a static-camera scene).
+        center += currentCamOffset
         return center
     }
 
