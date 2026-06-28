@@ -7,6 +7,12 @@ so animation/phase is covered, not just frame 0. `LUMORA_PARITY_STILL_ONLY=1` gi
 
 D (wrap REPEAT by ClampUVs) measured-NEUTRAL + reverted; E (mipmaps) measured (3 regressions >0.005) + reverted.
 
+**Round 10:** FUENTES (shared-font fallback) **refuted as an SSIM lever** — A/B over the 21 candidates moved 0
+scenes >0.005 (max +0.0008); correctness-only. **MAPA-TECHO.md** classifies every sub-target scene: **0 real
+animation bugs** — ceiling is firewall assets + non-determinism + capture artifacts. Found 1 mislabeled oracle
+ref **`3585875739`** (lumora correct, oracle frame is a different wallpaper) — excluding it lifts the true burst
+mean ~+0.006. See `MAPA-TECHO.md`.
+
 | id | burst SSIM | still SSIM | estado |
 |---|---|---|---|
 | 3675966045 | 0.2683 | 0.2699 | blocked (firewall LUT / wall-clock / text / animation-phase) |

@@ -215,6 +215,28 @@ static image, NO effects/audio/script, lumora correctly static and matching WE's
 animated scenes the same way the still metric under-counts audio-visualiser/firewall-particle scenes — use it to
 catch a change that WORSENS motion, and keep `LUMORA_PARITY_STILL_ONLY=1` (0.8155) for the static-fidelity view.
 
+### ROUND 10 — FUENTES (shared fonts) measured-refuted + MAPA-TECHO ceiling map
+- **FUENTES (shared-font fallback) — REFUTED as an SSIM lever.** The P3 fallback wiring is live, so this was a
+  pure measurement: `LUMORA_SHARED_ASSETS_DIR=<we-shared-assets>` and A/B the 21 candidate scenes, burst-avg vs
+  oracle. Result: **0 scenes up/down > 0.005** (max +0.0008 on 3195212886); 8 scenes re-rasterise with the correct
+  font (the fallback fires) but the text is small/hidden or its content is wall-clock; 13 are moot (font already
+  in the .pkg). Correctness-only (right typography in clocks/titles), not an SSIM gain — nothing to conserve under
+  the 0-regression rule. Hypothesis closed. (The pack's fonts are SIL OFL / open-licensed; bundling for typography
+  correctness is a separate packaging decision, out of scope here.)
+- **MAPA-TECHO.md — created (the ceiling map).** Classified all 56 sub-target (burst<0.90) scenes by why they're
+  below target. **Zero category-(a) real animation bugs**: every large still−burst gap is (b) firewall-dropped
+  fire/ember particles, (c) non-determinism (wall-clock clock/day-night/audio), or (d) WE idle-drift/capture —
+  lumora's animation is correct where it can be, so the burst metric finds no motion regression to fix. Remaining
+  ceiling = firewall assets (LUTs/sprites) + non-determinism + capture artifacts.
+- **Found 1 mislabeled oracle ref: `3585875739`** (still 0.29). Verified by eye: lumora renders a Miku close-up;
+  the oracle frame is a different wallpaper (Azure/夜莺 sunset + promo-box). lumora is correct; the oracle frame is
+  wrong → exclude from the metric (it deflates the burst mean by ~0.006).
+- mips-per-texture (optional tail) NOT pursued: round-9 already showed global mips net +0.0011 with 3 regressions;
+  per-texture would be marginal (~+0.001–0.002) and the two lead tasks resolved the round (refuted/mapped).
+
+ROUND 10 result: no render change (FUENTES SSIM-neutral, 0 animation bugs to fix); deliverables = MAPA-TECHO.md +
+the FUENTES measurement + the 3585875739 mislabel finding. Baseline unchanged at burst-avg 0.8094. CI green.
+
 ### FASE 3/4 — assessed (round 1)
 - **T3.1 copybackground**: blocked — needs the transpiler to emit a `v_ScreenCoord` varying it never emits (compose shaders would reference an undefined varying); validation scenes already ≥0.93. **Deferred (XL/blocked).**
 - **T3.2 camerapath**: gated; static zoom would regress 3479521040 (already matches without it); only 3675966045 has real animation and it's dominated by fire/clock/grade. **Deferred.**
