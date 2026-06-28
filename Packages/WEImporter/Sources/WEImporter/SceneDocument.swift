@@ -424,11 +424,11 @@ public enum SceneGraph {
         }
         let bloomOn = (bloomField as? Bool) == true || (bloomField as? NSNumber)?.boolValue == true
             || bloomDictValue == true
-        let bloomStrength = bloomOn ? min(8, max(0, (general["bloomstrength"] as? NSNumber)?.doubleValue ?? 0)) : 0
-        let bloomThreshold = min(1, max(0, (general["bloomthreshold"] as? NSNumber)?.doubleValue ?? 0.8))
+        let bloomStrength = bloomOn ? min(8, max(0, Self.generalNumber(general["bloomstrength"], overrides: overrides) ?? 0)) : 0
+        let bloomThreshold = min(1, max(0, Self.generalNumber(general["bloomthreshold"], overrides: overrides) ?? 0.8))
         // Camera zoom (general.zoom). A scalar scales the whole composite; a script-driven zoom (a dict) is left
         // at 1 (the renderer doesn't run the camera script). Clamp to a sane range against malformed values.
-        let zoom = min(8, max(0.1, (general["zoom"] as? NSNumber)?.doubleValue ?? 1))
+        let zoom = min(8, max(0.1, Self.generalNumber(general["zoom"], overrides: overrides) ?? 1))
 
         var layers: [SceneLayer] = []
         var particleSystems: [ParticleSystem] = []
@@ -821,6 +821,15 @@ public enum SceneGraph {
     /// The override (a Customize-panel `PropertyValue`) is handed back in the bare JSON shape the value readers
     /// already understand — a colour/text `String`, a slider/count `Double` (as `NSNumber`), or a `Bool` — so a
     /// user-tuned colour scheme or slider reaches the uniform instead of the author's baked-in default.
+    /// A `general.*` numeric field that may be a plain number OR a `{ "user", "value" [, "script"] }` binding.
+    /// Resolve the bound default — an audio/script-driven field (e.g. bloomstrength) falls back to its authored
+    /// `value`, which is the audio-silent steady-state default, exactly what the oracle shows with audio off.
+    private static func generalNumber(_ field: Any?, overrides: [String: PropertyValue]) -> Double? {
+        if let n = field as? NSNumber { return n.doubleValue }
+        if let dict = field as? [String: Any] { return (bound(dict, overrides: overrides) as? NSNumber)?.doubleValue }
+        return nil
+    }
+
     private static func bound(_ object: [String: Any], overrides: [String: PropertyValue]) -> Any? {
         if let userKey = object["user"] as? String, let override = overrides[userKey] {
             switch override {
