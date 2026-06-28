@@ -1340,6 +1340,12 @@ public final class SceneRenderer {
     /// colorBlendMode-31-only mapping. A colour grade / lens flare that maps colours through a missing LUT would
     /// grey or haze the scene, so it stays off until proven (extend this list only after a per-scene preview check).
     private static let postProcessAllowlist = ["cutout_vignette"]
+    /// Effects Lumora renders LESS faithfully than not running them at all (oracle-measured: dropping each raises
+    /// its scenes and regresses none). `depthparallax` is a mouse/camera-parallax effect that should be a no-op
+    /// with no cursor input (Lumora has none) but mis-offsets the layer; `cloudmotion` distorts the cloud layer
+    /// rather than animating it WE's way. Same drop-by-design rationale as the wash gate — revisit if rendered
+    /// faithfully. Matched against each pass's fragment-shader path.
+    private static let faithfulnessDropEffects = ["depthparallax", "cloudmotion"]
     private func isAllowlistedPostProcess(_ effect: LayerEffect, package: ScenePackage) -> Bool {
         effect.passes.contains { pass in
             Self.postProcessAllowlist.contains { pass.fragmentShaderPath.contains($0) }
@@ -1360,6 +1366,10 @@ public final class SceneRenderer {
                 || effect.passes.contains(where: { $0.fragmentShaderPath.lowercased().contains(skip.lowercased()) }) {
                 continue
             }
+            // Permanently drop effects Lumora renders worse than skipping (oracle-measured net-positive, see list).
+            if effect.passes.contains(where: { pass in
+                Self.faithfulnessDropEffects.contains { pass.fragmentShaderPath.lowercased().contains($0) }
+            }) { continue }
             var preparedPasses: [PreparedPass] = []
             var graphOK = true
             for pass in effect.passes {
