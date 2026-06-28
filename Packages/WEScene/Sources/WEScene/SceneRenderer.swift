@@ -450,7 +450,7 @@ public final class SceneRenderer {
         float3 bloom = float3(0.0);
         for (int dy = -3; dy <= 3; dy++) {
             for (int dx = -3; dx <= 3; dx++) {
-                float3 s = tex.sample(samp, in.uv + float2(dx, dy) * texel * 3.0).rgb;
+                float3 s = tex.sample(samp, in.uv + float2(dx, dy) * texel * 6.0).rgb;
                 bloom += max(float3(0.0), s - params.x);
             }
         }
