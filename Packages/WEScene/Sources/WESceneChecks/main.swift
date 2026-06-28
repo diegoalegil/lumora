@@ -359,6 +359,15 @@ func meanSSIM(_ a: [UInt8], _ b: [UInt8], width: Int, height: Int) -> Double {
     let fm = FileManager.default
     let ssimFloor = 0.80   // structure must broadly match WE; tighten once a real reference corpus is measured
     let phases: [Double] = time.map { [$0] } ?? [0, 2, 5, 8, 12, 16]
+    // Diagnostic (default 0 = no effect): score only the top (height - N) rows, excluding the bottom N px from
+    // BOTH the render and the reference. Some owner desktop captures bake the Windows taskbar into the bottom
+    // strip, which lumora (correctly) doesn't draw; this quantifies how much that artifact deflates the SSIM.
+    let cropBottom = max(0, Int(ProcessInfo.processInfo.environment["LUMORA_PARITY_CROP_BOTTOM"] ?? "") ?? 0)
+    func topRows(_ rgba: [UInt8], width: Int, height: Int) -> ([UInt8], Int) {
+        guard cropBottom > 0, cropBottom < height else { return (rgba, height) }
+        let h = height - cropBottom
+        return (Array(rgba[0 ..< h * width * 4]), h)
+    }
     func referencePath(_ id: String) -> String? {
         ["\(referenceDir)/\(id).png", "\(referenceDir)/\(id)/static.png", "\(referenceDir)/\(id)/\(id).png"]
             .first { fm.fileExists(atPath: $0) }
@@ -376,9 +385,10 @@ func meanSSIM(_ a: [UInt8], _ b: [UInt8], width: Int, height: Int) -> Double {
         var best: (ssim: Double, mae: Double, at: Double)?
         for t in phases {
             guard let frame = renderer.render(prepared, width: ref.width, height: ref.height, time: t) else { continue }
-            let rgba = [UInt8](frame.rgba)
-            let s = meanSSIM(rgba, ref.rgba, width: ref.width, height: ref.height)
-            if best == nil || s > best!.ssim { best = (s, meanAbsErrorRGB(rgba, ref.rgba), t) }
+            let (rgba, h) = topRows([UInt8](frame.rgba), width: ref.width, height: ref.height)
+            let (refRGBA, _) = topRows(ref.rgba, width: ref.width, height: ref.height)
+            let s = meanSSIM(rgba, refRGBA, width: ref.width, height: h)
+            if best == nil || s > best!.ssim { best = (s, meanAbsErrorRGB(rgba, refRGBA), t) }
         }
         guard let b = best else { print("  RENDER-FAILED \(name)"); continue }
         rows.append((name, b.ssim, b.mae, b.at))
