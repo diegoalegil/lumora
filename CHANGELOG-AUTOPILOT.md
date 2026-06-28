@@ -183,6 +183,29 @@ ROUND 7 result: mean SSIM **0.8215**, ≥0.90 43/96, 0 regressions. **Session to
 ROUND 8 result: mean SSIM **0.8213** (phase-faithful), ≥0.80 59/96, ≥0.90 43/96. Session total: 0.8121 → 0.8213
 (+0.0092), all CI-green, 0 unintended regressions.
 
+### ROUND 9 — test-infra (burst scoring) landed; D & E measured-and-reverted
+Worked against the freshly re-extracted oracle (96 stills + 96 `_t1` + 96 `_t2` bursts). New-oracle baseline @4c95871:
+still-only **0.8155**, burst-avg **0.8094**.
+- **`9db6571` parity gate scores the _t1/_t2 bursts (INFRA, landed).** The gate scored best-of-phases against ONE
+  still and never loaded the bursts — exactly why the noise-phase bug slipped (frame 0 stays intact). Now each
+  scene is scored against every available burst frame, each by its best phase, then averaged: a still scene is
+  unaffected, an animated scene is judged on the MOTION. Render untouched; `LUMORA_PARITY_STILL_ONLY=1` for the
+  old metric. New default mean (burst-avg) **0.8094** vs still-only 0.8155 — the gap is animated scenes that
+  diverge by _t1/_t2 (honest phase coverage). This is the round's primary deliverable.
+- **D (wrap REPEAT by ClampUVs flag) — implemented, MEASURED-NEUTRAL, reverted.** Plumbed the ClampUVs flag
+  (TexFlags bit 2) through the .tex header → DecodedTexture, then tested. The flagship positive 3675966045 moved
+  **0.0000** even under a crude global effect-aux `.repeat`; the only movers came from repeating render-targets
+  (which per-flag D keeps clamped) and were net-negative (2780446545 −0.005, 2479422222 −0.006). Repeat-vs-clamp
+  only differs where UVs leave [0,1]; the cover-fit layers and these effects don't. Reverted (all edits).
+- **E (mipmaps) — implemented, MEASURED, reverted (3 regressions > 0.005).** Mips for uncompressed formats
+  (excluding swizzled R8, which can't be a render target) + generateMipmaps + trilinear, gated. Net mean +0.0011
+  (6 up: 3627327015 +0.037, 3291581513 +0.020, …) BUT 3 regressions > 0.005 (2303021395 −0.014, 2468167360
+  −0.010, 3195212886 −0.006 — WE renders those crisper, so mips blur them). Fails the strict 0-regression rule
+  → reverted (all edits).
+
+ROUND 9 result: gate now burst-aware (mean def. changed to 0.8094); D & E reverted cleanly per measure-or-revert;
+no render change shipped this round beyond the infra. CI green.
+
 ### FASE 3/4 — assessed (round 1)
 - **T3.1 copybackground**: blocked — needs the transpiler to emit a `v_ScreenCoord` varying it never emits (compose shaders would reference an undefined varying); validation scenes already ≥0.93. **Deferred (XL/blocked).**
 - **T3.2 camerapath**: gated; static zoom would regress 3479521040 (already matches without it); only 3675966045 has real animation and it's dominated by fire/clock/grade. **Deferred.**
