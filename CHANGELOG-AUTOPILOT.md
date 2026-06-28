@@ -94,6 +94,35 @@ oracle (taskbar-crop gate). Each: no scene regresses >0.005 AND the target scene
   position-at-capture-instant (SSIM-unfixable). rope stays reverted (inert: clustered/faint particles).
 - **State:** mean SSIM 0.8121 (crop), ≥0.90 43/96. Round features all landed-or-deferred-with-measurement.
 
+### ROUND 4 — autonomous: default-bug re-investigation (P1) + property-default audit (P2) + shared-assets (P3)
+P1 premise tested with a 16-agent investigation workflow over the 15 sub-target day-night/scripted/clock scenes
+(read lumora render + oracle + scene/project JSON, classify recoverable-default-bug vs oracle-non-default-capture
+vs text/HDR). Result: **most day-night scenes are oracle-non-default-captures, NOT bugs** — they use a
+`new Date().getHours()` script (timevarying default true) to pick morning/day/dusk/night video layers; the owner
+captured WE at a specific wall-clock time (night/pre-dawn), and lumora already shows the correct *author default*
+(the static `display` branch). No deterministic fix can match a wall-clock capture. BUT the audit surfaced real,
+deterministic default-bugs — all fixed, oracle-verified, 0 regressions:
+- **`8221f61` general.bloom dict form.** `{ "user","value":true }` was read only as Bool/NSNumber → bloom dropped.
+  Now resolves the bound default. 4 scenes rise (3409595232 +0.003, 3426865175 +0.003, 3627327015 +0.004,
+  3585875739 +0.001).
+- **`1b243a0` solid-colour layer detection.** A full-screen solid background via `models/solid_instance_model_*.json`
+  (model `solidlayer:true`, material `solidlayer_*`) was missed (only the image PATH was matched) → the layer's
+  texture didn't resolve and it was skipped. Now also reads the model flag/material. 3355791741 (Dandadan)
+  0.5932 → 0.6670 (+0.0738, the red background returns).
+- **`2137d83` general bloomstrength/threshold/zoom dict form.** Same class via a new `generalNumber()` helper.
+  3438420195 0.7524 → 0.7795 (+0.0271); audio-reactive bloomstrength resolves to its audio-silent value.
+- **`b66f8fd`+`dadd775` (P3) shared-assets disk fallback** for aux textures + custom fonts (env-gated, no-op when
+  unset, path-traversal-guarded), with 7 unit checks (73 total).
+- State: mean SSIM 0.8121 → **0.8133**, ≥0.90 43/96.
+
+**DEFERRED deep findings (documented, not blind-fixed):**
+- 3430675494 (0.413, biggest gap): effects darken the base ~30% (effects-off luma 66.9 ≈ oracle 68.9; on=46.6).
+  Culprit = `filmgrain` (`ApplyBlending(BLENDMODE, albedo, noise, g_NoiseAlpha=2)` darkens); shimmer/foliagesway
+  don't. Fix needs a transpiler BLENDMODE/uniform-default change that touches EVERY filmgrain scene → needs broad
+  regression testing first. Not a default-bug.
+- 3565328165 / 3447271084: per-object text `scriptproperties` (date/clock format) + text-quad sizing to layer
+  `size`; medium-confidence text-render work.
+
 ### FASE 3/4 — assessed (round 1)
 - **T3.1 copybackground**: blocked — needs the transpiler to emit a `v_ScreenCoord` varying it never emits (compose shaders would reference an undefined varying); validation scenes already ≥0.93. **Deferred (XL/blocked).**
 - **T3.2 camerapath**: gated; static zoom would regress 3479521040 (already matches without it); only 3675966045 has real animation and it's dominated by fire/clock/grade. **Deferred.**
