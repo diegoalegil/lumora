@@ -1445,8 +1445,9 @@ public final class SceneRenderer {
                             // copybackground: this sampler reads the scene composited so far, bound per-frame.
                             resolvedInput = .background
                         } else {
-                            // A grain effect (filmgrain) needs the centred noise so its HardLight blend stays a
-                            // subtle grain; phase/displacement consumers keep the flat uniform field.
+                            // A grain effect (filmgrain) keeps the centred noise so its grain stays a subtle
+                            // deviation around mid-grey (uniform noise washes ~0.12 darker on 3430675494);
+                            // phase/displacement consumers keep the flat uniform field.
                             let aux = resolveAuxTexture(bound ?? sampler.defaultValue, package: package,
                                                         centeredNoise: pass.fragmentShaderPath.lowercased().contains("filmgrain"))
                             resolvedInput = .aux(aux.texture, content: aux.content)

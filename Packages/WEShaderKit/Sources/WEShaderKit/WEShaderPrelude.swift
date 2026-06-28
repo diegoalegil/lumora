@@ -140,31 +140,75 @@ public enum WEShaderPrelude {
     inline float3 BlendColorBurn(float3 a, float3 b)  { return select(1.0 - min(float3(1.0), (1.0 - a) / b), float3(0.0), b <= 0.0); }
     inline float3 BlendLinearBurn(float3 a, float3 b) { return a + b - 1.0; }
 
-    // WE's imageblending mode values mapped to the per-channel blend above. Unknown modes fall back to
-    // Normal so an unrecognised value never produces a hard failure.
+    // The remaining per-channel formulas WE's common_blending.h defines, reimplemented clean-room from the
+    // public Photoshop / W3C compositing math. `a` = base/destination, `b` = source.
+    inline float3 BlendReflect(float3 a, float3 b)    { return select(min(a * a / (1.0 - b), 1.0), float3(1.0), b >= 1.0); }
+    inline float3 BlendGlow(float3 a, float3 b)       { return BlendReflect(b, a); }   // Reflect, args swapped
+    inline float3 BlendPhoenix(float3 a, float3 b)    { return min(a, b) - max(a, b) + 1.0; }
+    inline float3 BlendAverage(float3 a, float3 b)    { return (a + b) * 0.5; }
+    inline float3 BlendTint(float3 a, float3 b)       { return max(max(a.x, a.y), a.z) * b; }
+    inline float3 BlendVividLight(float3 a, float3 b) {
+        // ColorBurn for a dark blend, ColorDodge for a light one (blend doubled about 0.5).
+        return select(BlendColorBurn(a, 2.0 * b), BlendColorDodge(a, 2.0 * (b - 0.5)), b >= 0.5);
+    }
+    inline float3 BlendLinearLight(float3 a, float3 b) {
+        // LinearBurn for a dark blend, LinearDodge for a light one.
+        return select(max(a + 2.0 * b - 1.0, 0.0), a + 2.0 * (b - 0.5), b >= 0.5);
+    }
+    inline float3 BlendPinLight(float3 a, float3 b) {
+        // Darken for a dark blend, Lighten for a light one.
+        return select(min(a, 2.0 * b), max(a, 2.0 * b - 1.0), b >= 0.5);
+    }
+    inline float3 BlendHardMix(float3 a, float3 b) {
+        // 1 where VividLight reaches 0.5, else 0 (per channel).
+        return select(float3(0.0), float3(1.0), BlendVividLight(a, b) >= 0.5);
+    }
+
+    // WE's colorBlendMode / BLENDMODE values mapped to the per-channel formula above, following the canonical
+    // common_blending.h `ApplyBlending` enum exactly (kept in lock-step with SceneRenderer's we_apply_blend).
+    // Returns the pre-opacity blend; ApplyBlending applies the opacity mix and the few modes WE leaves unmixed.
+    // 26–29 (Hue/Saturation/Color/Luminosity) need HSL helpers the prelude doesn't model and, like
+    // we_apply_blend, fall through to Normal. Unknown modes fall back to Normal so a bad value never hard-fails.
     inline float3 weBlendValue(int mode, float3 a, float3 b) {
         switch (mode) {
-            case 1:  return BlendAdditive(a, b);
-            case 2:  return BlendMultiply(a, b);
-            case 3:  return BlendScreen(a, b);
-            case 4:  return BlendLighten(a, b);
-            case 5:  return BlendDarken(a, b);
-            case 6:  return BlendLinearDodge(a, b);
-            case 7:  return BlendLinearBurn(a, b);
-            case 8:  return BlendColorDodge(a, b);
-            case 9:  return BlendScreen(a, b);   // pulse's default — a brightening (screen) blend
-            case 10: return BlendOverlay(a, b);
-            case 11: return BlendSoftLight(a, b);
-            case 12: return BlendHardLight(a, b);
-            case 13: return BlendDifference(a, b);
-            case 14: return BlendExclusion(a, b);
-            case 15: return BlendNegation(a, b);
-            default: return BlendNormal(a, b);
+            case 1:  return min(a, b);                   // Darken
+            case 2:  return BlendMultiply(a, b);         // Multiply
+            case 3:  return BlendColorBurn(a, b);        // ColorBurn
+            case 4:  return max(a + b - 1.0, 0.0);       // Subtract
+            case 5:  return min(a, b);                   // min (ApplyBlending evaluates this without the mix)
+            case 6:  return max(a, b);                   // Lighten
+            case 7:  return BlendScreen(a, b);           // Screen
+            case 8:  return BlendColorDodge(a, b);       // ColorDodge
+            case 9:  return min(a + b, 1.0);             // Add (clamped)
+            case 10: return max(a, b);                   // max (ApplyBlending evaluates this without the mix)
+            case 11: return BlendOverlay(a, b);          // Overlay
+            case 12: return BlendSoftLight(a, b);        // SoftLight
+            case 13: return BlendHardLight(a, b);        // HardLight
+            case 14: return BlendVividLight(a, b);       // VividLight
+            case 15: return BlendLinearLight(a, b);      // LinearLight
+            case 16: return BlendPinLight(a, b);         // PinLight
+            case 17: return BlendHardMix(a, b);          // HardMix
+            case 18: return BlendDifference(a, b);       // Difference
+            case 19: return BlendExclusion(a, b);        // Exclusion
+            case 20: return max(a + b - 1.0, 0.0);       // Subtract (alternate index)
+            case 21: return BlendReflect(a, b);          // Reflect
+            case 22: return BlendGlow(a, b);             // Glow
+            case 23: return BlendPhoenix(a, b);          // Phoenix
+            case 24: return BlendAverage(a, b);          // Average
+            case 25: return BlendNegation(a, b);         // Negation
+            case 30: return BlendTint(a, b);             // Tint
+            case 31: return a + b;                       // Additive — mix(a, a+b, op) == a + b*op
+            case 32: return a + a * b;                   // glow-multiply
+            default: return BlendNormal(a, b);           // Normal / unmapped → plain source-over
         }
     }
 
-    // Blend `blend` over `base` in mode `mode`, then fade by `opacity`.
+    // Blend `blend` over `base` in mode `mode`, then fade by `opacity`. Three modes WE evaluates without the
+    // standard opacity mix (see common_blending.h): min, max, and the additive weighted sum.
     inline float3 ApplyBlending(int mode, float3 base, float3 blend, float opacity) {
+        if (mode == 5)  return min(base, blend);
+        if (mode == 10) return max(base, blend);
+        if (mode == 31) return base + blend * opacity;
         return mix(base, weBlendValue(mode, base, blend), saturate(opacity));
     }
     // RGBA variant using the active BLENDMODE; preserves the base alpha.
