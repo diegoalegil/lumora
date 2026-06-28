@@ -31,5 +31,5 @@ Discovered 32/96 oracle captures bake the Windows taskbar into the bottom ~48px.
 ### FASE 3/4 — assessed
 - **T3.1 copybackground**: blocked — needs the transpiler to emit a `v_ScreenCoord` varying it never emits (compose shaders would reference an undefined varying); validation scenes already ≥0.93. **Deferred (XL/blocked).**
 - **T3.2 camerapath**: gated; static zoom would regress 3479521040 (already matches without it); only 3675966045 has real animation and it's dominated by fire/clock/grade. **Deferred.**
-- **T3.3 particle operators**: requires reading Almamu GPL `CParticle.cpp` for exact math (firewall) and the gaps are position-at-capture-instant (SSIM-unfixable). **Deferred.**
+- **T3.3 particle operators**: would require the reference engine's particle math (firewall-restricted) and the gaps are position-at-capture-instant (SSIM-unfixable). **Deferred.**
 - **T4.1 group/effectlayer**: effectlayer effects are grade/glitch/audio-reactive (firewall-blocked LUTs or correct no-ops). **Deferred.**

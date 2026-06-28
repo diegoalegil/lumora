@@ -32,7 +32,7 @@ oracle (playlist-off; the 6 prior mislabels are fixed). Commits authored by the 
 | T2.4 bloom multilevel | **deferred** | validation 2996283606 is taskbar-capped (bloom already matches); ~7 bloom scenes, most ≥0.93 |
 | T3.1 copybackground | **deferred (blocked)** | needs transpiler to emit a `v_ScreenCoord` varying it never emits; validation scenes already ≥0.93 |
 | T3.2 camerapath bezier | **deferred** | static zoom regresses 3479521040; only 3675966045 has real animation (dominated by fire/clock/grade) |
-| T3.3 particle operators | **deferred** | needs GPL `CParticle.cpp` (firewall); gaps are position-at-capture-instant (SSIM-unfixable) |
+| T3.3 particle operators | **deferred** | needs reference-engine particle math (firewall-restricted); gaps are position-at-capture-instant (SSIM-unfixable) |
 | T4.1 group/effectlayer | **deferred** | effectlayer effects are grade-LUT (firewall) / glitch / audio-reactive no-ops |
 | ultrawide cover-fit (from diagnosis) | **oracle-refuted** | 6 scenes are 5120×2160; swept extra zoom 0.85–1.30 → every factor LOWERS the mean. Current cover-fit is optimal |
 | negate roll (NO-DO) | **re-refuted** | confirmed once more: it lowers the mean; lumora's `+` sign is correct |
