@@ -563,7 +563,8 @@ public enum SceneGraph {
             layers.append(SceneLayer(
                 name: object["name"] as? String ?? "",
                 texturePath: material.texture,
-                isSolidLayer: imagePath.contains("solidlayer"),
+                isSolidLayer: imagePath.contains("solidlayer") || (modelJSON?["solidlayer"] as? Bool == true)
+                    || ((modelJSON?["material"] as? String)?.contains("solidlayer") ?? false),
                 origin: wt.origin,
                 scale: wt.scale,
                 size: (object["size"] as? String).map(SceneVec3.init(parsing:)),
