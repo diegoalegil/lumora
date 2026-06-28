@@ -307,7 +307,7 @@ public final class SceneRenderer {
     /// shared `materials/` assets live outside individual wallpapers). When set, a sampler name that isn't a
     /// built-in and isn't in the package is looked up at `<dir>/materials/<name>.tex` before defaulting to white.
     /// Defaults from `LUMORA_SHARED_ASSETS_DIR`; no-op (and zero cost) when unset or the file is absent.
-    var sharedAssetsDir: String? = ProcessInfo.processInfo.environment["LUMORA_SHARED_ASSETS_DIR"]
+    public var sharedAssetsDir: String? = ProcessInfo.processInfo.environment["LUMORA_SHARED_ASSETS_DIR"]
     private var pooledOutput: MTLTexture?              // reused frame target (readback path is synchronous)
     private var pooledBackground: MTLTexture?          // reused composited-scene target for refractive scenes
     private var pooledCopyBackground: MTLTexture?      // separate backdrop target for copybackground glass/water layers
@@ -682,7 +682,8 @@ public final class SceneRenderer {
 
     /// Decode a `.tex` from the shared-assets folder, if present. Returns nil (→ white fallback) when the folder
     /// or file doesn't exist, so a missing shared pack is a silent no-op. Separated for unit testing.
-    func loadSharedAux(_ name: String, dir: String) -> (texture: MTLTexture, content: SIMD2<Int>)? {
+    public func loadSharedAux(_ name: String, dir: String) -> (texture: MTLTexture, content: SIMD2<Int>)? {
+        guard !name.contains(".."), !name.hasPrefix("/") else { return nil }
         let path = (dir as NSString).appendingPathComponent("materials/\(name).tex")
         guard FileManager.default.fileExists(atPath: path),
               let data = try? Data(contentsOf: URL(fileURLWithPath: path)),
@@ -693,7 +694,7 @@ public final class SceneRenderer {
 
     /// Load a custom font's raw bytes from the shared-assets folder at `<dir>/<fontPath>` (e.g.
     /// `fonts/Foo.ttf`). Returns nil (→ system fallback) when absent. Path-traversal-guarded; unit-tested.
-    func loadSharedFontData(_ fontPath: String, dir: String) -> Data? {
+    public func loadSharedFontData(_ fontPath: String, dir: String) -> Data? {
         guard !fontPath.contains(".."), !fontPath.hasPrefix("/") else { return nil }
         let path = (dir as NSString).appendingPathComponent(fontPath)
         guard FileManager.default.fileExists(atPath: path) else { return nil }

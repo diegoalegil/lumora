@@ -1083,4 +1083,30 @@ if let effectRenderer = EffectRenderer(device: renderer.device) {
                effectRenderer.makeVertexPipeline(vertexShader: extraVertex, fragmentShader: usingFragment) != nil)
 }
 
+// P3: shared-assets disk fallback (aux textures) + custom-font fallback. Configurable, off by default.
+do {
+    let fm = FileManager.default
+    let base = (NSTemporaryDirectory() as NSString).appendingPathComponent("lumora_shared_assets_check")
+    try? fm.removeItem(atPath: base)
+    try? fm.createDirectory(atPath: (base as NSString).appendingPathComponent("fonts"), withIntermediateDirectories: true)
+    let fontRel = "fonts/test.ttf"
+    let fontBytes = Data([0, 1, 2, 3, 4, 5])
+    try? fontBytes.write(to: URL(fileURLWithPath: (base as NSString).appendingPathComponent(fontRel)))
+    Check.that("shared font: absent file returns nil (silent no-op)",
+               renderer.loadSharedFontData("fonts/absent.ttf", dir: base) == nil)
+    Check.that("shared font: present file returns its bytes",
+               renderer.loadSharedFontData(fontRel, dir: base) == fontBytes)
+    Check.that("shared font: path-traversal name rejected",
+               renderer.loadSharedFontData("../escape.ttf", dir: base) == nil)
+    Check.that("shared font: absolute path rejected",
+               renderer.loadSharedFontData("/etc/hosts", dir: base) == nil)
+    Check.that("shared aux: missing .tex returns nil (white fallback)",
+               renderer.loadSharedAux("definitely_absent_material", dir: base) == nil)
+    Check.that("shared aux: path-traversal name rejected",
+               renderer.loadSharedAux("../../escape", dir: base) == nil)
+    Check.that("sharedAssetsDir mirrors LUMORA_SHARED_ASSETS_DIR env (nil here)",
+               renderer.sharedAssetsDir == ProcessInfo.processInfo.environment["LUMORA_SHARED_ASSETS_DIR"])
+    try? fm.removeItem(atPath: base)
+}
+
 Check.summarize()
