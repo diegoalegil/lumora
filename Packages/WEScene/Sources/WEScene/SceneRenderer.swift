@@ -303,6 +303,11 @@ public final class SceneRenderer {
     private let haloTexture: MTLTexture            // soft radial glow for unshipped built-in sprites
     private let effectRenderer: EffectRenderer?   // compiles + runs per-layer post-process effects
     private var auxCache: [String: (texture: MTLTexture, content: SIMD2<Int>)] = [:]   // resolved aux, by name
+    /// Optional on-disk fallback for textures a scene references but doesn't ship in its own package (WE's
+    /// shared `materials/` assets live outside individual wallpapers). When set, a sampler name that isn't a
+    /// built-in and isn't in the package is looked up at `<dir>/materials/<name>.tex` before defaulting to white.
+    /// Defaults from `LUMORA_SHARED_ASSETS_DIR`; no-op (and zero cost) when unset or the file is absent.
+    var sharedAssetsDir: String? = ProcessInfo.processInfo.environment["LUMORA_SHARED_ASSETS_DIR"]
     private var pooledOutput: MTLTexture?              // reused frame target (readback path is synchronous)
     private var pooledBackground: MTLTexture?          // reused composited-scene target for refractive scenes
     private var pooledCopyBackground: MTLTexture?      // separate backdrop target for copybackground glass/water layers
@@ -664,8 +669,35 @@ public final class SceneRenderer {
                 auxCache[name] = resolved
                 return resolved
             }
+            // Not in this package: try the shared-assets folder (WE keeps common materials outside each wallpaper).
+            // Reject path-traversal names so a scene can't read outside the configured root.
+            if let dir = sharedAssetsDir, !name.contains(".."), !name.hasPrefix("/"),
+               let resolved = loadSharedAux(name, dir: dir) {
+                auxCache[name] = resolved
+                return resolved
+            }
             return full(whiteTexture)
         }
+    }
+
+    /// Decode a `.tex` from the shared-assets folder, if present. Returns nil (→ white fallback) when the folder
+    /// or file doesn't exist, so a missing shared pack is a silent no-op. Separated for unit testing.
+    func loadSharedAux(_ name: String, dir: String) -> (texture: MTLTexture, content: SIMD2<Int>)? {
+        let path = (dir as NSString).appendingPathComponent("materials/\(name).tex")
+        guard FileManager.default.fileExists(atPath: path),
+              let data = try? Data(contentsOf: URL(fileURLWithPath: path)),
+              let decoded = try? SceneTexture.decodeFirstMip(data, expandBlocks: expandBlockTextures),
+              let texture = MetalTexture.make(decoded, device: device) else { return nil }
+        return (texture, SIMD2(decoded.imageWidth, decoded.imageHeight))
+    }
+
+    /// Load a custom font's raw bytes from the shared-assets folder at `<dir>/<fontPath>` (e.g.
+    /// `fonts/Foo.ttf`). Returns nil (→ system fallback) when absent. Path-traversal-guarded; unit-tested.
+    func loadSharedFontData(_ fontPath: String, dir: String) -> Data? {
+        guard !fontPath.contains(".."), !fontPath.hasPrefix("/") else { return nil }
+        let path = (dir as NSString).appendingPathComponent(fontPath)
+        guard FileManager.default.fileExists(atPath: path) else { return nil }
+        return try? Data(contentsOf: URL(fileURLWithPath: path))
     }
 
     private static func makePipeline(device: MTLDevice, vertex: MTLFunction, fragment: MTLFunction,
@@ -854,7 +886,12 @@ public final class SceneRenderer {
             // A text layer (clock, label) draws rendered glyphs: build its font + (optional) script runtime;
             // the quad's size is derived at render time from the rasterised string. No packed texture.
             if layer.isTextLayer {
-                let fontData = layer.fontPath.flatMap { package.entry(named: $0)?.data }
+                // The font: from the package, else the shared-assets folder (a custom .ttf the wallpaper expects
+                // to be installed), else CoreText's system fallback inside makeFont.
+                var fontData = layer.fontPath.flatMap { package.entry(named: $0)?.data }
+                if fontData == nil, let fp = layer.fontPath, let dir = sharedAssetsDir {
+                    fontData = loadSharedFontData(fp, dir: dir)
+                }
                 let font = PreparedTextLayer.makeFont(data: fontData, pointSize: layer.pointSize)
                 let runtime = layer.textScript.flatMap { SceneScriptRuntime(script: $0) }
                 let prepText = PreparedTextLayer(runtime: runtime, staticText: layer.textValue ?? "",
