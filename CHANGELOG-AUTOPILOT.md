@@ -164,6 +164,25 @@ than skipping, then isolated each culprit and measured a global drop across all 
 
 ROUND 7 result: mean SSIM **0.8215**, ≥0.90 43/96, 0 regressions. **Session total: 0.8121 → 0.8215 (+0.0094).**
 
+### ROUND 8 — Windows-audit fixes (3 items; clean-room OK, 0 major)
+- **#2 (correctness) per-consumer noise (`09b159f`).** The round-6 centred noise was GLOBAL, but util/noise is
+  shared: foliagesway uses noise.g·2π as a per-region sway PHASE, and vhs's glitch displacement needs the full
+  uniform range — centring altered their phase (masked by single-frame SSIM). Now a second centred-noise texture
+  is handed ONLY to filmgrain (resolveAuxTexture(centeredNoise:)); every other consumer keeps the original flat
+  uniform field. 3430675494 holds 0.739 (+0.326 kept); foliagesway/vhs revert to correct uniform (3198624623,
+  2468167360, 2109561442 lose a coincidental single-frame +0.007). Mean 0.8215 → 0.8213 — the dip is the price of
+  faithful phase, not a regression.
+- **#1 (defensive) effect-drop match (`30d3220`).** The permanent drop compared only the shader path; the
+  diagnostic matched name OR path. depthparallax/cloudmotion have EMPTY names so the path match already fires
+  (verified: 3265802028 0.677, 3545444802 0.861 in the committed build) — added the OR so it can't no-op for a
+  future effect that carries its signature in the name.
+- **#3 (test) solid-layer isolation (`7f6c304`).** The guard test's material contained "solidlayer" so it passed
+  via the material branch even if the flag branch broke. Split: a plain-material test isolates the model-flag
+  branch; a no-flag test covers the material branch. 317 importer checks.
+
+ROUND 8 result: mean SSIM **0.8213** (phase-faithful), ≥0.80 59/96, ≥0.90 43/96. Session total: 0.8121 → 0.8213
+(+0.0092), all CI-green, 0 unintended regressions.
+
 ### FASE 3/4 — assessed (round 1)
 - **T3.1 copybackground**: blocked — needs the transpiler to emit a `v_ScreenCoord` varying it never emits (compose shaders would reference an undefined varying); validation scenes already ≥0.93. **Deferred (XL/blocked).**
 - **T3.2 camerapath**: gated; static zoom would regress 3479521040 (already matches without it); only 3675966045 has real animation and it's dominated by fire/clock/grade. **Deferred.**
