@@ -135,6 +135,20 @@ g_NoiseAlpha=2, ApplyBlending semantics) is firewall-adjacent + uncertain. Defer
 
 ROUND 5 result: mean SSIM **0.8133**, ≥0.90 43/96, all commits CI-green, 0 regressions, all 4 priorities done.
 
+### ROUND 6 — filmgrain darkening ROOT-CAUSED + FIXED (the deferred deep finding, now landed)
+Rather than blind-fix or abandon the 3430675494 darkening, added a safe diagnostic and isolated it empirically:
+- **`4770ed9` LUMORA_SKIP_EFFECT diagnostic** (off by default; skips effects by name/shader substring). Confirmed
+  filmgrain is the culprit: `LUMORA_SKIP_EFFECT=filmgrain` restores 3430675494 luma 46.6 → 68.0 (~oracle 68.9);
+  skipping shimmer/foliagesway/vhs does nothing.
+- **`297968f` centre the procedural util/noise.** Root cause: lumora's noise was flat uniform [0,255]; fed through
+  filmgrain's `noise*noise * pow(.,0.5)` + HardLight blend (BLENDMODE 12 from the shader combo default, strength 2),
+  a full-contrast field skews dark and dims the layer ~30%. A film grain is a SMALL deviation around mid-grey
+  (HardLight(x,~0.5) ≈ identity). Generate triangular noise centred on 128 (avg of two samples). Oracle: **3430675494
+  0.4130 → 0.7390 (+0.3260)** — the session's biggest single gain — plus 3198624623 +0.007, 2468167360 +0.007,
+  2109561442 +0.009, **0 regressions**, mean **0.8133 → 0.8169**. Visually confirmed bright/vivid (matches oracle).
+
+ROUND 6 result: mean SSIM **0.8169**, all commits CI-green, 0 regressions. Session total: 0.8121 → 0.8169 (+0.0048).
+
 ### FASE 3/4 — assessed (round 1)
 - **T3.1 copybackground**: blocked — needs the transpiler to emit a `v_ScreenCoord` varying it never emits (compose shaders would reference an undefined varying); validation scenes already ≥0.93. **Deferred (XL/blocked).**
 - **T3.2 camerapath**: gated; static zoom would regress 3479521040 (already matches without it); only 3675966045 has real animation and it's dominated by fire/clock/grade. **Deferred.**
