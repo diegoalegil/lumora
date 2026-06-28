@@ -1222,6 +1222,11 @@ public final class SceneRenderer {
             // no-op rather than dividing by a zero matrix's w (which produced a NaN UV that blanked the layer).
             "g_PointerPosition": [0.5, 0.5],
             "g_PointerPositionLast": [0.5, 0.5],
+            // depthparallax reads g_ParallaxPosition; at rest WE feeds the screen centre (0.5,0.5), which makes
+            // its prlxInput evaluate to (0,0) → a stable zero displacement (the layer registers correctly).
+            // Left unbound it defaults to (0,0) → prlxInput (-1,-1) → a wrong static offset (the mis-registration
+            // that got the effect dropped). Centre it like the pointer so depthparallax is a correct no-op at rest.
+            "g_ParallaxPosition": [0.5, 0.5],
             "g_EffectTextureProjectionMatrixInverse": [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1],
         ]
         for (number, res) in resolutions {
@@ -1347,7 +1352,7 @@ public final class SceneRenderer {
     /// with no cursor input (Lumora has none) but mis-offsets the layer; `cloudmotion` distorts the cloud layer
     /// rather than animating it WE's way. Same drop-by-design rationale as the wash gate — revisit if rendered
     /// faithfully. Matched against each pass's fragment-shader path.
-    private static let faithfulnessDropEffects = ["depthparallax", "cloudmotion"]
+    private static let faithfulnessDropEffects = ["cloudmotion"]
     private func isAllowlistedPostProcess(_ effect: LayerEffect, package: ScenePackage) -> Bool {
         effect.passes.contains { pass in
             Self.postProcessAllowlist.contains { pass.fragmentShaderPath.contains($0) }
