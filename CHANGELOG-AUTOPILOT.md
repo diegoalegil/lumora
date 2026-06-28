@@ -76,6 +76,22 @@ no-regression by gating (only the target scenes change). SSIM-vs-we-reference is
   The rest need the oracle restored (to verify) or WE assets the firewall forbids. Loop stopped to avoid a risky
   blind landing; resume on oracle restore.
 
+### ROUND 3 — oracle RESTORED → features verified vs we-reference + landed
+The owner re-extracted the package, so the deferred features were implemented and measured against the real
+oracle (taskbar-crop gate). Each: no scene regresses >0.005 AND the target scene's SSIM rises (oracle = arbiter).
+- **camerapath (`4984d23`) — VERIFIED.** vs oracle: 3675966045 0.2603 → 0.2706 (+0.0103), 0 regressions. The
+  blind landing was correct.
+- **copybackground (`2b6fffa`) — LANDED + VERIFIED.** New `EffectInput.background`: `_rt_FullFrameBuffer` (was →
+  whiteTexture) now binds a backdrop = the scene composited with the copybackground layers excluded, separate
+  pool, gated. vs oracle: 3390491312 0.4907 → 0.5055 (+0.0148), 0 regressions, mean 0.8118 → 0.8120.
+- **bloom widen (`a36b361`) — LANDED + VERIFIED.** Doubled the scene-bloom tap spacing (7×7 box → wider soft
+  halo). vs oracle: 2479422222 +0.006, 2817222811 +0.003, 3497714247 +0.003, high bloom scenes flat, 0
+  regressions, mean 0.8120 → 0.8121. Visually cleaner fire glow, no banding. (Full multilevel-downsample bloom
+  is a future refinement.)
+- **particle operators (T3.3) — deferred.** Exact math needs GPL CParticle (firewall); and the particle gaps are
+  position-at-capture-instant (SSIM-unfixable). rope stays reverted (inert: clustered/faint particles).
+- **State:** mean SSIM 0.8121 (crop), ≥0.90 43/96. Round features all landed-or-deferred-with-measurement.
+
 ### FASE 3/4 — assessed (round 1)
 - **T3.1 copybackground**: blocked — needs the transpiler to emit a `v_ScreenCoord` varying it never emits (compose shaders would reference an undefined varying); validation scenes already ≥0.93. **Deferred (XL/blocked).**
 - **T3.2 camerapath**: gated; static zoom would regress 3479521040 (already matches without it); only 3675966045 has real animation and it's dominated by fire/clock/grade. **Deferred.**

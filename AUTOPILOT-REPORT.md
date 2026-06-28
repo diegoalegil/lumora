@@ -3,7 +3,16 @@
 Run start HEAD `fa3e8f3` · arbiter = SSIM vs `we-reference/<id>.png` (best phase), 96 scenes, re-captured CLEAN
 oracle (playlist-off; the 6 prior mislabels are fixed). Commits authored by the owner, no AI trailer.
 
-## Headline
+## Update — feature rounds (taskbar-crop gate now default; HEAD `a36b361`)
+- **Mean SSIM 0.8121** (crop) · ≥0.80 **58/96** · ≥0.90 **43/96**. New WE features landed since the clean-oracle
+  run, each oracle-verified (no scene regresses >0.005, target scene's SSIM rises):
+  - **camerapath** bézier pan+zoom (`4984d23`): 3675966045 +0.0103, gated to animated cameras.
+  - **copybackground** `_rt_FullFrameBuffer` backdrop (`2b6fffa`): 3390491312 +0.0148, gated, separate pool.
+  - **bloom widen** (`a36b361`): 2479422222 +0.006 (+ two more), softer HDR-style halo.
+  - **taskbar-crop made the default gate** (`2760fc7`): scores the wallpaper, not the desktop chrome.
+  - rope reverted (inert on this corpus); particle-operators deferred (GPL/firewall + capture-timing gaps).
+
+## Headline (clean-oracle run, HEAD `c600bea`→`fa3e8f3`)
 - **Mean SSIM 0.7958** · ≥0.80 **58/96** · ≥0.90 **38/96**.
 - **Lumora's true fidelity is higher than that:** 32/96 oracle captures bake the **Windows taskbar** into the
   bottom ~48px (the owner's desktop screen-grabs). Excluding that strip, **mean 0.8117 · ≥0.90 43/96**. Those
