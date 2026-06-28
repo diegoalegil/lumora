@@ -206,6 +206,15 @@ still-only **0.8155**, burst-avg **0.8094**.
 ROUND 9 result: gate now burst-aware (mean def. changed to 0.8094); D & E reverted cleanly per measure-or-revert;
 no render change shipped this round beyond the infra. CI green.
 
+**Burst-metric caveat (triaged the biggest still→burst gaps).** The burst-avg is best for REGRESSION DETECTION,
+not as an absolute fidelity number: it penalizes scenes whose `_t1`/`_t2` animate via something lumora correctly
+excludes or can't reproduce. The two largest gaps are both NON-bugs: 1683040946 (gap 0.28) has an "Ember"
+particle layer — firewall-dropped fire particles animate between frames; 2238042939 (gap 0.41) is a single
+static image, NO effects/audio/script, lumora correctly static and matching WE's still at 0.997, but WE's _t1 is
++22 luma (idle camera-drift / capture exposure). Neither is fixable. So the 0.8094 under-counts true fidelity on
+animated scenes the same way the still metric under-counts audio-visualiser/firewall-particle scenes — use it to
+catch a change that WORSENS motion, and keep `LUMORA_PARITY_STILL_ONLY=1` (0.8155) for the static-fidelity view.
+
 ### FASE 3/4 — assessed (round 1)
 - **T3.1 copybackground**: blocked — needs the transpiler to emit a `v_ScreenCoord` varying it never emits (compose shaders would reference an undefined varying); validation scenes already ≥0.93. **Deferred (XL/blocked).**
 - **T3.2 camerapath**: gated; static zoom would regress 3479521040 (already matches without it); only 3675966045 has real animation and it's dominated by fire/clock/grade. **Deferred.**
