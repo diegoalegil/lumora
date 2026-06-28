@@ -149,6 +149,21 @@ Rather than blind-fix or abandon the 3430675494 darkening, added a safe diagnost
 
 ROUND 6 result: mean SSIM **0.8169**, all commits CI-green, 0 regressions. Session total: 0.8121 → 0.8169 (+0.0048).
 
+### ROUND 7 — diagnostic-driven effect-faithfulness sweep
+Used the LUMORA_SKIP_EFFECT diagnostic + a full-suite effects-OFF parity to find effects Lumora renders worse
+than skipping, then isolated each culprit and measured a global drop across all 96 (keep only if net-positive,
+0 regressions):
+- **`4f8a9ec` drop depthparallax + cloudmotion.** depthparallax = cursor/camera-parallax, should be a no-op
+  without a mouse (Lumora has none) but mis-offsets the layer; cloudmotion distorts the cloud layer instead of
+  animating it. Oracle: 3265802028 +0.170, 3565328165 +0.123, 3545444802 +0.107, 3426865175 +0.027, 3669680904
+  +0.006, 0 regressions, mean **0.8169 → 0.8215**. Visually confirmed (3545444802 sky/clouds/reflection match).
+- **waterwaves — NOT dropped (REFUTED globally).** Helps 1588298589 (+0.042) but is CORRECT on most scenes:
+  dropping it regresses 2817222811 −0.102, 2820544627 −0.042, +6 more. Net −0.0003. It's a per-config render
+  issue on 1588298589, not a globally-bad effect → deferred (would need per-parameter work). The full-suite
+  measure caught the regression before any commit.
+
+ROUND 7 result: mean SSIM **0.8215**, ≥0.90 43/96, 0 regressions. **Session total: 0.8121 → 0.8215 (+0.0094).**
+
 ### FASE 3/4 — assessed (round 1)
 - **T3.1 copybackground**: blocked — needs the transpiler to emit a `v_ScreenCoord` varying it never emits (compose shaders would reference an undefined varying); validation scenes already ≥0.93. **Deferred (XL/blocked).**
 - **T3.2 camerapath**: gated; static zoom would regress 3479521040 (already matches without it); only 3675966045 has real animation and it's dominated by fire/clock/grade. **Deferred.**
