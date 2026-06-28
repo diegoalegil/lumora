@@ -1555,6 +1555,41 @@ do {
                staticCam.offset(at: 1).x == 0 && staticCam.zoom(at: 1) == 1)
 }
 
+// MARK: - P4 regression guards: dict-form general defaults + solid-layer model detection
+do {
+    func mk(_ sceneJSON: String, _ extra: [String: String] = [:]) -> RenderableScene? {
+        var entries = [ScenePackageEntry(path: "scene.json", data: Data(sceneJSON.utf8))]
+        for (p, j) in extra { entries.append(ScenePackageEntry(path: p, data: Data(j.utf8))) }
+        return try? SceneGraph.load(from: ScenePackage(version: "PKGV0001", entries: entries))
+    }
+    // general.bloom as a {user,value} binding must be honoured, not read as off.
+    Check.that("general.bloom {user,value:true} dict turns bloom on",
+               (mk(#"{"general":{"bloom":{"user":"x","value":true},"bloomstrength":0.5},"objects":[]}"#)?.bloomStrength ?? 0) > 0)
+    Check.that("general.bloom {value:false} dict keeps bloom off",
+               (mk(#"{"general":{"bloom":{"value":false},"bloomstrength":0.5},"objects":[]}"#)?.bloomStrength ?? -1) == 0)
+    Check.that("general.bloom plain Bool true still on",
+               (mk(#"{"general":{"bloom":true,"bloomstrength":0.5},"objects":[]}"#)?.bloomStrength ?? 0) > 0)
+    // generalNumber resolves dict-form numeric fields.
+    if let z = mk(#"{"general":{"zoom":{"value":1.5}},"objects":[]}"#)?.zoom {
+        Check.that("general.zoom {value:1.5} dict resolves", abs(z - 1.5) < 1e-6)
+    } else { Check.that("zoom-dict scene loads", false) }
+    if let st = mk(#"{"general":{"bloom":true,"bloomstrength":{"value":3.0}},"objects":[]}"#)?.bloomStrength {
+        Check.that("general.bloomstrength {value:3.0} dict resolves", abs(st - 3.0) < 1e-6)
+    } else { Check.that("strength-dict scene loads", false) }
+    // solid-colour layer detected via the model's solidlayer flag, not just the image path.
+    let model = #"{"solidlayer":true,"material":"materials/util/solidlayer_x.json"}"#
+    let scene = #"{"general":{},"objects":[{"id":1,"name":"bg","image":"models/solid_x.json","color":"1 0 0"}]}"#
+    if let r = mk(scene, ["models/solid_x.json": model]) {
+        Check.that("solid layer detected via model solidlayer flag", r.layers.contains { $0.isSolidLayer })
+    } else { Check.that("solid-layer scene loads", false) }
+    // a normal image layer (no solidlayer flag) is NOT a solid fill.
+    let plainModel = #"{"material":"materials/foo.json"}"#
+    let plainScene = #"{"general":{},"objects":[{"id":1,"name":"img","image":"models/foo.json"}]}"#
+    if let r = mk(plainScene, ["models/foo.json": plainModel]) {
+        Check.that("plain image layer is not flagged solid", !(r.layers.first?.isSolidLayer ?? true))
+    } else { Check.that("plain-layer scene loads", false) }
+}
+
 // MARK: - Done
 
 try? fm.removeItem(at: tmpRoot)
