@@ -75,6 +75,8 @@ private enum EffectInput {
     case buffer(String)
     case aux(MTLTexture, content: SIMD2<Int>)   // a packaged aux (mask/normal) may be padded: carry its
                                                 // content dims so g_Texture<n>Resolution.zw is the real size
+    case background   // _rt_FullFrameBuffer: the scene composited so far (copybackground glass/water/refraction),
+                      // bound per-frame to a backdrop texture; resolves to the effect input when none is supplied
 }
 
 /// One compiled pass of an effect: the pipeline, whether it runs its own vertex over the grid, the uniform
@@ -94,6 +96,11 @@ private struct PreparedPass {
 private struct PreparedEffect {
     let passes: [PreparedPass]
     let fbos: [EffectFBO]
+    /// True if any pass samples `_rt_FullFrameBuffer` (copybackground) — the renderer must hand it the scene
+    /// composited so far as the background input.
+    var needsBackground: Bool {
+        passes.contains { $0.samplers.contains { if case .background = $0.input { return true }; return false } }
+    }
 }
 
 /// One layer of a `PreparedScene`: an uploaded texture plus its resolution-independent placement.
@@ -298,6 +305,7 @@ public final class SceneRenderer {
     private var auxCache: [String: (texture: MTLTexture, content: SIMD2<Int>)] = [:]   // resolved aux, by name
     private var pooledOutput: MTLTexture?              // reused frame target (readback path is synchronous)
     private var pooledBackground: MTLTexture?          // reused composited-scene target for refractive scenes
+    private var pooledCopyBackground: MTLTexture?      // separate backdrop target for copybackground glass/water layers
     // Async present pipeline. The live path (compositeFrame with a present closure) no longer blocks the CPU on
     // the GPU each frame, so the CPU can encode the next frame while the GPU runs this one. `inFlightSemaphore`
     // caps the frames in flight at `maxFramesInFlight`. The only resource the CPU rewrites per frame is each
@@ -1221,7 +1229,7 @@ public final class SceneRenderer {
     }
 
     private func applyEffect(_ effect: PreparedEffect, to input: MTLTexture, time: Float,
-                             width: Int, height: Int,
+                             width: Int, height: Int, background: MTLTexture? = nil,
                              allocTarget: (Int, Int, MTLPixelFormat) -> MTLTexture?) -> MTLTexture? {
         guard let effectRenderer else { return nil }
         var buffers: [String: MTLTexture] = [:]
@@ -1246,6 +1254,9 @@ public final class SceneRenderer {
                 switch sampler.input {
                 // Render targets (the effect input and intermediate FBOs) are exact-size: content == storage.
                 case .previous: texture = previousOutput; content = SIMD2(previousOutput.width, previousOutput.height)
+                // copybackground: the scene composited so far. Falls back to the effect input when no backdrop is
+                // supplied (e.g. the dry-run probe), so a copybackground effect never samples a stale/white texture.
+                case .background: texture = background ?? input; content = SIMD2((background ?? input).width, (background ?? input).height)
                 case .buffer(let name): texture = buffers[name] ?? whiteTexture; content = SIMD2(texture.width, texture.height)
                 case .aux(let aux, let auxContent): texture = aux; content = auxContent
                 }
@@ -1360,8 +1371,14 @@ public final class SceneRenderer {
                         resolvedInput = .previous
                     } else {
                         let bound = (number >= 0 && number < pass.textures.count) ? pass.textures[number] : nil
-                        let aux = resolveAuxTexture(bound ?? sampler.defaultValue, package: package)
-                        resolvedInput = .aux(aux.texture, content: aux.content)
+                        let name = bound ?? sampler.defaultValue ?? ""
+                        if name.contains("_rt_FullFrameBuffer") || name.contains("_rt_MipMappedFrameBuffer") {
+                            // copybackground: this sampler reads the scene composited so far, bound per-frame.
+                            resolvedInput = .background
+                        } else {
+                            let aux = resolveAuxTexture(bound ?? sampler.defaultValue, package: package)
+                            resolvedInput = .aux(aux.texture, content: aux.content)
+                        }
                     }
                     samplers.append((slot: slot, number: number, input: resolvedInput))
                 }
@@ -1768,6 +1785,20 @@ public final class SceneRenderer {
         // Setting LUMORA_NO_EFFECTS skips this and composites every layer flat (a safety/debug switch).
         var effectResult: [Int: MTLTexture] = [:]
         if effectRenderer != nil, ProcessInfo.processInfo.environment["LUMORA_NO_EFFECTS"] == nil {
+            // copybackground: a glass/water/refraction layer samples the scene composited behind it
+            // (_rt_FullFrameBuffer). Render that backdrop once — the other layers, EXCLUDING the copybackground
+            // layers themselves (so glass doesn't sample its own quad) — into a separate pool, and feed it to
+            // those effects. Only built when some layer actually needs it, so non-copybackground scenes are
+            // byte-identical.
+            let copyBgIndices = Set(scene.layers.enumerated()
+                .filter { !$0.element.isComposition && $0.element.effects.contains { $0.needsBackground } }
+                .map { $0.offset })
+            var copyBg: MTLTexture? = nil
+            if !copyBgIndices.isEmpty {
+                copyBg = renderBackground(scene, time: time, aspectScale: aspectScale, swayX: swayX, swayY: swayY,
+                                          effectResult: [:], width: width, height: height,
+                                          skip: copyBgIndices, intoCopyPool: true)
+            }
             for (index, layer) in scene.layers.enumerated() where !layer.effects.isEmpty {
                 // A composition layer's effect input is its dependency layers composited into one transient
                 // (built below), not a quad of its own; everything else renders its own quad exactly as before.
@@ -1799,6 +1830,7 @@ public final class SceneRenderer {
                 var texture = effectInput
                 for effect in layer.effects {
                     guard let output = applyEffect(effect, to: texture, time: Float(time), width: width, height: height,
+                        background: effect.needsBackground ? copyBg : nil,
                         allocTarget: { w, h, fmt in self.borrowEffectTarget(width: w, height: h, pixelFormat: fmt) }) else { break }
                     texture = output
                 }
@@ -1913,10 +1945,12 @@ public final class SceneRenderer {
     /// droplets are drawn separately (they need the composited background as an input).
     private func drawSceneContent(_ encoder: MTLRenderCommandEncoder, scene: PreparedScene, time: Double,
                                   aspectScale: SIMD2<Float>, swayX: Float, swayY: Float,
-                                  effectResult: [Int: MTLTexture]) {
+                                  effectResult: [Int: MTLTexture], skip: Set<Int> = []) {
         for (index, layer) in scene.layers.enumerated() {
             // A consumed dependency feeds a composition layer's input — it is never drawn directly to the screen.
             if layer.consumed { continue }
+            // Excluded from a backdrop pass (the copybackground layers themselves, so glass doesn't sample itself).
+            if skip.contains(index) { continue }
             // A composition layer contributes only through its full-screen effect result; if it produced none
             // (no usable effects), skip it so it never paints its placeholder quad over the scene.
             if layer.isComposition && effectResult[index] == nil { continue }
@@ -2108,9 +2142,12 @@ public final class SceneRenderer {
     /// single-pass path).
     private func renderBackground(_ scene: PreparedScene, time: Double, aspectScale: SIMD2<Float>,
                                   swayX: Float, swayY: Float, effectResult: [Int: MTLTexture],
-                                  width: Int, height: Int) -> MTLTexture? {
+                                  width: Int, height: Int, skip: Set<Int> = [], intoCopyPool: Bool = false) -> MTLTexture? {
+        // copybackground uses a SEPARATE pooled texture so a glass effect's read of the backdrop in Pass 1 can't
+        // race the refractive-droplet path re-writing the main pooledBackground later in the same frame.
+        let pool = intoCopyPool ? pooledCopyBackground : pooledBackground
         let target: MTLTexture
-        if let pooled = pooledBackground, pooled.width == width, pooled.height == height {
+        if let pooled = pool, pooled.width == width, pooled.height == height {
             target = pooled
         } else {
             let descriptor = MTLTextureDescriptor.texture2DDescriptor(
@@ -2119,7 +2156,7 @@ public final class SceneRenderer {
             descriptor.storageMode = .shared
             guard let made = device.makeTexture(descriptor: descriptor) else { return nil }
             target = made
-            pooledBackground = made
+            if intoCopyPool { pooledCopyBackground = made } else { pooledBackground = made }
         }
         guard let commandBuffer = queue.makeCommandBuffer() else { return nil }
         let pass = MTLRenderPassDescriptor()
@@ -2130,7 +2167,7 @@ public final class SceneRenderer {
             red: scene.clearColor.x, green: scene.clearColor.y, blue: scene.clearColor.z, alpha: 1)
         guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: pass) else { return nil }
         drawSceneContent(encoder, scene: scene, time: time, aspectScale: aspectScale,
-                         swayX: swayX, swayY: swayY, effectResult: effectResult)
+                         swayX: swayX, swayY: swayY, effectResult: effectResult, skip: skip)
         encoder.endEncoding()
         commandBuffer.commit()
         // `target` is a tracked texture on the shared queue; the refractive-droplet pass that samples it is
