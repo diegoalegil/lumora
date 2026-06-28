@@ -380,22 +380,40 @@ func meanSSIM(_ a: [UInt8], _ b: [UInt8], width: Int, height: Int) -> Double {
         let pkgPath = dir + "/" + name + "/scene.pkg"
         guard fm.fileExists(atPath: pkgPath) else { continue }
         guard let refPath = referencePath(name), let ref = loadReferenceRGBA(refPath) else { skipped += 1; continue }
+        // Burst references: the still PLUS any `<id>_t1`/`<id>_t2` captured a few frames later. Scoring the
+        // animated render against ALL of them — each ref by its best-matching render phase, then averaged —
+        // judges whether Lumora reproduces the MOTION, not just frame 0. A single still can't catch an
+        // animation/phase regression (e.g. a noise-phase change leaves frame 0 intact but drifts later frames).
+        // Set LUMORA_PARITY_STILL_ONLY=1 to score only the still (the previous definition, for comparison).
+        let stillOnly = ProcessInfo.processInfo.environment["LUMORA_PARITY_STILL_ONLY"] != nil
+        let burstRefs = (stillOnly ? [refPath] : [refPath] + ["_t1", "_t2"].map { "\(referenceDir)/\(name)\($0).png" })
+            .filter { fm.fileExists(atPath: $0) }
+            .compactMap { loadReferenceRGBA($0) }
+            .filter { $0.width == ref.width && $0.height == ref.height }
+        guard !burstRefs.isEmpty else { skipped += 1; continue }
         guard let data = try? Data(contentsOf: URL(fileURLWithPath: pkgPath)),
               let package = try? ScenePackage.read(data),
               let document = try? SceneGraph.load(from: package) else { print("  LOAD-FAILED \(name)"); continue }
         let prepared = renderer.prepare(document, package: package)
-        var best: (ssim: Double, mae: Double, at: Double)?
+        let refCrops = burstRefs.map { topRows($0.rgba, width: ref.width, height: ref.height) }
+        var perRefBest = [Double](repeating: -1, count: refCrops.count)   // best SSIM per burst frame, over phases
+        var stillBestSSIM = -1.0, stillMAE = 0.0, stillAt = 0.0           // for the reported MAE/phase (vs still)
         for t in phases {
             guard let frame = renderer.render(prepared, width: ref.width, height: ref.height, time: t) else { continue }
             let (rgba, h) = topRows([UInt8](frame.rgba), width: ref.width, height: ref.height)
-            let (refRGBA, _) = topRows(ref.rgba, width: ref.width, height: ref.height)
-            let s = meanSSIM(rgba, refRGBA, width: ref.width, height: h)
-            if best == nil || s > best!.ssim { best = (s, meanAbsErrorRGB(rgba, refRGBA), t) }
+            for (i, rc) in refCrops.enumerated() {
+                let s = meanSSIM(rgba, rc.0, width: ref.width, height: h)
+                if s > perRefBest[i] { perRefBest[i] = s }
+                if i == 0, s > stillBestSSIM { stillBestSSIM = s; stillMAE = meanAbsErrorRGB(rgba, rc.0); stillAt = t }
+            }
         }
-        guard let b = best else { print("  RENDER-FAILED \(name)"); continue }
-        rows.append((name, b.ssim, b.mae, b.at))
+        guard perRefBest.allSatisfy({ $0 >= 0 }) else { print("  RENDER-FAILED \(name)"); continue }
+        // Scene SSIM = average over the burst frames of each frame's best phase-aligned SSIM.
+        let avgSSIM = perRefBest.reduce(0, +) / Double(perRefBest.count)
+        rows.append((name, avgSSIM, stillMAE, stillAt))
     }
-    let mode = time.map { "@ t=\($0)" } ?? "best-of-phases \(phases.map { Int($0) })"
+    let burstNote = ProcessInfo.processInfo.environment["LUMORA_PARITY_STILL_ONLY"] != nil ? "still-only" : "burst-avg(still+_t1+_t2)"
+    let mode = time.map { "@ t=\($0)" } ?? "best-of-phases \(phases.map { Int($0) }) [\(burstNote)]"
     print("parity vs \(referenceDir) \(mode): \(rows.count) compared, \(skipped) without a reference (skipped)")
     var failed = 0
     for r in rows.sorted(by: { $0.ssim < $1.ssim }) {
