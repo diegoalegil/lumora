@@ -86,8 +86,10 @@ oracle (taskbar-crop gate). Each: no scene regresses >0.005 AND the target scene
   pool, gated. vs oracle: 3390491312 0.4907 → 0.5055 (+0.0148), 0 regressions, mean 0.8118 → 0.8120.
 - **bloom widen (`a36b361`) — LANDED + VERIFIED.** Doubled the scene-bloom tap spacing (7×7 box → wider soft
   halo). vs oracle: 2479422222 +0.006, 2817222811 +0.003, 3497714247 +0.003, high bloom scenes flat, 0
-  regressions, mean 0.8120 → 0.8121. Visually cleaner fire glow, no banding. (Full multilevel-downsample bloom
-  is a future refinement.)
+  regressions, mean 0.8120 → 0.8121. Visually cleaner fire glow, no banding.
+  - **Fuller bloom REFUTED:** then tested a wider gaussian two-octave kernel (spacing 3+9, a multilevel-downsample
+    approximation). It OVERSHOOTS — 2479422222 -0.0072 vs the widen, mean -0.0001. So spacing-6 is the sweet spot;
+    a true wider multilevel bloom would overshoot more. Reverted; the widen is optimal. (Bloom direction settled.)
 - **particle operators (T3.3) — deferred.** Exact math needs GPL CParticle (firewall); and the particle gaps are
   position-at-capture-instant (SSIM-unfixable). rope stays reverted (inert: clustered/faint particles).
 - **State:** mean SSIM 0.8121 (crop), ≥0.90 43/96. Round features all landed-or-deferred-with-measurement.
