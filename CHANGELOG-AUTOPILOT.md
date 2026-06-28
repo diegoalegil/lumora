@@ -43,6 +43,22 @@ chrome from the score. 66 WEScene checks + full check_all green.
 > regressions; A/B enables flat-SSIM features) and risk the regressions it forbids — so PASO 2/3 are paused,
 > not skipped.
 
+### ROUND 2 — feature implementation (oracle deleted → verify by unit-test + lumora self-A/B + spec + gating)
+The we-reference oracle was removed from disk, so this round lands real WE features verified WITHOUT it:
+correctness via new unit checks, "it works" via lumora before/after self-renders, fidelity by WE-spec, and
+no-regression by gating (only the target scenes change). SSIM-vs-we-reference is pending the oracle's return.
+
+- **`4984d23` camerapath (T3.2) — LANDED.** Bézier pan+zoom camera (origin.animation c0/c1 + zoom.animation),
+  clean-room CSS-style cubic-bézier (Newton solve). Gated on a present origin.animation → only 3675966045 is
+  affected (verified: it's the lone animated-camera scene; 3479521040's static zoom=0.75 untouched, 95 scenes
+  byte-identical). Self-A/B: 3675966045 now zooms 2.13x→1.0x over its 4s path (was frozen). +9 unit checks
+  (bézier linear/hold/monotonic/single-key/2.13→1.0 zoom/static-gate). All checks + firewall green.
+- **rope/ropetrail (T1.1) — implemented then REVERTED (inert on this corpus).** Built the connected-ribbon
+  (per-segment oriented quads via the instanced pipeline, gated to .rope). But lumora before/after is pixel-
+  identical on all 5 rope scenes: the rope sprites are NOT dropped, yet the particles cluster at a point
+  (trail_1 has distancemax=0) / are too faint to form a visible ribbon. Can't demonstrate improvement → reverted
+  per the round's rule. (Reinstate if a future scene has a spread, visible rope.)
+
 ### FASE 3/4 — assessed (round 1)
 - **T3.1 copybackground**: blocked — needs the transpiler to emit a `v_ScreenCoord` varying it never emits (compose shaders would reference an undefined varying); validation scenes already ≥0.93. **Deferred (XL/blocked).**
 - **T3.2 camerapath**: gated; static zoom would regress 3479521040 (already matches without it); only 3675966045 has real animation and it's dominated by fire/clock/grade. **Deferred.**
