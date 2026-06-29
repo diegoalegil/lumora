@@ -75,6 +75,9 @@ private struct PreparedParticles {
     var frames: Int = 1
     var cols: Int = 1
     var rows: Int = 1
+    // genericparticle's `ui_editor_properties_overbright`: an HDR punch multiplier on the sprite's RGB for
+    // additive/glow materials (fire/embers), so a cluster reads brighter than a 0…1 albedo allows. 1.0 = none.
+    var overbright: Float = 1
     let instanceBuffers: [MTLBuffer] // one per in-flight slot (ring-buffered); refilled each frame, not reallocated
 }
 
@@ -1108,7 +1111,8 @@ public final class SceneRenderer {
                                                        normalTexture: sprite.normal, count: count,
                                                        isAdditive: sprite.isAdditive, isRefractive: sprite.isRefractive,
                                                        uvScale: sprite.uvScale, frames: sprite.frames, cols: sprite.cols,
-                                                       rows: sprite.rows, instanceBuffers: instanceBuffers))
+                                                       rows: sprite.rows, overbright: sprite.overbright,
+                                                       instanceBuffers: instanceBuffers))
         }
         return PreparedScene(layers: prepared, clearColor: document.clearColor,
                              particles: preparedParticles, orthoWidth: orthoW, orthoHeight: orthoH,
@@ -1149,11 +1153,15 @@ public final class SceneRenderer {
 
     private func particleSprite(_ system: ParticleSystem, package: ScenePackage)
         -> (texture: MTLTexture, normal: MTLTexture?, isAdditive: Bool, isRefractive: Bool, uvScale: SIMD2<Float>,
-            frames: Int, cols: Int, rows: Int)? {
+            frames: Int, cols: Int, rows: Int, overbright: Float)? {
         guard let materialPath = system.materialPath, let entry = package.entry(named: materialPath),
               let material = (try? JSONSerialization.jsonObject(with: entry.data)) as? [String: Any],
               let pass = (material["passes"] as? [[String: Any]])?.first
         else { return nil }
+        // genericparticle's overbright (HDR punch) is a material pass constant; default 1.0 (no boost). Applied to
+        // the sprite RGB at simulation time for additive/glow particles, mirroring WE's `albedo.rgb *= g_Overbright`.
+        let overbright = Float(((pass["constantshadervalues"] as? [String: Any])?["ui_editor_properties_overbright"]
+            as? NSNumber)?.doubleValue ?? 1)
         let names = (pass["textures"] as? [Any])?.compactMap { $0 as? String } ?? []
         guard let first = names.first else { return nil }
         // Light-shaft / god-ray / beam sprites: WE draws these additively as faint volumetric rays whose look
@@ -1171,11 +1179,11 @@ public final class SceneRenderer {
         // skip (a plain albedo blob would just obscure the scene — worse than the effect's absence).
         if (pass["combos"] as? [String: Any])?["REFRACT"] as? Int == 1 {
             guard names.count >= 2, let normal = spriteTexture(named: names[1], package: package) else { return nil }
-            return (sprite.texture, normal.texture, false, true, sprite.uvScale, 1, 1, 1)
+            return (sprite.texture, normal.texture, false, true, sprite.uvScale, 1, 1, 1, overbright)
         }
         let blending = (pass["blending"] as? String) ?? "normal"
         return (sprite.texture, nil, blending == "additive" || blending == "add", false, sprite.uvScale,
-                grid.frames, grid.cols, grid.rows)
+                grid.frames, grid.cols, grid.rows, overbright)
     }
 
     /// Load a particle sprite: WE's common built-in shapes procedurally (they aren't shipped in the
@@ -1839,10 +1847,14 @@ public final class SceneRenderer {
                 let fw = prepared.uvScale.x / Float(prepared.cols), fh = prepared.uvScale.y / Float(prepared.rows)
                 uvRect = SIMD4(Float(col) * fw, Float(row) * fh, fw, fh)
             }
+            // genericparticle overbright: punch the RGB of an additive/glow sprite (fire/embers) past 1.0 so a
+            // cluster reads HDR-bright, mirroring WE's `albedo.rgb *= g_Overbright`. RGB only (alpha unchanged),
+            // and only for additive/screen materials — an alpha-over sprite with overbright>1 would just clip.
+            let obColor = prepared.isAdditive ? color * prepared.overbright : color
             dst[n] = ParticleInstance(
                 center: SIMD2(Float(posX / orthoW * 2 - 1), Float(posY / orthoH * 2 - 1)),
                 halfExtent: halfExtent,
-                color: SIMD4(color, Float(alpha0) * fade),
+                color: SIMD4(obColor, Float(alpha0) * fade),
                 uvRect: uvRect,
                 rotor: rotor)
             n += 1
