@@ -51,6 +51,10 @@ private struct ParticleInstance {
     var center: SIMD2<Float>
     var halfExtent: SIMD2<Float>
     var color: SIMD4<Float>
+    // The sprite UV sub-rect this frame: (offsetX, offsetY, scaleX, scaleY). For a flipbook it selects the
+    // current atlas cell; for a plain sprite it is (0,0, contentCrop.x, contentCrop.y). Adjacent to `color`
+    // (both 16-byte SIMD4) so the Swift and MSL struct layouts stay byte-identical.
+    var uvRect: SIMD4<Float>
     var rotor: SIMD2<Float>   // (cos θ, sin θ) — the sprite's screen-plane rotation this frame
 }
 
@@ -65,6 +69,12 @@ private struct PreparedParticles {
     let isRefractive: Bool           // draw by refracting the background through the normal map
     let uvScale: SIMD2<Float>        // content/POT crop of the sprite (as layers use), so a padded sprite
                                      // samples only its content region instead of stretching it over the quad
+    // Spritesheet flipbook (from the .tex-json `spritesheetsequences`): `frames` cells laid out in a `cols`×`rows`
+    // grid across the atlas texture. frames<=1 ⇒ a plain (non-animated) sprite. The renderer advances the frame
+    // over each particle's life and samples that cell.
+    var frames: Int = 1
+    var cols: Int = 1
+    var rows: Int = 1
     let instanceBuffers: [MTLBuffer] // one per in-flight slot (ring-buffered); refilled each frame, not reallocated
 }
 
@@ -475,7 +485,7 @@ public final class SceneRenderer {
         out.uv = in.uv;
         return out;
     }
-    struct PInst { float2 center; float2 halfExtent; float4 color; float2 rotor; };
+    struct PInst { float2 center; float2 halfExtent; float4 color; float4 uvRect; float2 rotor; };
     struct POut { float4 position [[position]]; float2 uv; float4 color; };
     vertex POut lumora_particle_vertex(uint vid [[vertex_id]], uint iid [[instance_id]],
                                        constant PInst *insts [[buffer(0)]],
@@ -492,7 +502,9 @@ public final class SceneRenderer {
         float2 c = corner[vid] * p.halfExtent;
         float2 r = float2(c.x * p.rotor.x - c.y * p.rotor.y, c.x * p.rotor.y + c.y * p.rotor.x);
         out.position = float4((p.center + r) * aspectScale, 0, 1);
-        out.uv = uvs[vid] * uvScale;   // sample only the content region of a padded (POT) sprite
+        // Per-instance UV sub-rect: a flipbook's current atlas cell, or a plain sprite's content crop. `uvScale`
+        // (buffer 2) is retained as the legacy global fallback but the per-instance uvRect now drives the sample.
+        out.uv = uvs[vid] * p.uvRect.zw + p.uvRect.xy;
         out.color = p.color;
         return out;
     }
@@ -1095,7 +1107,8 @@ public final class SceneRenderer {
             preparedParticles.append(PreparedParticles(system: system, texture: sprite.texture,
                                                        normalTexture: sprite.normal, count: count,
                                                        isAdditive: sprite.isAdditive, isRefractive: sprite.isRefractive,
-                                                       uvScale: sprite.uvScale, instanceBuffers: instanceBuffers))
+                                                       uvScale: sprite.uvScale, frames: sprite.frames, cols: sprite.cols,
+                                                       rows: sprite.rows, instanceBuffers: instanceBuffers))
         }
         return PreparedScene(layers: prepared, clearColor: document.clearColor,
                              particles: preparedParticles, orthoWidth: orthoW, orthoHeight: orthoH,
@@ -1107,8 +1120,36 @@ public final class SceneRenderer {
     /// The sprite a particle system draws — its material's first bound texture and blend mode
     /// (additive for glowy sparks/embers, alpha-over for solid sprites like petals/butterflies). Returns
     /// nil if the sprite can't be resolved, so the system is skipped rather than drawn as white squares.
+    /// Read a sprite's `.tex-json` spritesheet grid (frames in a cols×rows atlas), pkg first then shared.
+    /// Returns (1,1,1) when the sprite is not a flipbook. `atlasW/H` are the decoded texture's dimensions.
+    private func spriteSheetGrid(named name: String, package: ScenePackage, atlasW: Int, atlasH: Int)
+        -> (frames: Int, cols: Int, rows: Int) {
+        func sidecar() -> Data? {
+            for ext in ["tex-json", "tex.json"] {
+                if let e = package.entry(named: "materials/\(name).\(ext)") { return e.data }
+            }
+            if let dir = sharedAssetsDir, !name.contains(".."), !name.hasPrefix("/") {
+                for ext in ["tex-json", "tex.json"] {
+                    let p = (dir as NSString).appendingPathComponent("materials/\(name).\(ext)")
+                    if let d = try? Data(contentsOf: URL(fileURLWithPath: p)) { return d }
+                }
+            }
+            return nil
+        }
+        guard let data = sidecar(),
+              let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              let seq = (obj["spritesheetsequences"] as? [[String: Any]])?.first,
+              let frames = (seq["frames"] as? NSNumber)?.intValue, frames > 1,
+              let fw = (seq["width"] as? NSNumber)?.intValue, fw > 0,
+              let fh = (seq["height"] as? NSNumber)?.intValue, fh > 0,
+              atlasW >= fw, atlasH >= fh else { return (1, 1, 1) }
+        let cols = max(1, atlasW / fw), rows = max(1, atlasH / fh)
+        return (min(frames, cols * rows), cols, rows)
+    }
+
     private func particleSprite(_ system: ParticleSystem, package: ScenePackage)
-        -> (texture: MTLTexture, normal: MTLTexture?, isAdditive: Bool, isRefractive: Bool, uvScale: SIMD2<Float>)? {
+        -> (texture: MTLTexture, normal: MTLTexture?, isAdditive: Bool, isRefractive: Bool, uvScale: SIMD2<Float>,
+            frames: Int, cols: Int, rows: Int)? {
         guard let materialPath = system.materialPath, let entry = package.entry(named: materialPath),
               let material = (try? JSONSerialization.jsonObject(with: entry.data)) as? [String: Any],
               let pass = (material["passes"] as? [[String: Any]])?.first
@@ -1123,16 +1164,18 @@ public final class SceneRenderer {
         let shaftLike = ["shaft", "beam", "godray", "god_ray", "lightray", "light_ray", "light_shaft"]
         if shaftLike.contains(where: first.lowercased().contains) { return nil }
         guard let sprite = spriteTexture(named: first, package: package) else { return nil }
+        let grid = spriteSheetGrid(named: first, package: package, atlasW: sprite.texture.width, atlasH: sprite.texture.height)
         // Rain-on-glass droplets (REFRACT combo + a normal map) distort the scene behind each sprite. We
         // refract by sampling the composited background displaced by the droplet's normal map (see the
         // refractive render branch). Needs the second texture; without it we can't refract faithfully, so
         // skip (a plain albedo blob would just obscure the scene — worse than the effect's absence).
         if (pass["combos"] as? [String: Any])?["REFRACT"] as? Int == 1 {
             guard names.count >= 2, let normal = spriteTexture(named: names[1], package: package) else { return nil }
-            return (sprite.texture, normal.texture, false, true, sprite.uvScale)
+            return (sprite.texture, normal.texture, false, true, sprite.uvScale, 1, 1, 1)
         }
         let blending = (pass["blending"] as? String) ?? "normal"
-        return (sprite.texture, nil, blending == "additive" || blending == "add", false, sprite.uvScale)
+        return (sprite.texture, nil, blending == "additive" || blending == "add", false, sprite.uvScale,
+                grid.frames, grid.cols, grid.rows)
     }
 
     /// Load a particle sprite: WE's common built-in shapes procedurally (they aren't shipped in the
@@ -1780,10 +1823,20 @@ public final class SceneRenderer {
                     rotor = SIMD2(cos(phi), sin(phi))
                 }
             }
+            // Spritesheet flipbook: pick the atlas cell for this particle's life fraction (sequence mode plays
+            // once over the lifetime), else the whole-content rect. Combine with the content crop (uvScale).
+            var uvRect = SIMD4<Float>(0, 0, prepared.uvScale.x, prepared.uvScale.y)
+            if prepared.frames > 1, prepared.cols > 0, prepared.rows > 0 {
+                let frame = min(prepared.frames - 1, max(0, Int(Double(prepared.frames) * (life > 0 ? age / life : 0))))
+                let col = frame % prepared.cols, row = frame / prepared.cols
+                let fw = prepared.uvScale.x / Float(prepared.cols), fh = prepared.uvScale.y / Float(prepared.rows)
+                uvRect = SIMD4(Float(col) * fw, Float(row) * fh, fw, fh)
+            }
             dst[n] = ParticleInstance(
                 center: SIMD2(Float(posX / orthoW * 2 - 1), Float(posY / orthoH * 2 - 1)),
                 halfExtent: halfExtent,
                 color: SIMD4(color, Float(alpha0) * fade),
+                uvRect: uvRect,
                 rotor: rotor)
             n += 1
         }
