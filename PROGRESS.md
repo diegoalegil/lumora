@@ -10,12 +10,16 @@ baseline-AND-after with the SAME measurement run, never against a number from an
 5. Any figure not attributable to a same-binary run = treat as nonexistent, re-measure.
 Cross-binary comparison fabricates false deltas (it muddied R11/R12 per-scene claims).
 
-## ROUND 14 — P1 CANONICAL BASELINE (binary `6dbe9fa`, full oracle 96×3, crop=48 default)
+## ROUND 14 — P1 CANONICAL BASELINE (full oracle 96×3, crop=48 default)
 Same-binary master table in [`R14-BASELINE.tsv`](R14-BASELINE.tsv) (96 scenes: unset/set/delta).
-- **env-unset burst-avg 0.8110 · env-set 0.8076 · delta −0.0034** · ≥0.80 55/55 · ≥0.90 40/39.
-- **Heritage reconciled:** the R12 figures (0.8110 / 0.8076 / −0.0034) reproduce EXACTLY same-binary →
-  they were valid, NOT artifacts. `0.8094 @ d4c671f` is the older *docs* baseline (different oracle/crop),
-  kept as historical only. The R14 table is now canonical and replaces all prior per-scene numbers.
+- **CANONICAL v2 @ HEAD `1a92d2f` (+overbright), CORRECTED 3585875739 oracle:**
+  **env-unset 0.8177 · env-set 0.8144 · delta −0.0034** · ≥0.80 56/56 · ≥0.90 40/40.
+- ⚠️ **Oracle fix:** the 862MB-zip `we-reference/3585875739` is the OLD MISLABEL (silver-haired fire scene);
+  the CORRECT frame (Miku close-up, matches lumora) ships in the small extract's `we-reference/3585875739{,_t1,_t2}`.
+  Overlaid it → 3585875739 0.31→**0.889**, lifting the mean +0.0067. Always use the small-extract 3585875739.
+- Pre-correction v1 (binary `6dbe9fa`, mislabeled 3585875739): env-unset 0.8110 / env-set 0.8076 — those
+  reproduced the R12 figures exactly same-binary (valid, NOT artifacts), but were depressed by the mislabel.
+  `0.8094 @ d4c671f` is the older *docs* baseline (different oracle/crop), historical only. v2 is canonical.
 - env-set: 41 scenes down / 10 up. The net −0.0034 is GAP1-fire / GAP4-particle correct-but-pixel-unaligned
   content (embers/flames at a different stochastic phase than the captured frame) — CONSERVED per §4.4, not a bug.
 - **depthparallax — re-verified same-binary = REAL WIN, kept.** active vs dropped (both built this run):
