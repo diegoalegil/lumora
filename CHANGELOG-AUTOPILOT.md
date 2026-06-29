@@ -312,3 +312,40 @@ families are done; GAP 4 effect-aux rendering is the open item.
 - **T3.2 camerapath**: gated; static zoom would regress 3479521040 (already matches without it); only 3675966045 has real animation and it's dominated by fire/clock/grade. **Deferred.**
 - **T3.3 particle operators**: would require the reference engine's particle math (firewall-restricted) and the gaps are position-at-capture-instant (SSIM-unfixable). **Deferred.**
 - **T4.1 group/effectlayer**: effectlayer effects are grade/glitch/audio-reactive (firewall-blocked LUTs or correct no-ops). **Deferred.**
+
+## ROUND 13 — GAP 4b investigated: premise refuted + the real env-set regression fixed
+
+Target (from `GAP4b-EFECTOS-COMPUESTOS-REF.md`): god-rays/light-shafts/localcontrast supposedly compose their
+real aux as a "dark smudge" env-set (~21 scenes, e.g. 3576279017, 2303021395). Investigated with the full
+corrected oracle (862 MB pack, 96×3 frames) re-extracted to a stable dir.
+
+**Renderer is deterministic.** Two identical env-unset parity runs → 0 scenes differ (max 0.0005), same
+burst-avg 0.8110. So the gate is reliable and every per-scene number below is real, not run-noise. (Round 12's
+per-scene claims were partly confounded by comparing across *different binaries*.)
+
+**Suspect #1 (UV `.zw`) — REFUTED.** Dumped the real `godrays_combine.vert` from the pkg: it emits
+`v_TexCoord = a_TexCoord.xyxy` (so `.zw == .xy`, the `.zw` half-texel offset is HLSL_SM30-only). The transpiler
+reproduces this exactly (`out.v_TexCoord = in.a_TexCoord.xyxy;`). Rays are NOT sampled in a corner.
+
+**god-rays/light-shafts/localcontrast — render CORRECTLY, no dark smudge.** Of all 24 scenes using these effects,
+the shared-assets dir changes the render of *zero* of them at t≥2 (byte-identical env-set vs env-unset). 3576279017
+differs only at **t=0**, and the diff is scattered **particles + a soft glow** appearing env-set (the GAP 4 sprite
+fallback / lightshafts aux) — NOT a smudge. Visual A/B (3576279017, 2303021395) vs the oracle: both match well.
+The premise does not reproduce at HEAD; no code change made there ("root-cause, don't assume").
+
+**The real env-set regression was cloudmotion.** A full env-set vs env-unset parity diff showed the only large
+mover is 3545444802: **0.8592 → 0.7529 (−0.106)**. Both cloudmotion scenes regress env-set (3435120596 −0.002),
+none benefit. cloudmotion's overrides ARE applied correctly (amount 0.032, granularity 1.06, …, verified by a
+debug dump) and the warp is correctly masked to the cloud band (characters stay sharp), but its perlin warp phase
+doesn't align with WE's capture — the static (un-warped) clouds match the oracle's crispness, the warped ones
+smear (visual A/B confirms). **Dropped cloudmotion** (revert R12's restore): 3545444802 env-set recovers
+**0.7529 → 0.8575** (≈ env-unset 0.8592). Round 12's "+0.0485 clean win" was a measurement artifact.
+
+**Remaining env-set delta (−0.0034 vs env-unset) is the GAP 1 fire / GAP 4 particle "correct-but-unaligned"
+content** — embers/particles/flames the oracle also has but at different positions (e.g. 1469094526 −0.040 = ember
+positions; visual A/B = a match, not garbling). Kept per the directive's "no rebotes fuego por delta-SSIM" rule.
+
+ROUND 13 result: env-unset **0.8110** (unchanged — cloudmotion was already dropped there). env-set's worst-case
+regression (cloudmotion 3545444802 −0.106) is eliminated; the remaining env-set content is correct-but-unaligned
+particles/fire (kept by design). The GAP 4b "effect-aux garbling" premise is closed as refuted. Dev tooling added:
+`WEImporterChecks dump` / `texpng` (inspect packaged shaders + loose .tex tiles).

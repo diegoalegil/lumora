@@ -7,6 +7,15 @@ so animation/phase is covered, not just frame 0. `LUMORA_PARITY_STILL_ONLY=1` gi
 
 D (wrap REPEAT by ClampUVs) measured-NEUTRAL + reverted; E (mipmaps) measured (3 regressions >0.005) + reverted.
 
+**Round 13 (GAP 4b investigated):** the god-rays/light-shafts/localcontrast "dark smudge" premise is **REFUTED** —
+those effects are byte-identical env-set vs env-unset at t≥2 and render correctly vs the oracle (the only env-set
+change is GAP 4 particles + a soft glow at t=0, not a smudge). Suspect #1 (`v_TexCoord.zw`) refuted: the transpiler
+emits `a_TexCoord.xyxy` correctly. The renderer is **deterministic** (two env-unset runs identical → the gate is
+reliable). The real env-set regression was **cloudmotion** (3545444802 0.8592→0.7529, −0.106; both its scenes
+regress, none benefit) — **dropped it** (revert R12), 3545444802 recovers to 0.8575 (≈ env-unset). R12's "+0.0485"
+was a measurement artifact. Remaining env-set −0.0034 vs env-unset is GAP 1 fire / GAP 4 particle correct-but-
+unaligned content (kept per "no rebotes fuego por delta-SSIM"). See CHANGELOG ROUND 13.
+
 **Round 12 (assets unblocked, visual-A/B):** full we-shared-assets pack arrived; corrected oracle (3585875739),
 re-baseline env-unset **0.8171**. Landed (each env-gated → env-unset strict no-op 0.8171, visual-A/B-verified vs
 we-reference): **GAP 1 fire flipbook** (`bbd3414` — blue Wildfire flames appear+animate on 3115845558/3675966045,
