@@ -349,3 +349,35 @@ ROUND 13 result: env-unset **0.8110** (unchanged — cloudmotion was already dro
 regression (cloudmotion 3545444802 −0.106) is eliminated; the remaining env-set content is correct-but-unaligned
 particles/fire (kept by design). The GAP 4b "effect-aux garbling" premise is closed as refuted. Dev tooling added:
 `WEImporterChecks dump` / `texpng` (inspect packaged shaders + loose .tex tiles).
+
+## ROUND 14 — same-binary baseline, overbright, particle-family sweep (P1+P2)
+
+**Golden rule:** measure baseline AND after with the SAME binary, same run; cross-binary deltas are fake. Codified
+in PROGRESS.md.
+
+**P1 — canonical baseline + re-verifications (all same-binary):**
+- **Oracle fix:** the 862MB-zip `we-reference/3585875739` is the OLD mislabel (silver-haired fire scene); the
+  correct Miku close-up ships in the small extract. Overlaid still+_t1+_t2 → 3585875739 0.31→**0.889**.
+- **Canonical v2 @ HEAD (with overbright), corrected oracle: env-unset 0.8177 / env-set 0.8144 / delta −0.0034**,
+  ≥0.80 56/56, ≥0.90 40/40 ([`R14-BASELINE.tsv`](R14-BASELINE.tsv)). env-unset 0.8177 reconciles with the
+  heritage 0.8171. The pre-correction figures (0.8110/0.8076) reproduced the R12 numbers exactly → valid, just
+  depressed by the mislabel; `0.8094@d4c671f` is the older docs baseline (historical).
+- **depthparallax re-verified same-binary = REAL win** (active vs dropped, both built this run): 3426865175 +0.098,
+  3409595232 +0.083, 0 regression. NOT a cross-binary artifact. Kept.
+- **GAP 3 blend table re-verified same-binary = REAL win** (on vs off, pre-c6f059a prelude built this run): 5 up
+  (2381855517 +0.016, 3576279017 +0.0095, …), 2 SSIM-only dips (3372027807 −0.039, 3430675494 −0.025) whose A/B
+  vs oracle confirms ON is correct (old wrong blend coincidentally scored higher). Correct-by-spec; kept.
+- `faithfulnessDropEffects = ["cloudmotion"]` (read from source). cloudmotion stays dropped (R13). depthparallax
+  NOT in list (verified above).
+
+**P2 — particles (visual A/B is the arbiter):**
+- **g_Overbright implemented** (genericparticle's `ui_editor_properties_overbright`, material-pass constant,
+  default 1.0). Multiplies additive/glow sprite RGB at sim time. Same-binary env-set: 0.8076→0.8083 (+0.0007),
+  3627327015 **+0.056**, 3482079065 +0.008, 2 negligible dips. A/B 3627327015 confirms field particles brighten to
+  match. No-op for scenes without the constant.
+- **Particle-family sweep (env-set, A/B vs oracle):** fire (blue, additive — 3115845558), petals/leaves/snow/halo
+  (3404976219), debris (3627327015), beam (3497714247), light_shaft (2363806159), embers (1469094526), rain
+  (3576279017), sparks (3585875739): all render correct (or correct-but-unaligned for stochastic ones). lightning
+  (3319713168): bolts render, white vs oracle's golden = flicker-phase difference, conserved. NO frozen flipbooks,
+  recolored blobs, or wrong-blend garbling found — GAP1 flipbook + GAP4 fallback + overbright all working.
+- **cloudmotion stays dropped** (§4.3, R13 same-binary −0.106). Not restored.
