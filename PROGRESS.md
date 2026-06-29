@@ -7,6 +7,15 @@ so animation/phase is covered, not just frame 0. `LUMORA_PARITY_STILL_ONLY=1` gi
 
 D (wrap REPEAT by ClampUVs) measured-NEUTRAL + reverted; E (mipmaps) measured (3 regressions >0.005) + reverted.
 
+**Round 12 (assets unblocked, visual-A/B):** full we-shared-assets pack arrived; corrected oracle (3585875739),
+re-baseline env-unset **0.8171**. Landed (each env-gated → env-unset strict no-op 0.8171, visual-A/B-verified vs
+we-reference): **GAP 1 fire flipbook** (`bbd3414` — blue Wildfire flames appear+animate on 3115845558/3675966045,
+were 100% absent), **GAP 2b cloudmotion** (`b221b73` — clouds drift; 3545444802 env-set +0.0485). Set
+`LUMORA_SHARED_ASSETS_DIR` to the pack to activate. ⚠️ env-set net 0.8141 (< 0.8171) because god-rays/light-shafts/
+localcontrast EFFECTS render garbled with the real aux (e.g. 3576279017 dark smudge) — per-effect rendering work,
+the open GAP 4 item. Fire SSIM dips env-set (flames not pixel-aligned) but is a visual win (kept per directive).
+See CHANGELOG ROUND 12.
+
 **Round 11 (visual-parity, PROMPT-MAC-PARIDAD):** GAP 3 (effect blend table → WE-canonical, `c6f059a`) +
 GAP 2a (depthparallax `g_ParallaxPosition` fix, `10eb602`: 3426865175 +0.098, 3409595232 +0.084) landed,
 visually A/B-verified, **mean burst-avg 0.8094 → 0.8110**, 0 net regressions. GAP 4 sprite shared-asset fallback

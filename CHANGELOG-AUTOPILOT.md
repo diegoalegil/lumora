@@ -268,6 +268,45 @@ we-reference + burst-avg no-regression). Worked GAP 3 → GAP 1 → GAP 2 → GA
 ROUND 11 result: mean burst-avg **0.8110** (from 0.8094), 0 net regressions, GAP3+depthparallax visually verified,
 GAP4 fallback ready. Remaining gaps (fire/cloudmotion/god-rays/petals) blocked on the owner's shared-asset install.
 
+### ROUND 12 — assets UNBLOCKED: GAP 1 fire flipbook + GAP 2b cloudmotion landed (visual-A/B-driven)
+The owner shipped the full `we-shared-assets` pack (229 .tex + 200 .tex-json incl. fire2/perlin_256/light_shafts/
+petals/…) + a corrected oracle frame (3585875739 was mislabeled). Re-baseline vs the corrected oracle (env-unset):
+**0.8171**. ⚠️ KEY: setting `LUMORA_SHARED_ASSETS_DIR` to the pack now LOADS real sprites, but they render wrong
+until each gap's rendering is fixed (env-set with current code regressed the mean — fire2 sampled the whole atlas
+= garbled). So the env is the FOUNDATION; each gap fix makes its family render correctly. Criterion is the
+directive's DOUBLE: **visual A/B vs we-reference is the arbiter; SSIM only vetoes UNINTENDED regressions** — a
+correct effect that isn't pixel-aligned LOWERS SSIM (directive: "no rebotes fuego por delta-SSIM").
+- **`bbd3414` GAP 1 — spritesheet flipbook.** ParticleInstance/PInst gain a per-instance uvRect (atlas cell);
+  simulateParticles picks the cell from each particle's life fraction; the .tex-json `spritesheetsequences`
+  gives frames + the cols×rows grid. Default uvRect = content-crop, so NON-flipbook particles are byte-identical
+  → **env-unset is a strict no-op (0.8171)**. Visual A/B (3115845558, env set): the blue "Wildfire" flames
+  (fire2, 32-frame additive atlas) now APPEAR and animate vs we-reference — they were 100% absent. (SSIM on that
+  scene dips −0.012 env-set because the flames aren't pixel-aligned — the exact 'SSIM hides/penalises a real
+  effect' case; kept per the directive.)
+- **`b221b73` GAP 2b — cloudmotion restored.** The shared `util/perlin_256` now loads (env), and effect aux
+  samplers named perlin/clouds bind a new `.repeat` sampler (EffectInput.aux gains a repeatWrap flag → a 2nd
+  EffectRenderer sampler) so the time-scrolled noise UV wraps instead of clamping. cloudmotion is un-dropped only
+  when sharedAssetsDir is set (without the perlin it still mis-distorts → stays dropped → env-unset no-op). The
+  repeat flag is scoped to perlin/clouds ONLY (NOT the procedural util/noise, which keeps foliagesway's phase /
+  the env-unset 0.8171 no-op intact). Visual A/B (3435120596): the cloud band drifts (32% of pixels move
+  t2→t8). Oracle env-set: **3545444802 0.859 → 0.908 (+0.0485)**, 3435120596 flat (day/night gap dominates).
+- depthparallax (GAP 2a) landed in round 11; the GAP 4 sprite-VFS fallback (round 11) now actually loads the real
+  sprites once the env points at the pack.
+- **GAP 4 status (god-rays/light-shafts/localcontrast) — EFFECT-AUX garbling, deferred.** With the env set, the
+  full env-set mean is 0.8141 (< env-unset 0.8171): the flipbook fixed the sheet-atlas particle sprites and
+  cloudmotion is restored, but ~10 scenes still regress because their EFFECT aux now resolves to the real shared
+  texture and lumora's effect renders it WRONG — e.g. 3576279017 (godrays+lightshafts) gets a dark smudge over the
+  character (visual A/B = a LOSS, not a win), 2303021395 (localcontrast), 1469094526. These are effect-rendering
+  bugs (the directive's old "a packaged shaft drawn straight is a hard streak ≠ WE" concern), NOT the particle
+  path. They need per-effect rendering fixes (or a selective drop) before env-set is shippable; the particle
+  sprites (petals/debris) load via the fallback. Documented for the next round.
+
+ROUND 12 result: env-unset **0.8171** (strict no-op, gate-clean). GAP 1 fire flames + GAP 2b cloud drift +
+GAP 2a depthparallax + GAP 3 blend all VISUALLY verified vs we-reference and committed (b221b73 HEAD). env-set is
+the mode that shows the effects (3545444802 +0.0485 clouds, fire flames appear) — NOT yet net-clean because
+god-rays/light-shafts/localcontrast render garbled with the real aux (per-effect work remains). The 4 core gap
+families are done; GAP 4 effect-aux rendering is the open item.
+
 ### FASE 3/4 — assessed (round 1)
 - **T3.1 copybackground**: blocked — needs the transpiler to emit a `v_ScreenCoord` varying it never emits (compose shaders would reference an undefined varying); validation scenes already ≥0.93. **Deferred (XL/blocked).**
 - **T3.2 camerapath**: gated; static zoom would regress 3479521040 (already matches without it); only 3675966045 has real animation and it's dominated by fire/clock/grade. **Deferred.**
