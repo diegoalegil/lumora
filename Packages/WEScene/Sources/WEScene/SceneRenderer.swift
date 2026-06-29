@@ -1405,11 +1405,14 @@ public final class SceneRenderer {
     /// grey or haze the scene, so it stays off until proven (extend this list only after a per-scene preview check).
     private static let postProcessAllowlist = ["cutout_vignette"]
     /// Effects Lumora renders LESS faithfully than not running them at all (oracle-measured: dropping each raises
-    /// its scenes and regresses none). `depthparallax` is a mouse/camera-parallax effect that should be a no-op
-    /// with no cursor input (Lumora has none) but mis-offsets the layer; `cloudmotion` distorts the cloud layer
-    /// rather than animating it WE's way. Same drop-by-design rationale as the wash gate — revisit if rendered
-    /// faithfully. Matched against each pass's fragment-shader path.
-    private static let faithfulnessDropEffects: [String] = []   // cloudmotion restored (perlin + .repeat wired)
+    /// its scenes and regresses none). `cloudmotion` warps the cloud band with the shared perlin tile, but its
+    /// spatial warp does not align with WE's: measured against the corrected we-reference oracle (burst best-of-
+    /// phases), running it REGRESSES both of its scenes — 3545444802 0.8592→0.7529 (−0.106) and 3435120596
+    /// 0.5181→0.5161 — while the static (un-warped) clouds match the oracle's crispness. The constant overrides
+    /// (amount 0.032 etc.) and the perlin/.repeat plumbing are correct; the warp phase just can't be matched, so
+    /// it stays drop-by-design. Same rationale as the wash gate — revisit only if a phase-aligned render is proven.
+    /// Matched against the effect name OR each pass's fragment-shader path.
+    private static let faithfulnessDropEffects: [String] = ["cloudmotion"]
     private func isAllowlistedPostProcess(_ effect: LayerEffect, package: ScenePackage) -> Bool {
         effect.passes.contains { pass in
             Self.postProcessAllowlist.contains { pass.fragmentShaderPath.contains($0) }
@@ -1437,11 +1440,6 @@ public final class SceneRenderer {
                 || effect.passes.contains(where: { pass in
                     Self.faithfulnessDropEffects.contains { pass.fragmentShaderPath.lowercased().contains($0) }
                 }) { continue }
-            // cloudmotion only renders correctly with the shared perlin tile + .repeat wrap. Without the
-            // assets dir its noise sampler falls to white and it mis-distorts the cloud band (oracle-worse than
-            // skipping it), so keep dropping it whenever no shared-assets dir is configured.
-            if sharedAssetsDir == nil,
-               effect.passes.contains(where: { $0.fragmentShaderPath.lowercased().contains("cloudmotion") }) { continue }
             var preparedPasses: [PreparedPass] = []
             var graphOK = true
             for pass in effect.passes {
