@@ -1,5 +1,34 @@
 # PROGRESS — autopilot fidelity vs we-reference (taskbar-cropped, BURST-aware gate)
 
+## ⛔ ROUND 14 — SAME-BINARY MEASUREMENT PROTOCOL (the golden rule — follow for EVERY delta)
+The renderer is DETERMINISTIC (two identical runs = 0 byte diff). So every delta MUST be measured
+baseline-AND-after with the SAME measurement run, never against a number from an older build:
+1. Build ONE fresh binary.
+2. Measure condition A with it (env-unset, or "before-change").
+3. Measure condition B with it (env-set, or a SECOND binary built THIS run that has the change).
+4. Valid delta = B−A from this run. Annotate every number with the binary md5 / commit.
+5. Any figure not attributable to a same-binary run = treat as nonexistent, re-measure.
+Cross-binary comparison fabricates false deltas (it muddied R11/R12 per-scene claims).
+
+## ROUND 14 — P1 CANONICAL BASELINE (binary `6dbe9fa`, full oracle 96×3, crop=48 default)
+Same-binary master table in [`R14-BASELINE.tsv`](R14-BASELINE.tsv) (96 scenes: unset/set/delta).
+- **env-unset burst-avg 0.8110 · env-set 0.8076 · delta −0.0034** · ≥0.80 55/55 · ≥0.90 40/39.
+- **Heritage reconciled:** the R12 figures (0.8110 / 0.8076 / −0.0034) reproduce EXACTLY same-binary →
+  they were valid, NOT artifacts. `0.8094 @ d4c671f` is the older *docs* baseline (different oracle/crop),
+  kept as historical only. The R14 table is now canonical and replaces all prior per-scene numbers.
+- env-set: 41 scenes down / 10 up. The net −0.0034 is GAP1-fire / GAP4-particle correct-but-pixel-unaligned
+  content (embers/flames at a different stochastic phase than the captured frame) — CONSERVED per §4.4, not a bug.
+- **depthparallax — re-verified same-binary = REAL WIN, kept.** active vs dropped (both built this run):
+  3426865175 0.8027 vs 0.7051 (+0.098), 3409595232 0.7817 vs 0.6983 (+0.083), 3669680904 +0.002, others flat,
+  0 regression. The R11 "+0.098/+0.083" was NOT a cross-binary artifact.
+- **GAP 3 blend table — re-verified same-binary = REAL WIN, kept.** ON vs OFF (pre-c6f059a prelude, built this
+  run): 5 up (2381855517 +0.016, 3576279017 +0.0095, 3497714247/2109561442 +0.006, 2320743618 +0.004) and 2
+  SSIM-only dips (3372027807 −0.039, 3430675494 −0.025) whose A/B vs oracle CONFIRMS ON is correct (Itachi red
+  atmosphere matches; Supra grade/color matches minus the non-det clock) — old wrong blend coincidentally scored
+  higher. Correct-by-spec (WE common_blending.h enum); kept.
+- **`faithfulnessDropEffects = ["cloudmotion"]`** (read from source @ SceneRenderer.swift). cloudmotion stays
+  dropped (R13, same-binary −0.106). depthparallax is NOT in the list (wired + verified above).
+
 The gate now scores each scene against its still + `_t1`/`_t2` bursts (best phase per frame, averaged),
 so animation/phase is covered, not just frame 0. `LUMORA_PARITY_STILL_ONLY=1` gives the old single-still metric.
 
