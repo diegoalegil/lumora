@@ -19,6 +19,7 @@ public final class EffectRenderer {
     private var lastCommittedBuffer: MTLCommandBuffer?
     private let vertexFunction: MTLFunction
     private let sampler: MTLSamplerState
+    private let repeatSampler: MTLSamplerState   // .repeat wrap for tiling aux (perlin/noise) — cloudmotion scroll
 
     // The effect's own vertex reads a_Position/a_TexCoord from this shared mesh. A grid (not a single
     // quad) so vertex-displacement effects (waterwaves, ripple…) deform smoothly instead of moving four
@@ -87,6 +88,10 @@ public final class EffectRenderer {
         samplerDescriptor.tAddressMode = .clampToEdge
         guard let sampler = device.makeSamplerState(descriptor: samplerDescriptor) else { return nil }
         self.sampler = sampler
+        samplerDescriptor.sAddressMode = .repeat
+        samplerDescriptor.tAddressMode = .repeat
+        guard let repeatSampler = device.makeSamplerState(descriptor: samplerDescriptor) else { return nil }
+        self.repeatSampler = repeatSampler
     }
 
     /// Build a pipeline pairing the fixed full-screen vertex with a WE effect's transpiled fragment, or
@@ -181,7 +186,7 @@ public final class EffectRenderer {
     /// feed the stage uniform buffers, and draw — the tessellated grid through the effect's own vertex when
     /// `hasVertex`, else the fixed full-screen quad. Returns false on a uniform overflow or GPU fault.
     public func renderPass(pipeline: MTLRenderPipelineState, hasVertex: Bool,
-                           inputs: [(index: Int, texture: MTLTexture)],
+                           inputs: [(index: Int, texture: MTLTexture, repeatWrap: Bool)],
                            vertexUniforms: Data? = nil, fragmentUniforms: Data? = nil,
                            into output: MTLTexture) -> Bool {
         // setVertexBytes/setFragmentBytes are capped at 4 KB; a crafted effect with a huge uniform block
@@ -206,11 +211,12 @@ public final class EffectRenderer {
         }
         // Bind to both stages — a displacement/flow map is sampled in the vertex, colour in the fragment;
         // binding to a stage that doesn't declare the sampler is harmless.
-        for (index, texture) in inputs {
+        for (index, texture, repeatWrap) in inputs {
+            let smp = repeatWrap ? repeatSampler : sampler
             encoder.setVertexTexture(texture, index: index)
-            encoder.setVertexSamplerState(sampler, index: index)
+            encoder.setVertexSamplerState(smp, index: index)
             encoder.setFragmentTexture(texture, index: index)
-            encoder.setFragmentSamplerState(sampler, index: index)
+            encoder.setFragmentSamplerState(smp, index: index)
         }
         if let fragmentUniforms, !fragmentUniforms.isEmpty {
             fragmentUniforms.withUnsafeBytes { raw in
@@ -240,7 +246,7 @@ public final class EffectRenderer {
                                   vertexUniforms: Data? = nil, fragmentUniforms: Data? = nil,
                                   width: Int, height: Int) -> MTLTexture? {
         guard let output = makeTarget(width: width, height: height) else { return nil }
-        let inputs = [(index: 0, texture: input)] + auxTextures.enumerated().map { (index: $0.offset + 1, texture: $0.element) }
+        let inputs = [(index: 0, texture: input, repeatWrap: false)] + auxTextures.enumerated().map { (index: $0.offset + 1, texture: $0.element, repeatWrap: false) }
         return renderPass(pipeline: pipeline, hasVertex: true, inputs: inputs,
                           vertexUniforms: vertexUniforms, fragmentUniforms: fragmentUniforms, into: output) ? output : nil
     }
@@ -250,7 +256,7 @@ public final class EffectRenderer {
     public func apply(pipeline: MTLRenderPipelineState, to input: MTLTexture, auxTextures: [MTLTexture] = [],
                       fragmentUniforms: Data? = nil, width: Int, height: Int) -> MTLTexture? {
         guard let output = makeTarget(width: width, height: height) else { return nil }
-        let inputs = [(index: 0, texture: input)] + auxTextures.enumerated().map { (index: $0.offset + 1, texture: $0.element) }
+        let inputs = [(index: 0, texture: input, repeatWrap: false)] + auxTextures.enumerated().map { (index: $0.offset + 1, texture: $0.element, repeatWrap: false) }
         return renderPass(pipeline: pipeline, hasVertex: false, inputs: inputs,
                           fragmentUniforms: fragmentUniforms, into: output) ? output : nil
     }

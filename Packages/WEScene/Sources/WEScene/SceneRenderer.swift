@@ -83,7 +83,7 @@ private struct PreparedParticles {
 private enum EffectInput {
     case previous
     case buffer(String)
-    case aux(MTLTexture, content: SIMD2<Int>)   // a packaged aux (mask/normal) may be padded: carry its
+    case aux(MTLTexture, content: SIMD2<Int>, repeatWrap: Bool)   // a packaged aux (mask/normal) may be padded: carry its
                                                 // content dims so g_Texture<n>Resolution.zw is the real size
     case background   // _rt_FullFrameBuffer: the scene composited so far (copybackground glass/water/refraction),
                       // bound per-frame to a backdrop texture; resolves to the effect input when none is supplied
@@ -1355,11 +1355,12 @@ public final class SceneRenderer {
         // intermediate pass — the second full-size pass re-processed the raw layer instead of the first's output.
         var previousOutput = input
         for pass in effect.passes {
-            var inputs: [(index: Int, texture: MTLTexture)] = []
+            var inputs: [(index: Int, texture: MTLTexture, repeatWrap: Bool)] = []
             var resolutions: [Int: (storage: SIMD2<Int>, content: SIMD2<Int>)] = [:]
             for sampler in pass.samplers {
                 let texture: MTLTexture
                 let content: SIMD2<Int>
+                var repeatWrap = false
                 switch sampler.input {
                 // Render targets (the effect input and intermediate FBOs) are exact-size: content == storage.
                 case .previous: texture = previousOutput; content = SIMD2(previousOutput.width, previousOutput.height)
@@ -1367,9 +1368,9 @@ public final class SceneRenderer {
                 // supplied (e.g. the dry-run probe), so a copybackground effect never samples a stale/white texture.
                 case .background: texture = background ?? input; content = SIMD2((background ?? input).width, (background ?? input).height)
                 case .buffer(let name): texture = buffers[name] ?? whiteTexture; content = SIMD2(texture.width, texture.height)
-                case .aux(let aux, let auxContent): texture = aux; content = auxContent
+                case .aux(let aux, let auxContent, let rep): texture = aux; content = auxContent; repeatWrap = rep
                 }
-                inputs.append((index: sampler.slot, texture: texture))
+                inputs.append((index: sampler.slot, texture: texture, repeatWrap: repeatWrap))
                 resolutions[sampler.number] = (SIMD2(texture.width, texture.height), content)
             }
             let overrides = Self.effectOverrides(time: time, frameDelta: Float(currentScriptFrameDelta),
@@ -1408,7 +1409,7 @@ public final class SceneRenderer {
     /// with no cursor input (Lumora has none) but mis-offsets the layer; `cloudmotion` distorts the cloud layer
     /// rather than animating it WE's way. Same drop-by-design rationale as the wash gate — revisit if rendered
     /// faithfully. Matched against each pass's fragment-shader path.
-    private static let faithfulnessDropEffects = ["cloudmotion"]
+    private static let faithfulnessDropEffects: [String] = []   // cloudmotion restored (perlin + .repeat wired)
     private func isAllowlistedPostProcess(_ effect: LayerEffect, package: ScenePackage) -> Bool {
         effect.passes.contains { pass in
             Self.postProcessAllowlist.contains { pass.fragmentShaderPath.contains($0) }
@@ -1436,6 +1437,11 @@ public final class SceneRenderer {
                 || effect.passes.contains(where: { pass in
                     Self.faithfulnessDropEffects.contains { pass.fragmentShaderPath.lowercased().contains($0) }
                 }) { continue }
+            // cloudmotion only renders correctly with the shared perlin tile + .repeat wrap. Without the
+            // assets dir its noise sampler falls to white and it mis-distorts the cloud band (oracle-worse than
+            // skipping it), so keep dropping it whenever no shared-assets dir is configured.
+            if sharedAssetsDir == nil,
+               effect.passes.contains(where: { $0.fragmentShaderPath.lowercased().contains("cloudmotion") }) { continue }
             var preparedPasses: [PreparedPass] = []
             var graphOK = true
             for pass in effect.passes {
@@ -1511,7 +1517,10 @@ public final class SceneRenderer {
                             // phase/displacement consumers keep the flat uniform field.
                             let aux = resolveAuxTexture(bound ?? sampler.defaultValue, package: package,
                                                         centeredNoise: pass.fragmentShaderPath.lowercased().contains("filmgrain"))
-                            resolvedInput = .aux(aux.texture, content: aux.content)
+                            // A tiling noise/perlin aux (cloudmotion scrolls util/perlin_256 unbounded) wraps with
+                            // .repeat; clamp everything else (mask/normal, edge-safe blur taps).
+                            let tiling = name.contains("perlin") || name.contains("clouds")
+                            resolvedInput = .aux(aux.texture, content: aux.content, repeatWrap: tiling)
                         }
                     }
                     samplers.append((slot: slot, number: number, input: resolvedInput))
