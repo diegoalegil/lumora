@@ -7,6 +7,14 @@ so animation/phase is covered, not just frame 0. `LUMORA_PARITY_STILL_ONLY=1` gi
 
 D (wrap REPEAT by ClampUVs) measured-NEUTRAL + reverted; E (mipmaps) measured (3 regressions >0.005) + reverted.
 
+**Round 11 (visual-parity, PROMPT-MAC-PARIDAD):** GAP 3 (effect blend table → WE-canonical, `c6f059a`) +
+GAP 2a (depthparallax `g_ParallaxPosition` fix, `10eb602`: 3426865175 +0.098, 3409595232 +0.084) landed,
+visually A/B-verified, **mean burst-avg 0.8094 → 0.8110**, 0 net regressions. GAP 4 sprite shared-asset fallback
+ready (`516c892`, no-op without the dir). ⛔ **GAP 1 (fire2), GAP 2b (cloudmotion/perlin_256), GAP 4 visual** are
+ASSET-BLOCKED: the package ships only `util/clouds_256.tex` — the fire/perlin/light-shaft/petal/debris sprites
+are NOT in it (they're in the owner's Windows WE install). Need that install pointed to by
+`LUMORA_SHARED_ASSETS_DIR` to finish those gaps. See CHANGELOG ROUND 11 + MAPA-TECHO.
+
 **Round 10:** FUENTES (shared-font fallback) **refuted as an SSIM lever** — A/B over the 21 candidates moved 0
 scenes >0.005 (max +0.0008); correctness-only. **MAPA-TECHO.md** classifies every sub-target scene: **0 real
 animation bugs** — ceiling is firewall assets + non-determinism + capture artifacts. Found 1 mislabeled oracle

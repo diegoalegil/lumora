@@ -237,6 +237,37 @@ catch a change that WORSENS motion, and keep `LUMORA_PARITY_STILL_ONLY=1` (0.815
 ROUND 10 result: no render change (FUENTES SSIM-neutral, 0 animation bugs to fix); deliverables = MAPA-TECHO.md +
 the FUENTES measurement + the 3585875739 mislabel finding. Baseline unchanged at burst-avg 0.8094. CI green.
 
+### ROUND 11 — VISUAL-parity campaign (PROMPT-MAC-PARIDAD): GAP 3 + GAP 2a landed; GAP 1/2b/4 ASSET-BLOCKED
+New directive reframes the goal: SSIM hid whole missing effects; criterion is now DOUBLE (visual A/B vs
+we-reference + burst-avg no-regression). Worked GAP 3 → GAP 1 → GAP 2 → GAP 4.
+- **`c6f059a` GAP 3 — effect-path blend table corrected.** Applied the verified patch: `weBlendValue` was
+  truncated at 15/mis-ordered, so transpiled effect shaders blended wrong (Screen=7 DARKENED, tint=30 washed,
+  pulse=9 Screen-not-Add, filmgrain=12 HardLight-not-SoftLight). Rewrote to WE's canonical common_blending.h enum
+  + 9 missing helpers. Visual A/B (tint 2109561442/2320743618) composes correctly. burst-avg 0.8094→0.8091: 4
+  scenes up, 2 SSIM-only dips (3372027807 −0.039, 3430675494 −0.025) that are VISUALLY NEUTRAL (A/B-verified) —
+  the old WRONG blend coincidentally scored higher (the exact 'SSIM hides effect errors' case). Kept (correct math).
+- **`10eb602` GAP 2a — depthparallax restored.** It was force-dropped for mis-registration; root cause was a
+  missing uniform. Supply `g_ParallaxPosition=[0.5,0.5]` (rest → zero displacement) + remove from the skip list.
+  3426865175 +0.098, 3409595232 +0.084, 0 regressions, mean 0.8091→**0.8110** (recovers the GAP3 dip + more).
+  Visual A/B (3426865175 Frieren): layer registers correctly. ★ clean win.
+- **`516c892` GAP 4 — shared-asset VFS fallback for sprites (ready, no-op without the dir).** spriteTexture now
+  tries `<LUMORA_SHARED_ASSETS_DIR>/materials/<name>.tex` before the procedural/skip branch. Gated → strict no-op
+  by default.
+- **⛔ CRITICAL BLOCKER — the delivered package has NO shared sprite/perlin assets.** Both zips
+  (`lumora-update-paridad` + the 822 MB `lumora-sesion-desktop`) ship **only `we-shared-assets/materials/util/
+  clouds_256.tex`** (+ fonts). The directive §2 ("todo está en disco") is FALSE for this package: `fire2.tex`,
+  `perlin_256.tex`, `light_shafts_*`, `rosepetals`, `debris`, etc. are NOT present (they live in the owner's
+  Windows WE install, inaccessible from the Mac). Setting `LUMORA_SHARED_ASSETS_DIR` to this incomplete pack even
+  REGRESSES 2 scenes (clouds_256 replaces a better procedural fallback: 2611087662 −0.029). Therefore:
+  **GAP 1 (fire2), GAP 2b (cloudmotion needs perlin_256), GAP 4 visual validation are ASSET-BLOCKED here** — the
+  code paths are ready; they need the owner's full `…/wallpaper_engine/assets/` to validate. Not a firewall/effort
+  issue — the files aren't on this machine.
+- bloom (GAP 2 secondary): not pursued — round-9 already refuted the wider/multilevel bloom (overshoot) and
+  CORRECCIONES lists it as not-a-priority.
+
+ROUND 11 result: mean burst-avg **0.8110** (from 0.8094), 0 net regressions, GAP3+depthparallax visually verified,
+GAP4 fallback ready. Remaining gaps (fire/cloudmotion/god-rays/petals) blocked on the owner's shared-asset install.
+
 ### FASE 3/4 — assessed (round 1)
 - **T3.1 copybackground**: blocked — needs the transpiler to emit a `v_ScreenCoord` varying it never emits (compose shaders would reference an undefined varying); validation scenes already ≥0.93. **Deferred (XL/blocked).**
 - **T3.2 camerapath**: gated; static zoom would regress 3479521040 (already matches without it); only 3675966045 has real animation and it's dominated by fire/clock/grade. **Deferred.**
