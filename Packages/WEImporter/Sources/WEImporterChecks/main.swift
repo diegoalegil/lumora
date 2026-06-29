@@ -107,6 +107,43 @@ func runFuzz() {
 
 if CommandLine.arguments.dropFirst().first == "fuzz" { runFuzz(); exit(0) }
 
+// On-demand: `WEImporterChecks texpng <file.tex> <out.png>` decodes a loose .tex's first mip to PNG (dev tooling).
+if CommandLine.arguments.dropFirst().first == "texpng" {
+    let a = CommandLine.arguments; let i = a.firstIndex(of: "texpng")!
+    guard a.count > i + 2, let data = try? Data(contentsOf: URL(fileURLWithPath: a[i + 1])),
+          let d = try? SceneTexture.decodeFirstMip(data, expandBlocks: true) else { print("texpng: decode failed"); exit(1) }
+    let px = [UInt8](d.pixels)
+    let cs = CGColorSpace(name: CGColorSpace.sRGB)!
+    let ctx = CGContext(data: nil, width: d.imageWidth, height: d.imageHeight, bitsPerComponent: 8,
+                        bytesPerRow: d.imageWidth * 4, space: cs,
+                        bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+    px.withUnsafeBytes { ctx.data!.copyMemory(from: $0.baseAddress!, byteCount: min(px.count, d.imageWidth * d.imageHeight * 4)) }
+    let img = ctx.makeImage()!
+    let dst = CGImageDestinationCreateWithURL(URL(fileURLWithPath: a[i + 2]) as CFURL, "public.png" as CFString, 1, nil)!
+    CGImageDestinationAddImage(dst, img, nil); _ = CGImageDestinationFinalize(dst)
+    print("texpng: format=\(d.format) \(d.imageWidth)x\(d.imageHeight) -> \(a[i + 2])")
+    exit(0)
+}
+
+// On-demand: `WEImporterChecks dump <scene.pkg> [pathSubstring]` prints entry paths (or one entry's text).
+if CommandLine.arguments.dropFirst().first == "dump" {
+    let a = CommandLine.arguments
+    let di = a.firstIndex(of: "dump")!
+    guard a.count > di + 1, let pkg = try? ScenePackage.read(contentsOf: URL(fileURLWithPath: a[di + 1])) else {
+        print("dump: cannot read pkg"); exit(1)
+    }
+    let needle = a.count > di + 2 ? a[di + 2] : nil
+    if let needle {
+        for e in pkg.entries where e.path.contains(needle) {
+            print("===== \(e.path) (\(e.data.count) bytes) =====")
+            print(String(decoding: e.data, as: UTF8.self))
+        }
+    } else {
+        for e in pkg.entries { print("\(e.data.count)\t\(e.path)") }
+    }
+    exit(0)
+}
+
 // MARK: - Build a synthetic two-library Steam tree
 
 let tmpRoot = fm.temporaryDirectory.appendingPathComponent("WEImporterChecks-\(UUID().uuidString)", isDirectory: true)
